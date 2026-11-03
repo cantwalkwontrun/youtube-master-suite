@@ -179,13 +179,18 @@ test('SponsorBlock preview remains proportionate and bounded in the scroll minip
   const page=await fixture(t,'large',{miniplayer:true});
   await page.mouse.move(1,1);
   await page.locator('.ytp-tooltip').evaluate(tip=>{
-    tip.style.left='100px'; tip.style.bottom='120px';
-    tip.classList.add('sponsorCategoryTooltipVisible'); tip.querySelector('.sponsorCategoryTooltip').style.display='block';
+    tip.style.left='100px'; tip.style.bottom='180px';
+    // Leave room for platform font metrics when the Suite enlarges label text.
+    const sponsorLabel=tip.querySelector('.sponsorCategoryTooltip');
+    sponsorLabel.style.top='142px'; sponsorLabel.style.display='block';
+    tip.querySelector('.ytp-tooltip-bottom-text').style.top='182px';
+    tip.classList.add('sponsorCategoryTooltipVisible');
   });
   const before=await page.evaluate(()=>({time:document.querySelector('video').currentTime,paused:document.querySelector('video').paused}));
   await page.evaluate(()=>window.scrollTo(0,900));
   await page.waitForFunction(()=>document.body.classList.contains('ytsmp-scroll-miniplayer-active') && document.getElementById('movie_player')?.parentElement===document.body);
-  await page.locator('.ytp-progress-bar').hover(); await page.waitForTimeout(250);
+  await page.locator('.ytp-progress-bar').hover();
+  await page.waitForFunction(() => Boolean(document.querySelector('.ytp-tooltip')?.style.scale), null, { timeout: 3000 });
   const mini=await state(page);
   assert.notEqual(mini.scale,'',JSON.stringify(mini));
   assert.ok(mini.image.width<=mini.player.width*.4+1,JSON.stringify(mini));
