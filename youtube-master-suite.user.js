@@ -1,12 +1,10 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.44
+// @version      1.2.60
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
-// @homepageURL  https://github.com/noswimmingplease/youtube-master-suite
-// @supportURL   https://github.com/noswimmingplease/youtube-master-suite/issues
 // @updateURL    none
 // @downloadURL  none
 // @match        https://www.youtube.com/*
@@ -89,7 +87,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.44";
+  const MASTER_VERSION = "1.2.60";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -1239,6 +1237,31 @@
   const initialValues = read();
   Object.freeze(initialValues.menuItemOrder);
   const initial = Object.freeze(initialValues);
+  // Reads deliberately fail open, but an editor must never turn an unknown or
+  // damaged saved record into a valid-looking new one by silently discarding it.
+  function savedSettingsAreWritable(raw) {
+    if (raw === null) return true;
+    if (typeof raw !== "string" || raw.length > 8192) return false;
+    try {
+      const record = JSON.parse(raw);
+      if (!record || typeof record !== "object" || Array.isArray(record) ||
+          Object.keys(record).some(name => name !== "version" && name !== "values") ||
+          record.version !== 1 || !record.values || typeof record.values !== "object" || Array.isArray(record.values)) return false;
+      for (const [name, value] of Object.entries(record.values)) {
+        if (!Object.hasOwn(defaults, name)) return false;
+        const fallback = defaults[name];
+        if (typeof fallback === "boolean") {
+          if (typeof value !== "boolean") return false;
+        } else if (name === "menuItemOrder") {
+          if (!Array.isArray(value) || value.length > defaults.menuItemOrder.length ||
+              new Set(value).size !== value.length || value.some(item => !defaults.menuItemOrder.includes(item))) return false;
+        } else if (name === "viewerColour" || name === "ownerColour") {
+          if (!normaliseHex(value)) return false;
+        } else if (!choices[name]?.includes(value)) return false;
+      }
+      return !(record.values.headerSettingsIcon === "off" && record.values.playerSettingsIcon === "off");
+    } catch { return false; }
+  }
   function save(input) {
     if (input?.headerSettingsIcon === "off" && input?.playerSettingsIcon === "off") {
       return { ok: false, error: "Keep at least one settings button enabled." };
@@ -1248,6 +1271,11 @@
     let storage, previous;
     try {
       storage = getStorage(); previous = storage.getItem(key);
+      const previousCorner = storage.getItem(cornerKey);
+      if (!savedSettingsAreWritable(previous) ||
+          (previousCorner !== null && !choices.corner.includes(previousCorner))) {
+        return { ok: false, error: "Saved settings are incompatible or damaged. Nothing was overwritten; recover the existing data before saving." };
+      }
       storage.setItem(key, desired);
       if (storage.getItem(cornerKey) !== values.corner) storage.setItem(cornerKey, values.corner);
       return { ok: true, values };
@@ -1368,6 +1396,23 @@
     return validateRules(record?.version === 1 ? record.rules : null);
   }
 
+  function savedRulesAreWritable(raw) {
+    if (raw === null) return true;
+    if (typeof raw !== "string" || raw.length > 65536) return false;
+    try {
+      const record = JSON.parse(raw);
+      if (!record || typeof record !== "object" || Array.isArray(record) ||
+          Object.keys(record).some(name => name !== "version" && name !== "rules") ||
+          record.version !== 1 || !Array.isArray(record.rules) || record.rules.length > 100) return false;
+      const allowed = ["channelId", "name", "maxAge", "unit", "enabled", "blocked"];
+      const normalised = validateRules(record.rules);
+      if (normalised.length !== record.rules.length) return false;
+      return record.rules.every((rule, index) =>
+        Object.keys(rule).every(name => allowed.includes(name) &&
+          JSON.stringify(rule[name]) === JSON.stringify(normalised[index][name])));
+    } catch { return false; }
+  }
+
   function read() {
     try {
       setCurrent(storedRules(getStorage().getItem(key)));
@@ -1389,6 +1434,9 @@
     try {
       storage = getStorage();
       previous = storage.getItem(key);
+      if (!savedRulesAreWritable(previous)) {
+        return { ok: false, error: "Saved channel filters are incompatible or damaged. Nothing was overwritten; recover the existing data before saving." };
+      }
       if (expectedRules !== undefined) {
         let latest = [];
         try { latest = storedRules(previous); } catch { /* A corrupt record follows read()'s empty-rule fallback. */ }
@@ -2101,6 +2149,16 @@
     if (item?.downloadListItemViewModel) return 'download';
     const model = item?.menuServiceItemRenderer || item?.menuNavigationItemRenderer || item?.menuServiceItemDownloadRenderer || item?.listItemViewModel;
     const icon = String(model?.icon?.iconType || model?.leadingImage?.sources?.[0]?.clientResource?.imageName || '').toUpperCase();
+    // BlockTube's menu commands deliberately reuse YouTube's NOT_INTERESTED
+    // icon (and can clone its endpoint). Its current model uses these exact
+    // English titles; older models also expose an explicit action marker.
+    // Keep such rows as unknown native actions, preserving their handlers and
+    // their slots; never relax the duplicate guard for actual YouTube actions.
+    const title = typeof model?.title?.content === 'string' ? model.title.content :
+      typeof model?.text?.simpleText === 'string' ? model.text.simpleText :
+        Array.isArray(model?.text?.runs) ? model.text.runs.map(run => typeof run?.text === 'string' ? run.text : '').join('') : '';
+    if (['block_channel', 'block_video'].includes(model?._btMenuAction) ||
+        (icon === 'NOT_INTERESTED' && ['Block Channel', 'Block Video'].includes(title))) return null;
     if (['QUEUE_PLAY_NEXT', 'ADD_TO_QUEUE_HEAD'].includes(icon) || model?.targetId === 'yt-master-play-next') return 'playNext';
     if (queuedVideoId(item)) return 'addToQueue';
     if (['WATCH_LATER', 'WATCH_LATER_OUTLINE'].includes(icon)) return 'watchLater';
@@ -2794,7 +2852,7 @@
     for (const [target, type, handler] of listeners) target.removeEventListener(type, handler, true);
   };
 },
-    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); margin: 16px 0 0; }\n#ytms-settings-dialog .support-tools > section { padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 0; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 14px 0 0; }\n#ytms-section-extensions > .section-note { margin-top: 6px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(0, 0, 0, 0.9) !important; color: #eee !important; font: 500 12px/1.2 Roboto, Arial, sans-serif !important; text-shadow: none !important; pointer-events: none !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,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"},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAXoHpUWHRSYXcgcHJvZmlsZSB0eXBlIGV4aWYAAHjapZpplty6coT/YxVeAjEDy8F4jnfg5fsLgNWa732y1WpVqQYSyIyMiEzSrP/5723+iz/JPc6EmEuqKT38CTVU13hSnvunnX/tE86/50943+L/P7xuvt5wvOR59Pe/Jb2f/7xuvw5wHxrP4ncHKuN9o//4Rn3P4MpPB3pP5LUix5P5Hqi+B/LuvmHfA7S7rSfVkr/fQl/3cX52Uu6v0T/7PYt9H3/+f8hEb0bO451bnpf513t3F+D1641vPLH86z3h8PppPvKWXsnvSgjI7+L09aeyor3eVPz6oR+y8vXM/v5183O2gns/4n8Kcvp6/O3rxsbfZ+WE/nv8lPeZ+/H1NWy6K/op+if4e5Z99swuWkiEOr2b+mzlPONznVPo1MWwtPRkfiOHyOen8lNA9QAK8xlP52fYah3p2jbYaZvddp3HYQdLDG4Zl3ni3HD+vFh8dtWNk8mgH7td9tVPX8jkOGkP3n2txZ7T1meYc7bCmaflo85yMMtX/vrH/O0X9lYpWPuUr1ixLucUbJahzOlfPkZG7H6DGk+APz8//1FePRmMirJKpBLYfg/Ro/3GBP4k2vPByOOtQZvnewBCxKkji7GeDJA166NN9snOZWsJZCFBjaU7H1wnAzZGN1mkC94nclOcTs1Xsj0fddHxsuF1yIxMRJ98JjfVN5IVQgQ/ORQw1KKPIcaYYo4l1tiSTyHFlFJOIsWWfQ4mx5xyziXX3IovocSSSi6l1NKqqx7SjDXVXEuttTXO2Thy49uND7TWXfc99Gh66rmXXnsbwGeEEUcaeZRRR5tu+gl/zDTzLLPOtuwCSiusuNLKq6y62gZq25sddtxp51123e0ra29af/n5i6zZN2vuZEofzF9Z49WcP4ewopOonJEwVMSS8awUAGinnD3FhuCUOeXsqdCfj45FRuVsWmWMDIZlXdz2kzvjbkaVuf9X3kwOP+TN/V8zZ5S6v8zcr3n7XdamZGicjN0qVFAfT/XxmeYKf9Gqr8c+ZieApRu7Z90rZpJW8xiTw/EldjmSt0XPk5+rl7ytTpY3MW67W70zQs9r9J3S3EYvuLnzWnP2zFH5du+7zexiGCly7mknJwu2kKg+2GJtK5ftRtyxNw4f1+5mFerZxxWr3yMF+DAJUgVa3LvloROtwRYyEZs2jhi93Z7V25aX37BumMUvY/0AJWmv/hAfwjWXT7u3kFtKzW/LW5O9361Un9I4Bx99Lk42MttcMy6TrRtzpeQXqSIaJNd1kBFjnWGT77UhGreHT88ETc6nvitB4HeOE/Q2xpqGyNdsowOrffsNJjlBeGoPpYCSzg/xOwngCLvwlOdxtRSn8yDwJHwjR/m+UTeo8jlSdhnERhtbmc0ThRU5wPInmxMI2h7QkJskvmwn7/Zp2FJ6Wp8+d+8q3yeuviueKXs2D2+0MNGmES56LGoVPWVQd1VGctshT5C9SD5hB0Gco1SXa+1QDGjNhaixopE7Ka+kjJpr3ZPxp/vSLUcDEJYvtW1s32O2PcAGX4DQt62e4HFcpJUjbXbtdZL+tM2BdoUiHsI6Y+CEvuzBokg/SFgPAlrCfmaMbTfwSFUD0hr32tXuqNVwtFyCH1nBKi3Pzjkc8UsAPSwDKCq48YlFgBdQt+fa0/VepmffvA8T1BNc6wAsBaEErA6IVpbdSG3NZghEiy6yDO9XyjYPn0mX9SDZrlTa6jl0gsIK57NDPSGHJyjK74vX1Eo15sJ2lgXFqsYmjPfFgkhsJHazdxVOx07s3HdoiNyEflgZx3Z9k18T14W8TQfwEFOkXLMoqfqe1uC4o1H9q4N+wGr7ioWMNzZOCOCjVXa0ppcNga2Q3vQ/ooGXSgaVRNTiChsazTtV3nEJmqBwYMZJ21B9TH0sYgQh7imF5wsWwchZ9QTVTXLWiMyJBHurBDnxwu5nr5byI9ypuwCrZDOgX0ccWoXsDx5zBQyV/LI9Igp3hdnL2HngHyD3WSpsFbaSfsrmUJkpBJkgxdYaIgDgKbOwkTH+m3OKo6eTegFkz/MlvqIqcYkMEUbAXEY2fcbE2sl8wivOOngDog9xTJfIPgKXbODgUe3F+1ib3uY/5MiBBTJnPNEje4AfoYDITkB7UxSgzAifV/QNJJNcKi8H1aaPSPLSPnMjy5HqM7P2lNdmF+vA4BF9zgi91VQ4OufrOC68VAwYTSrEdwAAqOeqBLqKFKluAymWp/PeQFUpNX1PFaNKUdnUNQsSiH9KDzhBKuGU2Sd5sHwrEOcOJVkA2SOoVcnvOW9F2ZteUdeul9Cq6B/GnKmCnYmSxTp8mQOUU5UoLfamS2vRxkAaPqXu+MZuhZpUcOZMe+6TLai4SlAbCgYLUFxHZ6yhUgjSqS9oahxy4LhbSwbMnegQQODB35JQ6xhnxzwQo8pq9kwD4071O3Bmke8Q02zoEdsnLnRoJcred4SU9YzJFlkPCgRtAPCGO7FxQf9UAGsH2U42C/j3h7RQVQJf3JAqa2OpG4MBoUbkoegspc4k5WMxRPcRsJxtoZo0Xpj551eL8BeP5vsXgDrFtfAVqVkJhgcmK7BoIGYz0KRjiX5dIRcfI1PhgSDTkvVLbazt4QsSkCGuzD5pgQ984lNncVIp/BkHmbwEBNfC8Y2ccGagt1JYx40MRz1ThpQYHIL70GZL/w/2hEgHTQggNn3nOTH7PzxSspgFCUI2Rwt6jFQflCgGPOg+tUoxzVFago4g2xiqZdFj44MnawpUYrZELbRUCbYt/3bahXF5EiUGlaHiB8koDGyvsxavtSyDmSDYUF4eD+5IEiejNeDWdWsPf2pRW3xARg6fa72SOzWYwCv7As/47IgyYiegHCon0lVDwUIwrgcjiivIqvQF+XJoFKOz/Qql7Bqh4SRCwTJTtM1lQP7cMxRJNLHBotUsscNgX53aMBhs2dEkQA1gnN9IHyUN3UFso7tv/rXLv6aeEDk80LNbHSjwGh5ajHVVhzYD2WpHVYwDG8TeIVaBYAsUGhP926OKSs9YYZ5oy/E8QN3hs6NGY0T6q9wQhzFwuKhllUlQmUMfQGPi++FtVnPtBrwNQGqlA+irsAGDp3z0vxcEZf5xUUjlLuID+PtwRIJouscNWnyYoQJxZZv2BYvSNWKopPDhFyXFmhF7UkY0UTVPAlYoRxiwWNm+3lXNs4noOI0O9V5Y7cx90ARC/d1fZ01lQmsACjgJeaSqyVthAaIGHid/kJ8YUgn0F3rbKoaYytUBjsRX50bx0br5at01WLYt3/CeME9kMduEimGz7JKNoAIeyzIqO3HYXUxVn8kf109XUz+oPxG6qD/qT8iSaUCKtY4sL4qPquIjPLj4hvVEco7B6HQBfNBiwAMyYmWn3z7KrUE5HByhFPMfSAeuWu7AV4rqO4cSIjyqy44JUaUBWAY+39Q3kt5kAPDRjsX4RKmdQ9H3Pivj31ztUT46PG85DXdyPFVRbI2Nh2NaHQYmnYBOgokbAHD0VHEGtbnoDCEdswT1WfyiKw0bQM9GO4rmmuwDzhPU0kPSZIxjIWyjgwk+qZ+Qk7/I19zrj2A1/4TWvwGr+aD1HBoedeXrbDQbyMaTT+OHqgcxC0ceVkiyS1xH6KOTazSqPBy7epXoMOgIrB9uYx8f9c1+lOt267UDHLKIddQ5xjhcOK1NWSJ/AR7fBQoTHhTRxjAIfx+Sm99Irny6z6juM0cMxI4F6Hske1twsSDhfFDaZUBWbmoTkHlWF1lYlykgIVUG7e0no1ClDbL8bg2CSg1H+iaqE86ZFKqaKfqQhqC+EQNz3xCaHy+N4gQB00m7C8l7U0/lSJpSzc6RcKQzw59OJhTB6oDieeiw1K04qcnxcgGW9EBbvof+KhqV1pJ//hiqxhmJRHaDmoAygXxdNhWcLuhkxxs/vkqOtIiNwBJMeGmbDWkc4q8AB/BMtu3s1iREbQSYh5VJncsHsh4bBilRZ1AMBEQfWei4lzfR165x1uMHzpmiwEWkBwMTu0CHeR4KYFhZjYSyRm9AdFcf8oyVFGLzO+mHxg/xDUejpAEFHnWlmGLj2yfSIf5ZzTFTV3vNr+JLyrDKfyyczlsKO/miiaZsgAWpM6Pewx/u/s2Zee10SfZ0SQSILgnCW4sk+jdzd0U0yuo012mSaQ1ZF7rcakzwAj0fb1n/cCKbHTIBCo7x8b6jvuRj1NOMmnyovMD1cT1Is+/qvi+Yj9XGpuBxcbwaxm1NV/i3nG5bU5ETYNgRzvZK70DHwfUqmH3rkRY4odE0hSopgqU48Lq0lEFH+Gq5fKVJInsGJ0BGIUBLGGk2oYljSNc1pCcjRd0SzTpmplc2nApeHQnCmfMNadSahjJf1AwpgANCHm4CY3wYjQlySfHDDqLjNN5SfWcN+Nq3dwdRz6DLlh71pmkXvhZLjKHBDKjzJuEKlE/qv7ZbC0FJByoEKqKYkpb1Spf56Cod8uYve4GpKl2RggiP7vNV6jsK2BgSFI5ayKoFWuxCNgv07wxfiRQ8WoCRGQV1jo2T3ykAItIeC24K1TadGvPjgUAMCgZzKYX+TAoMDeLIodGtf9cjvoDUz49tce7lD4JgqD1cIeDEYSn6VcOHHcUTkJ+lIAJuALycBg+xgwK2e8+QVq56SlBp/OiqwsZg7hvDBThxySQJnbv2Ug0j5gyxiHR707UjyFA4rIeFJ6/QSBkTw9RoNDkTLuKqBrqsjLzsPA87a6WakQ0gpNkdbSbisC0OlfCaQ1f5toZbpE0UqoNIy2mQNufGODSOjP3FgpI8OM8KtqRbZsFJIqKRA8tHI6ykMn7NHK8ITnRnzFMZ9NbVq+vH2Dm8ZtM0hu1jnN/uKLqvNvKkhxgOgAywl2YLHm+BARyHHS2+2uOu6XK6pS/ibz+O3pzWCLRoohv8U864HCBVFV4ap/YIgQZrGgSLKuBSaBr81l0cnsYrXEZv3QBPOGiBR+wlUkDnD3LZZ4PWADlnAMI9uYvgQlXn+Jm/5FQNNQRnvN3AdGdGUCWugprdfSl9u8p/KHdJTYkm2mgI4UM/2IpmMQY8PN5mO2hZl5eK0WewQM2/c4IEG1aAXLKjLSL1JyRqd3FyfJhswDA1mwQBimozq24edsfcBr2/O1F/VaT8WT0+4mH+I/XAFpHFQCl/5rzYLHbrAsip4IJgs4TQT/kAiOB2jk7DSBEzcO/C+ms7AFQ42jFU9lc7vkmHOdrxVgBh8VCOJnsaq6ruNEzVoNKurzElDr5jtUtC4QcbEaeOZmAwltqW/CBkv9SNnYtaFtbXNkvVFF02a3m1tjpdE9eqnJLqEeod20B54BEhwVeRoWhZ0lzpIZvNQiGgq+17ueAzk5TD7z8bXPPN6YJFXRohld9lkrBjnFLXEG+rfRLhwiVYxAVqAzVCDKqfpmfcU3g0DaQtIBGUymmE+VWd42frKeqHCpQVRhxD6w3FnKG20siinaWbsmgJRPtu0n5vq4tWO6Mfd6X04H7b+vF9Hr9bZNk4C1p9mL2qd126ceBH7wTr6PsDmdKlmKDpDFri1NJwDugIYpv5SV7XxIIYTpJi/BJbdXonWVCauIRSRHFOgt3oLPlesyuoA7FWSgRTUQTnSlbxpJ8vYFkNBpHdUID9ml1dJn4Q/NR+nnR5TMHAROM91qh3xIcGwvAahZrDhkS8gAwasNRlwQmVptfgE0zGb4a9re+m55rvSa81Lc3NANkgP+KHXJEEQ9frNKF7CMsVnZCb+2Xw+9OjOdyqewGyzloG7YilI6SEZW51kWzMrxETe7QFZXBTe6bZlTPBbLJ8Q/kBn4kjgsJ0iQAm0rACt8E+8Rf4NTa5L4mTcM0kD660Tfom9UhrdM1q05N0vYkjtVMKaI2unTS0dyxYjTKly0Tkeyu0o56E3EqZ+Aj/1or5rguEa+jPIFZxR9N1Fl1G8i/J3valbvYTZFqGPUTyVF1k0Tzbn2RCYbreRMKqTMu9JpHUmvUzqK2zqH2nveWcqwbqX3PajJLNZGuJugg1wXsjANBBm5VSQflScRoi4ERBoC9r4z5QStX0ljH4YudOxVkMiYGPNZTAk3bKivY8cGb3T43w7x/fGJ36xzugdNSE2IomZB2BJdcEHRbzut4gWs2AueJ1jlrkvEqAOSA26pQdF3Y04fgzomcP5zLHOhdZn9bKg4uXd34i6npH4TghTbxHGJrymDPC2TfMWedbN8wco8uzTkgG2kU0Vbs0shaixTtA52SnVCBEd9S6AUZJFAfDxnz1tw+YrP2xJqLKlqZm+NPt7jMzr0aOQy3vvYjrBZh+je5kR40K1PQCB9RQDNrKMVIuuNzWBv4t86trBbkb1cLA18WM+ngFQXYDWkyPFKRIU1QESYZMt1HIrnd1tiLeM0ApwpfxhV04zS1JFoYjDWqSkzkgUbqGKBpfREc3C+A8hUQmtkIYzwVzXcLvtExGPQIo1zuEvEGOtemy4dLcEpk40xWN0f9ltm2+XujV0R+VzpIvqas+TqJRPNQk3NqipQAi452l0hwnDVBoIchXptsb416j5N2Qizs9/hKtX5zcavzApL6d4vfVaPJDkNQbloXmuWzxFA89xdSVAF2zUYVToRMk6rqGminAiiXbYUB8Q9fEOL6p3+se9XHELDfEKwaqQr5lCx7nfoEIJnTHBoDTVYSJJ+pvS2y6Lsb+64gfhyCq2480zIHEFM6K1LSSGwKA9ZunEnEI0jqa75ins7HSyKUqFy5iJSDag4YeV7rxbH5ilTuhALAFV9v8xDYCC7pDGJBTgnDsp9MEhEaRVv1cD5u6/aUoCBCsFohUy6Xe6fkyshcoFRTahta+or0TIPQW7AfXg6JFMdfazgyUvE/v36sV8t2y1tFEgS7qfhjQka2uNUM3BSWp8GiBBPvXMF0zyd+FUXcTmKbhEUAX5asXbmpELxZBYttWEEKLrGYAfYlbhT86+zyt3OnJVNJ9I7U5yZau4+tyRzhXF3bRjRNysBaqZz2AbJwLRYWORqNN2N2NXNC+MxU29VxK3/L8csDpXP8/V6LUnp02lUTi9nTnwymZfsSUKjr+YcoXdXXZGSfZwDGEVumN7RqNJmRo6IRTFIGABU76QOBbrQN7+Jq9rUqrdgrX/MUVOUe7LraHRnRBcX3mm6dnMnfACZXreqDSO9zZQLJ3kPkfMBuWVDN/VA1+t7Qpceo5mr+Smgc2lsHFMc9L3o1UdU21VxhNbTHeMhdVsaW2qbWjKJmTaghydTt97l4gtOFrBnJsVB0uPpoJarYSkVFNBVE4U50uEGqGrolfoy+GU6AuW9VTB2pHJltxuROHc0V6h0UO+70xgExP342opoGPoBlNUkl5jceX3FVqjZ6jxfRE3NUsR6FJJJ14j3Q2wuPFSdKQBWAW8EuRWjpvGlDdngFu5Syh+4gFxUjY62wCPReHPK08n31gQOr6pL+DtYcO6UTtXJDeN2jn5quXXr9dkg6fCer31Jo89ljSMxzej4LBmeEUtzr6tnX/i93XTMVzB4xubbn3dlVdI8j3xi4ghbM0751dfS5o5zA0y0CIT1c8dMPHc0dkaorFpXGt+AwfUtU1Dnpr+i5CbmYtYevmpmlxDjipSC319l7divPJZf2bNdaj+ccPCM+tZFj6nRtuIq+RCmLqYDpxru4Fw78b3d6h+7oatQeh+gA7AvSNZYTlnGYYXh3wVnsmVE/dH6G6IEFIuvM3ioYw3jnEVyCPggq5n3vk2tc9cmXqjoNPCtCtz3c3nB1vc3i+nN9rNdKYj6SUGVFMr/tRsKw4DSyBhvrUUaZSNA7jLF3jw6X7EWrS6J6+jnbCiyQ/93Togj1MBVU2TXg00IQ105kBsFRieMYMptNbVAjwaae7gATp3oZ7zbg7LbcWr/slVHMHQe+2u5qNpcuEIRvB7jLQ58YrRetu+MLubrd/v90wHzrNRZNFwa2s+y01PyK/TyOPVA8BX60LTJ6/cDwt9rmqjM5KZFzOZxy/cH2aSsyZsVQynvCR5qmuikzUaS6f/TOCbgptkZ4Pe3/MGi7nHXslTvqrvJmfxjBbYyPzv3eqewaezG+OAAABhWlDQ1BJQ0MgcHJvZmlsZQAAeJx9kT1Iw1AUhU9TS0UqDnYQEcxQxcEuVcSxVqEIFUqt0KqDyUv/oElDkuLiKLgWHPxZrDq4OOvq4CoIgj8gri5Oii5S4n1JoUWMFx7v47x7Du/dBwjNKlPNnjigapaRSSbEXH5VDL7Ch1EEEMOExEx9Lp1OwbO+7qmb6i7Ks7z7/qx+pWAywCcSx5luWMQbxDObls55nzjMypJCfE48adAFiR+5Lrv8xrnksMAzw0Y2M08cJhZLXSx3MSsbKvE0cURRNcoXci4rnLc4q9U6a9+TvzBU0FaWuU5rBEksYglpiJBRRwVVWIjSrpFiIkPnCQ//sONPk0smVwWMHAuoQYXk+MH/4PdszeJUzE0KJYDAi21/jAHBXaDVsO3vY9tunQD+Z+BK6/hrTWD2k/RGR4scAQPbwMV1R5P3gMsdYOhJlwzJkfy0hGIReD+jb8oDg7dA35o7t/Y5Th+ALM0qdQMcHALjJcpe93h3b/fc/u1pz+8H2GFyz+LdPtoAAA14aVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/Pgo8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJYTVAgQ29yZSA0LjQuMC1FeGl2MiI+CiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPgogIDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiCiAgICB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIKICAgIHhtbG5zOnN0RXZ0PSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvc1R5cGUvUmVzb3VyY2VFdmVudCMiCiAgICB4bWxuczpkYz0iaHR0cDovL3B1cmwub3JnL2RjL2VsZW1lbnRzLzEuMS8iCiAgICB4bWxuczpHSU1QPSJodHRwOi8vd3d3LmdpbXAub3JnL3htcC8iCiAgICB4bWxuczp0aWZmPSJodHRwOi8vbnMuYWRvYmUuY29tL3RpZmYvMS4wLyIKICAgIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIKICAgeG1wTU06RG9jdW1lbnRJRD0iZ2ltcDpkb2NpZDpnaW1wOjIyOGI2NTU1LTQ4MjctNGQ4OS04YTkwLWFhMDAwZjFiNzQ2MSIKICAgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDo0YTM0NGNlNS1kODIyLTQyNDItYTc5Zi02NjRjNTRiZjRlNmEiCiAgIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDplMTMwMTAwYi1jYzMxLTQ0ZTUtYTdhOC02Y2E4ZjViMDY2YWQiCiAgIGRjOkZvcm1hdD0iaW1hZ2UvcG5nIgogICBHSU1QOkFQST0iMi4wIgogICBHSU1QOlBsYXRmb3JtPSJMaW51eCIKICAgR0lNUDpUaW1lU3RhbXA9IjE2NzUxNDQzNTk0MDk3MjAiCiAgIEdJTVA6VmVyc2lvbj0iMi4xMC4zMiIKICAgdGlmZjpPcmllbnRhdGlvbj0iMSIKICAgeG1wOkNyZWF0b3JUb29sPSJHSU1QIDIuMTAiCiAgIHhtcDpNZXRhZGF0YURhdGU9IjIwMjM6MDE6MzFUMDA6NTI6MzctMDU6MDAiCiAgIHhtcDpNb2RpZnlEYXRlPSIyMDIzOjAxOjMxVDAwOjUyOjM3LTA1OjAwIj4KICAgPHhtcE1NOkhpc3Rvcnk+CiAgICA8cmRmOlNlcT4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiCiAgICAgIHN0RXZ0OmNoYW5nZWQ9Ii8iCiAgICAgIHN0RXZ0Omluc3RhbmNlSUQ9InhtcC5paWQ6MDhkMjkzMzYtZjMyNC00ZDBlLWI4YTQtMDM5ZGEyMGJmODQ5IgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJHaW1wIDIuMTAgKExpbnV4KSIKICAgICAgc3RFdnQ6d2hlbj0iMjAyMy0wMS0zMVQwMDo1MjozOS0wNTowMCIvPgogICAgPC9yZGY6U2VxPgogICA8L3htcE1NOkhpc3Rvcnk+CiAgPC9yZGY6RGVzY3JpcHRpb24+CiA8L3JkZjpSREY+CjwveDp4bXBtZXRhPgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg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"},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,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"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
+    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog .settings-search { display: flex; align-items: center; gap: 8px; padding: 6px 24px 8px; flex-shrink: 0; }\n#ytms-settings-dialog #ytms-settings-search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--text); }\n#ytms-settings-dialog .settings-search-clear { padding: 7px 10px; border-radius: 16px; color: var(--text); white-space: nowrap; }\n#ytms-settings-dialog .settings-search-clear:hover { background: var(--hover); }\n#ytms-settings-dialog #ytms-settings-search-status, #ytms-settings-dialog .settings-search-empty { color: var(--muted); font-size: 12px; margin: 12px 0; }\n#ytms-settings-dialog .settings-search-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; width: 100%; padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }\n#ytms-settings-dialog .settings-search-result:hover { background: var(--hover); }\n#ytms-settings-dialog .settings-search-title { font-weight: 600; overflow-wrap: anywhere; }\n#ytms-settings-dialog .settings-search-section, #ytms-settings-dialog .settings-search-description { color: var(--muted); font-size: 12px; }\n#ytms-settings-dialog .settings-search-description { grid-column: 1 / -1; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); margin: 16px 0 0; }\n#ytms-settings-dialog .support-tools > section { padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 0; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 14px 0 0; }\n#ytms-section-extensions > .section-note { margin-top: 6px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(0, 0, 0, 0.9) !important; color: #eee !important; font: 500 12px/1.2 Roboto, Arial, sans-serif !important; text-shadow: none !important; pointer-events: none !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAACg0lEQVRo3u2ZP2gTURzHP5eLSgNV1GqkClksomiHViFKaEENLl0USweHomARpAhxaIfSqWCXLlKHIlTQyWwuThUHSwsFm2qgHjhpQa2iLkWCRn8OOaEeueZy//IO8oUbDu73e9/P77137707aKqx0mo9IHAJyAEngJ0+tv0TMIB7wH0NpErbV4EjNvG/gXwt82MCEsL1QCzFFMg6iHu/lflOgXJIACIwYGn/mpO42BYdcBvQQxzO190ExWyqn8RSkRB0zDcA4AawI2SAmC9BAttNgEioGvUAcCDKAMOOo6enob9fHQCBM8Apx9EdHZDPw+IipNNK9MAtV1nSaVhYqMCkUo0BEDgIXHS/KdEqw2l1FSYnobU19B64CWzznDGRgJERMAwYGgJdDx5AoMXtSmir9naYmYGlJejtDbwHrgBtgbTQ1QUTE5BMBgowHEj2tTUYHISeHlhfD6SJuMBZoNPXrBsbMDVVmcylUqBzIG5OXn9ULsPsLIyPB1bxagDnfMk0Nwe5HBSLoa8DuzxlMAzo64NsNnTz/xYw96eoTEZE1/06kX1ycyKLe6Kfn1dyNxopxYA/UQd4F3WAR4p4EbcAd4DnCgB8sNx/dhDzNq5BSeCCeZC/DBxyaSDl8TvSY8v9U2AU6LZ5/gdw16++bxH45WENeCHhf8b5D+C0B/MvBXY3eh046TJuGchq8L3RAN0uYgqm+W8qvP+KdQ6bZYE9qry8E3VO4IIy5k2ATJ3m96q2mXM6/leA8xp8VWovIvDQQeVX/K58mBO4oKx5E+Bjjcq3obIEntiYf6W8eRPgsMAXi/nXAvsic6gQOLppKL2RCP3h2QxxXOCZwH6aaio6+gvdnzYIGXJx8wAAAABJRU5ErkJggg=="},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,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"},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,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"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
     createSettingsDialog: function createSettingsDialog(document) {
   function element(tag, attributes = {}, ...children) {
     const node = document.createElement(tag);
@@ -2958,9 +3016,10 @@
   const settingName = value => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, letter => letter.toUpperCase());
   function showPreview(result) {
     token = result.preview; preview.replaceChildren(); preview.hidden = false;
-    const { settingChanges, filters, warning } = result.summary;
+    const { settingChanges, filters, orderChanged, warning } = result.summary;
     preview.append(node('h4', 'Restore preview'), node('p', warning),
       node('p', `${settingChanges.length} ${settingChanges.length === 1 ? 'setting' : 'settings'} changed. Channel filters: ${filters.added} added, ${filters.changed} updated, ${filters.removed} removed; ${filters.total} after restore.`));
+    if (orderChanged) preview.append(node('p', 'Channel filter order will change.'));
     if (settingChanges.length) {
       const details = node('details'); details.append(node('summary', 'Review setting changes'));
       const list = node('ul');
@@ -2974,7 +3033,7 @@
     const cancel = button('cancel-restore', 'Cancel restore');
     const buttons = node('div', '', { class: 'support-actions' }); buttons.append(restore, cancel);
     preview.append(acknowledgement, buttons);
-    const changed = settingChanges.length || filters.added || filters.changed || filters.removed;
+    const changed = settingChanges.length || filters.added || filters.changed || filters.removed || orderChanged;
     const update = () => {
       const dirty = hooks.hasDraft();
       restore.disabled = !check.checked || !changed || dirty;
@@ -3137,6 +3196,7 @@
     return frozen({
       settingChanges: settingNames.filter(name => !same(previous.values[name], next.values[name]))
         .map(name => ({ name, before: clone(previous.values[name]), after: clone(next.values[name]) })),
+      orderChanged: !same(previous.rules.map(rule => rule.channelId), next.rules.map(rule => rule.channelId)),
       filters: {
         added: next.rules.filter(rule => !before.has(rule.channelId)).length,
         changed: next.rules.filter(rule => before.has(rule.channelId) && !same(before.get(rule.channelId), rule)).length,
@@ -3424,7 +3484,7 @@
 
   suite.registerModule(
     "commentCleaner",
-    "Comment Cleaner v1.26",
+    "Comment Cleaner v1.29",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -3555,6 +3615,7 @@
         let commentsVideoGuardFailOpenVideoId = "";
         let preNavigationCommentNodes = new Set();
         const pendingStaleCommentContainers = new Set();
+        const staleCommentNotices = new Map();
         const commentsVideoGuardRecoveryTimers = new Map();
         const commentsVideoGuardScheduledDelays = new Set();
 
@@ -3851,6 +3912,61 @@
           commentsVideoGuardPending = true;
         };
 
+        const clearStaleCommentNotice = (comments) => {
+          staleCommentNotices.get(comments)?.remove();
+          staleCommentNotices.delete(comments);
+        };
+
+        const clearStaleCommentNotices = () => {
+          staleCommentNotices.forEach((notice) => notice.remove());
+          staleCommentNotices.clear();
+        };
+
+        // After the bounded grace period, protect only positively identified old
+        // comments. Unknown or mixed provenance must remain available.
+        const reconcileTimedOutComments = (destinationVideoId, root = document) => {
+          staleCommentNotices.forEach((notice, comments) => {
+            if (!comments.isConnected || notice.parentElement !== comments.parentElement) {
+              clearStaleCommentNotice(comments);
+            }
+          });
+          getCommentContainers(root).forEach((comments) => {
+            const ids = getCommentsVideoIds(comments);
+            const knownOld = destinationVideoIdentityIsCoherent(destinationVideoId) &&
+              ids.size > 0 && !ids.has(destinationVideoId);
+            if (!knownOld || !comments.parentElement) {
+              if (comments.hasAttribute(STALE_COMMENTS_ATTRIBUTE)) {
+                comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE);
+              }
+              clearStaleCommentNotice(comments);
+              return;
+            }
+            if (!staleCommentNotices.has(comments)) {
+              const notice = document.createElement("div");
+              notice.setAttribute("data-iow-stale-notice", "1");
+              notice.setAttribute("role", "status");
+              const message = document.createElement("span");
+              message.textContent = "Comments may belong to the previous video. ";
+              const button = document.createElement("button");
+              button.type = "button";
+              button.textContent = "Reload page (restarts video)";
+              button.addEventListener("click", () => {
+                if (notice.isConnected && getCurrentVideoId() === destinationVideoId &&
+                    commentsVideoGuardFailOpenVideoId === destinationVideoId) {
+                  location.reload();
+                }
+              });
+              notice.appendChild(message);
+              notice.appendChild(button);
+              comments.parentElement.insertBefore(notice, comments);
+              staleCommentNotices.set(comments, notice);
+            }
+            if (comments.getAttribute(STALE_COMMENTS_ATTRIBUTE) !== "1") {
+              comments.setAttribute(STALE_COMMENTS_ATTRIBUTE, "1");
+            }
+          });
+        };
+
         const releaseCommentsVideoGuardAfterTimeout = (destinationVideoId) => {
           if (!destinationVideoId || getCurrentVideoId() !== destinationVideoId) {
             return false;
@@ -3864,10 +3980,8 @@
           commentsVideoGuardFailOpenVideoId = destinationVideoId;
           preNavigationCommentNodes = new Set();
           pendingStaleCommentContainers.clear();
-          getCommentContainers(document).forEach((comments) =>
-            comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
-          );
           cancelCommentsVideoGuardRecovery();
+          reconcileTimedOutComments(destinationVideoId);
           return true;
         };
 
@@ -3884,6 +3998,7 @@
           commentsVideoGuardFailOpenVideoId = "";
           preNavigationCommentNodes = new Set();
           pendingStaleCommentContainers.clear();
+          clearStaleCommentNotices();
           getCommentContainers(document).forEach((comments) =>
             comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
           );
@@ -3973,6 +4088,7 @@
           destinationVideoId = "",
         } = {}) => {
           commentsVideoGuardGeneration += 1;
+          clearStaleCommentNotices();
           cancelCommentsVideoGuardRecovery();
           commentsVideoGuardPending = true;
           commentsVideoGuardSawFreshContainer = false;
@@ -4034,9 +4150,7 @@
           alignCommentsVideoGuardToCurrentUrl();
 
           if (commentsVideoGuardFailOpenVideoId === currentVideoId) {
-            getCommentContainers(document).forEach((comments) =>
-              comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
-            );
+            reconcileTimedOutComments(currentVideoId, root);
             return;
           }
 
@@ -4275,6 +4389,22 @@
         opacity:0 !important;
         pointer-events:none !important;
       }
+      [data-iow-stale-notice="1"] {
+        color:var(--yt-spec-text-primary, inherit);
+        background:var(--yt-spec-badge-chip-background, transparent);
+        padding:12px;
+        margin:8px 0;
+        border-radius:8px;
+        font-size:1.4rem;
+      }
+      [data-iow-stale-notice="1"] button {
+        color:inherit;
+        background:transparent;
+        border:1px solid currentColor;
+        border-radius:18px;
+        padding:6px 12px;
+        cursor:pointer;
+      }
       `;
 
         const buildCommentControlsCss = () => {
@@ -4482,6 +4612,12 @@
 
           const commentsVideoGuardRoots = new Set();
 
+          if (staleCommentNotices.size && mutations.some((mutation) => mutation.removedNodes?.length)) {
+            staleCommentNotices.forEach((notice, comments) => {
+              if (!comments.isConnected || !notice.isConnected) clearStaleCommentNotice(comments);
+            });
+          }
+
           for (const mutation of mutations) {
             if (mutation.type === "attributes") {
               if (
@@ -4606,6 +4742,14 @@
           true,
         );
 
+        // Player identity can become coherent after the timeout without a DOM
+        // mutation. Recheck on the active player's native metadata event only.
+        document.addEventListener("loadedmetadata", (event) => {
+          if (!commentsVideoGuardFailOpenVideoId || !isWatchPath()) return;
+          const player = event.target?.closest?.('[id="movie_player"]');
+          if (player && player === getActivePlayer()) syncCommentsVideoGuard();
+        }, true);
+
         suite.addWindowListener(
           "pageshow",
           () => {
@@ -4631,7 +4775,7 @@
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.16",
+    "Feed UI Cleaner v2.20",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -4755,6 +4899,11 @@
         const FILTER_REVEAL_ATTRIBUTE = 'data-yt-master-show-filtered';
         const FILTER_TOGGLE_ID = 'yt-master-filter-toggle';
         const CONFIRMATION_ATTRIBUTE = 'data-ytms-channel-filter-confirmation';
+        const HISTORY_AUX_ATTRIBUTE = 'data-ytms-history-aux-hidden';
+        const HISTORY_ACTIONS_SELECTOR = 'ytd-two-column-browse-results-renderer #secondary ytd-browse-feed-actions-renderer > #contents';
+        const HISTORY_ACTION_ROW_SELECTOR = 'ytd-button-renderer, ytd-compact-link-renderer, yt-button-view-model, button-view-model, button, a';
+        const hiddenHistoryActions = new Set();
+        let historyActionsFrame = 0;
         const confirmations = new Map();
         const FILTERED_CARD_SELECTOR = [
           `[${HIDDEN_FLAG}="1"]`,
@@ -4967,7 +5116,38 @@
             buildStaticCss(),
             buildFeedGridCss(),
             buildFilteredCardCss(),
+            CONFIG.hideStaticUi ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
           ].filter(css => css.trim()).join('\n');
+        }
+
+        // Restrict text-based matching to individual rows in the History action
+        // sidebar. Unknown layouts and non-English labels are left unchanged.
+        function reconcileHistoryActions() {
+          historyActionsFrame = 0;
+          const found = new Set();
+          if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+            document.querySelectorAll(HISTORY_ACTIONS_SELECTOR).forEach(contents => {
+              for (const row of contents.children) {
+                if (!row.matches(HISTORY_ACTION_ROW_SELECTOR)) continue;
+                const controls = row.matches('button, a') ? [row] : [...row.querySelectorAll('button, a, [role="button"]')];
+                if (controls.length !== 1) continue;
+                const label = getText(controls[0]);
+                if (!/^(?:send feedback|why am i seeing this\?)$/i.test(label)) continue;
+                found.add(row);
+                if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) !== '1') row.setAttribute(HISTORY_AUX_ATTRIBUTE, '1');
+              }
+            });
+          }
+          for (const row of hiddenHistoryActions) {
+            if (found.has(row)) continue;
+            if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+            hiddenHistoryActions.delete(row);
+          }
+          for (const row of found) hiddenHistoryActions.add(row);
+        }
+
+        function scheduleHistoryActions() {
+          if (!historyActionsFrame) historyActionsFrame = requestAnimationFrame(reconcileHistoryActions);
         }
 
         function getCardContainer(el) {
@@ -5396,6 +5576,17 @@
         const observer = new MutationObserver((mutations) => {
           let toggleDirty = false;
           for (const mutation of mutations) {
+            if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+              const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
+              const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
+              if (target?.closest?.('ytd-browse-feed-actions-renderer') ||
+                  [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE &&
+                    (node.matches('ytd-browse-feed-actions-renderer') ||
+                     ((inHistorySecondary || node.matches('ytd-browse, ytd-two-column-browse-results-renderer, #secondary')) &&
+                      node.querySelector('ytd-browse-feed-actions-renderer'))))) {
+                scheduleHistoryActions();
+              }
+            }
             if (!mutationCanAffectFiltering(mutation)) continue;
 
             if (mutation.type !== 'childList') {
@@ -5465,8 +5656,10 @@
         function resetScheduledWork() {
           if (filterToggleUpdateFrame) cancelAnimationFrame(filterToggleUpdateFrame);
           if (cleanUpFrame) cancelAnimationFrame(cleanUpFrame);
+          if (historyActionsFrame) cancelAnimationFrame(historyActionsFrame);
           filterToggleUpdateFrame = 0;
           cleanUpFrame = 0;
+          historyActionsFrame = 0;
           pendingCleanUpRoots.clear();
         }
 
@@ -5474,15 +5667,21 @@
           reconcileConfirmations(document);
           resetTemporaryReveal();
           if (syncMutationObservation()) cleanUp(document);
+          reconcileHistoryActions();
         }
 
         syncMutationObservation();
+        reconcileHistoryActions();
 
         suite.addWindowListener('yt-navigate-start', () => {
           clearConfirmations();
           resetTemporaryReveal();
           stopMutationObservation();
           resetScheduledWork();
+          for (const row of hiddenHistoryActions) {
+            if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+          }
+          hiddenHistoryActions.clear();
         }, true);
         suite.addWindowListener('yt-navigate-finish', reconcileRoute, true);
         suite.addWindowListener('yt-page-data-updated', reconcileRoute, true);
@@ -5494,6 +5693,10 @@
           clearConfirmations();
           stopMutationObservation();
           resetScheduledWork();
+          for (const row of hiddenHistoryActions) {
+            if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+          }
+          hiddenHistoryActions.clear();
         }, true);
         suite.addWindowListener('pageshow', reconcileRoute, true);
     },
@@ -5501,7 +5704,7 @@
 
   suite.registerModule(
     "miniplayerButtonRestorer",
-    "Miniplayer Button Restorer v1.14",
+    "Miniplayer Button Restorer v1.16",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -5778,7 +5981,15 @@
         }
 
         function onTooltipPointerMove(event) {
-          if (!installedButton?.contains(event.target)) hideTooltip();
+          if (!installedButton?.contains(event.target) && !hasTooltipKeyboardFocus()) hideTooltip();
+        }
+
+        function hasTooltipKeyboardFocus() {
+          return document.activeElement === installedButton && installedButton?.matches(":focus-visible");
+        }
+
+        function hideTooltipOnMouseLeave() {
+          if (!hasTooltipKeyboardFocus()) hideTooltip();
         }
 
         function isTooltipAnchorVisible(player) {
@@ -5956,7 +6167,7 @@
           btn.addEventListener("click", triggerMiniplayer);
           btn.addEventListener("mouseenter", showTooltip);
           btn.addEventListener("focus", showTooltip);
-          btn.addEventListener("mouseleave", hideTooltip);
+          btn.addEventListener("mouseleave", hideTooltipOnMouseLeave);
           btn.addEventListener("blur", hideTooltip);
           return btn;
         }
@@ -6235,7 +6446,7 @@
 
   suite.registerModule(
     "pageCoherence",
-    "Page Coherence Guard v1.15",
+    "Page Coherence Guard v1.16",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -7027,7 +7238,7 @@
 
   suite.registerModule(
     "playerPreferencesLite",
-    "Player Preferences Lite v1.92",
+    "Player Preferences Lite v1.120",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -9819,9 +10030,27 @@
           `;
         }
 
+        function buildPlayerControlsContrastCss() {
+          // Keep the native gradient, SVG filters, hit targets and colours intact.
+          // A translucent toolbar backing improves contrast against bright footage;
+          // forced-colours mode remains under the browser's accessibility control.
+          return `
+            @media (forced-colors: none) {
+              .html5-video-player .ytp-chrome-controls {
+                background-color: rgba(0, 0, 0, 0.45);
+              }
+              .html5-video-player .ytp-chrome-controls .ytp-time-display,
+              .html5-video-player .ytp-chrome-controls .ytp-chapter-title {
+                text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 0.8);
+              }
+            }
+          `;
+        }
+
         function buildCss() {
           return [
             buildVolumeOverlayCss(),
+            buildPlayerControlsContrastCss(),
             buildVideoMirrorCss(),
             buildCaptionCss(),
             buildShortsCss(),
@@ -10011,6 +10240,7 @@
 
         function handleVideoMirrorTooltipPointerMove(event) {
           if (!videoMirrorTooltip) return;
+          if (hasVideoMirrorTooltipKeyboardFocus()) return;
           const rect = videoMirrorButton?.getBoundingClientRect();
           if (
             !videoMirrorButton?.contains(event.target) || !rect?.width || !rect.height ||
@@ -10020,12 +10250,21 @@
           ) hideVideoMirrorTooltip();
         }
 
+        function hasVideoMirrorTooltipKeyboardFocus() {
+          return document.activeElement === videoMirrorButton && videoMirrorButton?.matches(":focus-visible");
+        }
+
+        function hideVideoMirrorTooltipOnMouseLeave() {
+          if (!hasVideoMirrorTooltipKeyboardFocus()) hideVideoMirrorTooltip();
+        }
+
         function handleVideoMirrorTooltipVisibility() {
           if (document.hidden) hideVideoMirrorTooltip();
         }
 
         function handleVideoMirrorTooltipDocumentLeave(event) {
-          if (event.target === document || event.target === document.documentElement) hideVideoMirrorTooltip();
+          if ((event.target === document || event.target === document.documentElement) &&
+            !hasVideoMirrorTooltipKeyboardFocus()) hideVideoMirrorTooltip();
         }
 
         function positionVideoMirrorTooltip() {
@@ -10179,7 +10418,7 @@
           button.addEventListener("click", handleVideoMirrorClick);
           button.addEventListener("mouseenter", showVideoMirrorTooltip);
           button.addEventListener("focus", showVideoMirrorTooltip);
-          button.addEventListener("mouseleave", hideVideoMirrorTooltip);
+          button.addEventListener("mouseleave", hideVideoMirrorTooltipOnMouseLeave);
           button.addEventListener("blur", hideVideoMirrorTooltip);
           return button;
         }
@@ -11907,28 +12146,44 @@
           if (!['auto', 'small', 'medium', 'large'].includes(mode)) return;
           const trackSelector = '.ytp-progress-bar-container, .ytp-progress-bar';
           const previewSelector = '.ytp-tooltip.ytp-preview';
-          let player = null, track = null, frame = 0, owned = null, resizeObserver = null;
+          const previewMotionEndEvents = ['animationend', 'animationcancel', 'transitionend', 'transitioncancel'];
+          let player = null, track = null, frame = 0, owned = null, resizeObserver = null, textRoot = null;
+          let resumeCandidate = null, sponsorMotion = null;
           let suspended = false;
+          // YouTube may update an existing text node without a child-list mutation.
+          // Observe only the active preview, never the whole player's text churn.
+          const textObserver = new MutationObserver(() => schedule());
           const observer = new MutationObserver(records => {
-            if (records.some(record => record.target.closest?.(previewSelector) ||
+            if (records.some(record => (record.target === player && record.attributeName === 'class') ||
+                record.target.closest?.(previewSelector) ||
+                (textRoot && (record.target === textRoot || textRoot.contains(record.target))) ||
                 [...record.addedNodes, ...record.removedNodes].some(node =>
-                  node.matches?.(previewSelector) || node.querySelector?.(previewSelector)))) schedule();
+                  node.matches?.(previewSelector) || node.querySelector?.(previewSelector) ||
+                  (textRoot && (node === textRoot || node.contains?.(textRoot)))))) schedule();
           });
           function restore() {
             if (!owned) return;
-            for (const [name, entry] of owned.values) {
-              const style = owned.node.style;
-              if (style.getPropertyValue(name) !== entry.written || style.getPropertyPriority(name) !== 'important') continue;
-              if (entry.before) style.setProperty(name, entry.before, entry.priority);
-              else style.removeProperty(name);
+            for (const [element, values] of owned.values) {
+              for (const [name, entry] of values) {
+                const style = element.style;
+                if (style.getPropertyValue(name) !== entry.written || style.getPropertyPriority(name) !== 'important') continue;
+                if (entry.before) style.setProperty(name, entry.before, entry.priority);
+                else style.removeProperty(name);
+              }
             }
             owned = null;
           }
           function stop() {
             observer.disconnect(); resizeObserver?.disconnect(); resizeObserver = null;
+            textObserver.disconnect(); textRoot = null;
             if (frame) cancelAnimationFrame(frame);
-            frame = 0; restore(); player = null; track = null;
+            if (player) for (const name of previewMotionEndEvents) player.removeEventListener(name, onPreviewMotionEnd, true);
+            frame = 0; restore(); player = null; track = null; sponsorMotion = null;
             window.removeEventListener('resize', schedule);
+          }
+          function onPreviewMotionEnd(event) {
+            const preview = event.target?.closest?.(previewSelector);
+            if (preview && player?.contains(preview)) schedule();
           }
           function observe() {
             if (!player) return;
@@ -11938,37 +12193,322 @@
           }
           function write(node, name, value) {
             if (!owned) owned = { node, values: new Map() };
+            if (!owned.values.has(node)) owned.values.set(node, new Map());
             const entry = { before: node.style.getPropertyValue(name),
               priority: node.style.getPropertyPriority(name), written: '' };
             node.style.setProperty(name, value, 'important');
             // CSSOM canonicalises zero translations and transform origins. Compare
             // read-back values when restoring, not the unnormalised input string.
             entry.written = node.style.getPropertyValue(name);
-            owned.values.set(name, entry);
+            owned.values.get(node).set(name, entry);
+          }
+          function hasVisibleGlyphs(textNode) {
+            const parent = textNode.parentElement;
+            if (!parent) return false;
+            const visibility = getComputedStyle(parent).visibility;
+            if (visibility === 'hidden' || visibility === 'collapse') return false;
+            const range = document.createRange();
+            range.selectNodeContents(textNode);
+            return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+          }
+          function previewStylePaintsBox(style) {
+            const transparent = colour => colour === 'transparent' || /rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(colour);
+            if (!transparent(style.backgroundColor) || style.backgroundImage !== 'none' ||
+                style.boxShadow !== 'none' || (style.backdropFilter && style.backdropFilter !== 'none') ||
+                (style.borderImageSource && style.borderImageSource !== 'none')) return true;
+            for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+              if (parseFloat(style[`border${side}Width`]) > 0 && style[`border${side}Style`] !== 'none' &&
+                  !transparent(style[`border${side}Color`])) return true;
+            }
+            if (style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0 &&
+                !transparent(style.outlineColor)) return true;
+            return false;
+          }
+          function paintsPreviewBox(element) {
+            return previewStylePaintsBox(getComputedStyle(element));
+          }
+          function hasPaintedPreviewPseudo(element) {
+            return ['::before', '::after'].some(pseudo => {
+              const decoration = getComputedStyle(element, pseudo);
+              if (decoration.display === 'none' || decoration.visibility === 'hidden' ||
+                  decoration.visibility === 'collapse' || decoration.content === 'none' ||
+                  decoration.content === 'normal') return false;
+              // Generated boxes have no DOM rectangle; their paint can extend beyond
+              // their parent's bounds. Empty, nonpainting native helpers are harmless.
+              return previewStylePaintsBox(decoration) || (decoration.content !== '""' && decoration.content !== "''");
+            });
+          }
+          function hasUnsupportedPreviewTransform(style) {
+            if ((style.clipPath && style.clipPath !== 'none') || (style.rotate && style.rotate !== 'none')) return true;
+            if (style.scale && style.scale !== 'none') {
+              const scales = style.scale.trim().split(/\s+/);
+              if (scales.length > 2 || scales.some(value => !Number.isFinite(parseFloat(value)) || parseFloat(value) <= 0)) return true;
+            }
+            if (style.transform && style.transform !== 'none') {
+              try {
+                const matrix = new DOMMatrixReadOnly(style.transform);
+                if (!matrix.is2D || matrix.a <= 0 || matrix.d <= 0 || Math.abs(matrix.b) > 0.0001 || Math.abs(matrix.c) > 0.0001) return true;
+              } catch { return true; }
+            }
+            return false;
+          }
+          // Check hint glyphs against clips inside the tooltip itself. A translated
+          // or rescaled tooltip cannot escape an internal clip; if the script would
+          // newly hide a previously visible hint, restore YouTube's presentation.
+          function hintFitsInternalClips(textNode, root) {
+            const range = document.createRange();
+            range.selectNodeContents(textNode);
+            const rects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+            if (!rects.length) return false;
+            for (let ancestor = textNode.parentElement; ancestor; ancestor = ancestor.parentElement) {
+              const style = getComputedStyle(ancestor);
+              if (hasUnsupportedPreviewTransform(style)) return null;
+              const clipX = /^(hidden|clip|auto|scroll)$/.test(style.overflowX);
+              const clipY = /^(hidden|clip|auto|scroll)$/.test(style.overflowY);
+              if (clipX || clipY) {
+                const rect = ancestor.getBoundingClientRect();
+                const scaleX = rect.width / ancestor.offsetWidth, scaleY = rect.height / ancestor.offsetHeight;
+                if (!(scaleX > 0 && scaleY > 0)) return null;
+                const left = rect.left + ancestor.clientLeft * scaleX, top = rect.top + ancestor.clientTop * scaleY;
+                const right = left + ancestor.clientWidth * scaleX, bottom = top + ancestor.clientHeight * scaleY;
+                if (rects.some(glyph => (clipX && (glyph.left < left - 1 || glyph.right > right + 1)) ||
+                    (clipY && (glyph.top < top - 1 || glyph.bottom > bottom + 1)))) return false;
+              }
+              if (ancestor === root) return true;
+            }
+            return null;
           }
           function update() {
             frame = 0;
             observer.disconnect(); restore();
             if (!player?.isConnected || !track?.isConnected || !player.contains(track) ||
                 document.hidden || !track.matches(':hover')) { stop(); return; }
+            let sponsorTransitionActive = false;
             try {
               const previews = [...player.querySelectorAll(previewSelector)].filter(node =>
                 node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden');
-              if (previews.length !== 1) return;
+              if (previews.length !== 1) {
+                textObserver.disconnect(); textRoot = null; sponsorMotion = null; return;
+              }
               const node = previews[0], image = node.querySelector('.ytp-tooltip-bg');
+              if (textRoot !== node) {
+                textObserver.disconnect(); textRoot = node; sponsorMotion = null;
+                textObserver.observe(node, { subtree: true, characterData: true });
+              }
               if (!image || !image.offsetWidth || !node.offsetWidth || !node.offsetHeight) return;
+              // Native and extension chapter descriptions can add passive text to the
+              // native wrapper. Keep that text bounded and measured rather than
+              // requiring every description to use a particular class name.
+              const labelSelector = '.ytp-tooltip-text, .ytp-tooltip-title, .ytp-tooltip-edu, .ytp-tooltip-progress-bar-pill-time-stamp, .ytp-tooltip-progress-bar-pill-title';
+              const wrapperSelector = '.ytp-tooltip-text-wrapper';
+              const unsafeSelector = 'a, button, input, textarea, select, form, label, details, summary, img, picture, object, embed, video, audio, iframe, canvas, [role="button"], [role="link"], [role="checkbox"], [role="switch"], [role="slider"], [role="combobox"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="textbox"], [role="spinbutton"], [role="radio"], [role="tab"], [role="treeitem"], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])';
+              const labels = [], wrappers = [], unknownText = [], textElements = new Set(), textNodes = new Set(), wrapperTextBoxes = new Set(), decorations = new Set();
+              const walker = document.createTreeWalker(node, NodeFilter.SHOW_ALL);
+              let visited = 0, textLength = 0;
+              while (walker.nextNode()) {
+                if (++visited > 128) return;
+                const child = walker.currentNode;
+                if (child.nodeType === Node.ELEMENT_NODE && child.matches(unsafeSelector)) return;
+                if (child.nodeType === Node.ELEMENT_NODE && child.localName === 'svg') {
+                  if (!child.closest('.ytp-tooltip-edu')) return;
+                  if (getComputedStyle(child).visibility !== 'hidden') decorations.add(child);
+                }
+                if (child.nodeType === Node.ELEMENT_NODE && child.matches(wrapperSelector)) wrappers.push(child);
+                if (child.nodeType === Node.ELEMENT_NODE && child.matches(labelSelector)) {
+                  const visibility = getComputedStyle(child).visibility;
+                  if (visibility !== 'hidden' && visibility !== 'collapse') labels.push(child);
+                  if (labels.length > 16) return;
+                } else if (child.nodeType === Node.TEXT_NODE) {
+                  textLength += child.length;
+                  if (textLength > 2048) return;
+                  if (!child.textContent.trim()) continue;
+                  const textLabel = child.parentElement?.closest(labelSelector);
+                  if (!hasVisibleGlyphs(child)) continue;
+                  if (!textLabel || !node.contains(textLabel)) unknownText.push(child);
+                  textNodes.add(child); textElements.add(child.parentElement);
+                  if (textNodes.size > 64 || textElements.size > 64) return;
+                }
+              }
+              if (!labels.length) return;
+              const nativeWrapper = wrappers.length === 1 ? wrappers[0] : null;
+              for (const textNode of unknownText) {
+                if (!nativeWrapper || !nativeWrapper.contains(textNode)) return;
+              }
+              for (const textNode of textNodes) {
+                for (let element = textNode.parentElement; element && element !== node; element = element.parentElement) {
+                  wrapperTextBoxes.add(element);
+                  if (element === nativeWrapper) break;
+                }
+              }
+              const hintNodes = [...textNodes].filter(text => text.parentElement?.closest('.ytp-tooltip-edu'));
+              const hintWasUnclipped = hintNodes.map(text => hintFitsInternalClips(text, node));
+              if (hintWasUnclipped.includes(null)) return;
               const nativeStyle = getComputedStyle(node);
-              // Do not compete with a new native animation or another extension's
-              // transforms; unknown preview layouts retain YouTube's presentation.
-              if (nativeStyle.transform !== 'none' || nativeStyle.scale !== 'none' || nativeStyle.translate !== 'none') return;
+              // SponsorBlock shifts its category tooltip upwards with a CSS transform.
+              // Accept only its known marker and a pure vertical translation: leave
+              // every other transform, including inline ownership, under native control.
+              let sponsorOffsetY = 0;
+              if (nativeStyle.scale !== 'none' || nativeStyle.translate !== 'none' ||
+                  (nativeStyle.rotate && nativeStyle.rotate !== 'none')) return;
+              const sponsorVisible = node.classList.contains('sponsorCategoryTooltipVisible');
+              if (nativeStyle.transform !== 'none' || sponsorVisible) {
+                if (node.style.getPropertyValue('transform')) return;
+                try {
+                  const matrix = new DOMMatrixReadOnly(nativeStyle.transform === 'none' ? undefined : nativeStyle.transform);
+                  const near = (value, target) => Number.isFinite(value) && Math.abs(value - target) < 0.0001;
+                  if (!matrix.is2D || !near(matrix.a, 1) || !near(matrix.b, 0) ||
+                      !near(matrix.c, 0) || !near(matrix.d, 1) || !near(matrix.e, 0) ||
+                      !Number.isFinite(matrix.f) || matrix.f > 0) return;
+                  const em = parseFloat(nativeStyle.fontSize);
+                  const two = node.classList.contains('sponsorTwoTooltips');
+                  const original = node.classList.contains('sponsorHasOriginalTooltip');
+                  const big = Boolean(node.closest('.ytp-big-mode'));
+                  const units = big ? (two ? 4 : 2) : 1 + Number(two) + Number(original);
+                  if (!(em > 0)) return;
+                  const target = sponsorVisible ? -units * em : 0;
+                  // CSS transitions expose their resolved start and end keyframes.
+                  // Accept an intermediate position only when the target matches
+                  // SponsorBlock and its start is a documented offset or lies within
+                  // a previously witnessed transition on this same tooltip. This
+                  // also handles reversal before the transition reaches its endpoint.
+                  if (Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
+                    const transitions = node.getAnimations?.().filter(animation =>
+                      animation.transitionProperty === 'transform' && animation.playState === 'running' &&
+                      animation.effect?.target === node) || [];
+                    // The class mutation can be observed one frame before the
+                    // browser creates its transition. At the untouched zero offset,
+                    // retain the measured layout for at most one frame and retry.
+                    if (!transitions.length && sponsorVisible && Math.abs(matrix.f) <= 0.05 &&
+                        !(sponsorMotion?.node === node && sponsorMotion.pending)) {
+                      sponsorMotion = { node, low: 0, high: 0, pending: true };
+                      sponsorTransitionActive = true;
+                    } else {
+                      if (transitions.length !== 1) return;
+                      const animation = transitions[0], timing = animation.effect.getComputedTiming();
+                      // Do not run a frame loop indefinitely for an unrecognised or
+                      // unusually long animation. Ordinary player transitions are short.
+                      if (!Number.isFinite(timing.endTime) || timing.endTime > 2000) return;
+                      const keyframes = transitions[0].effect.getKeyframes();
+                      if (keyframes.length !== 2) return;
+                      const readOffset = value => {
+                        const part = new DOMMatrixReadOnly(!value || value === 'none' ? undefined : value);
+                        if (!part.is2D || !near(part.a, 1) || !near(part.b, 0) || !near(part.c, 0) ||
+                            !near(part.d, 1) || !near(part.e, 0) || !Number.isFinite(part.f)) throw new Error('Unsupported tooltip transition');
+                        return part.f;
+                      };
+                      const start = readOffset(keyframes[0].transform), end = readOffset(keyframes[1].transform);
+                      const witnessed = sponsorMotion?.node === node && start >= sponsorMotion.low - 0.05 &&
+                        start <= sponsorMotion.high + 0.05;
+                      // When observation starts during an existing SponsorBlock
+                      // transition, its source can be another documented offset.
+                      // Without a prior witness, require the current SponsorBlock
+                      // marker and an exact documented source; never infer an exit.
+                      const documentedStart = sponsorVisible && (Math.abs(start) <= 0.05 ||
+                        (big ? [2, 4] : [1, 2, 3]).some(units => Math.abs(start + units * em) <= 0.05));
+                      if (Math.abs(end - target) > 0.05 || (!witnessed && !documentedStart) ||
+                          matrix.f < Math.min(start, end) - 0.05 || matrix.f > Math.max(start, end) + 0.05) return;
+                      // A continuous series of valid reversals is not one long
+                      // transition. Re-arm only for a verified new destination;
+                      // recreated animations with the same target stay bounded.
+                      const previous = sponsorMotion?.node === node ? sponsorMotion : null;
+                      const deadline = previous?.deadline && Math.abs(previous.end - end) <= 0.05
+                        ? previous.deadline : performance.now() + 2000;
+                      if (performance.now() > deadline) return;
+                      // A reversed CSS transition can be re-created with a slightly
+                      // different intermediate start as the browser advances a frame.
+                      // Retain the previously validated envelope instead of narrowing
+                      // it on each recalculation; never accept a start outside it.
+                      sponsorMotion = { node,
+                        low: Math.min(start, end, witnessed ? sponsorMotion.low : start),
+                        high: Math.max(start, end, witnessed ? sponsorMotion.high : start), animation, end, deadline };
+                      sponsorTransitionActive = true;
+                    }
+                  } else if (sponsorVisible) {
+                    // SponsorBlock's published stylesheet uses this exact offset.
+                    sponsorMotion = { node, low: target, high: target };
+                  } else {
+                    sponsorMotion = null;
+                  }
+                  sponsorOffsetY = matrix.f;
+                } catch { return; }
+              } else sponsorMotion = null;
               const box = player.getBoundingClientRect(), native = node.getBoundingClientRect();
               const trackBox = track.getBoundingClientRect();
+              const nativeImage = image.getBoundingClientRect();
+              if (nativeImage.left < native.left - 1 || nativeImage.right > native.right + 1 ||
+                  nativeImage.top < native.top - 1 || nativeImage.bottom > native.bottom + 1) return;
+              // Transparent native title containers may span the image even when the
+              // glyphs are safely below it. Measure real text, plus boxes that paint a
+              // backing/border/decoration, not empty transparent container geometry.
+              const boxCandidates = [...new Set([...labels, ...wrapperTextBoxes])];
+              if (boxCandidates.some(hasPaintedPreviewPseudo)) return;
+              const paintedBoxes = boxCandidates.filter(paintsPreviewBox);
+              const visualRects = () => {
+                const rectangles = [...paintedBoxes, ...decorations].map(element => element.getBoundingClientRect());
+                for (const textNode of textNodes) {
+                  const range = document.createRange(); range.selectNodeContents(textNode);
+                  rectangles.push(...range.getClientRects());
+                }
+                return rectangles.filter(rect => rect.width && rect.height);
+              };
+              const labelBoxes = visualRects();
+              const sponsorLayout = sponsorVisible || Boolean(sponsorOffsetY);
+              const sponsorTexts = sponsorLayout ? [...textNodes].filter(text =>
+                text.parentElement?.closest('.sponsorCategoryTooltip')) : [];
+              const textRect = text => {
+                const range = document.createRange(); range.selectNodeContents(text);
+                return range.getBoundingClientRect();
+              };
+              const textOverlaps = (a, b) => a.width && a.height && b.width && b.height &&
+                a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+              const nativeTextRects = sponsorTexts.length ? new Map([...textNodes].map(text => [text, textRect(text)])) : null;
+              const extraLeft = Math.max(0, ...labelBoxes.map(rect => native.left - rect.left));
+              const extraRight = Math.max(0, ...labelBoxes.map(rect => rect.right - native.right));
+              const extraTop = Math.max(0, ...labelBoxes.map(rect => native.top - rect.top));
+              const extraBottom = Math.max(0, ...labelBoxes.map(rect => rect.bottom - native.bottom));
               const sx = box.width / player.offsetWidth, sy = box.height / player.offsetHeight;
               if (!(sx > 0 && sy > 0) || !native.width || !native.height) return;
+              // A tooltip can be clipped by a player-internal scrolling/overflow
+              // ancestor even when its rectangles are within the player. Intersect
+              // the visible client area on each clipping axis before positioning.
+              let safeLeft = Math.max(box.left, 0), safeRight = Math.min(box.right, innerWidth);
+              let safeTop = Math.max(box.top, 0), safeBottom = Math.min(trackBox.top, box.bottom, innerHeight);
+              for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+                const style = getComputedStyle(ancestor);
+                // A non-rectangular clip or independent rotation cannot be bounded
+                // by the axis-aligned client rectangle used below.
+                if (hasUnsupportedPreviewTransform(style)) return;
+                if (ancestor === player) break;
+                if (sponsorLayout) {
+                  // Compensation uses the player's rendered scale. A separately
+                  // scaled tooltip ancestor changes that coordinate space.
+                  const scales = style.scale === 'none' ? [1] : style.scale.trim().split(/\s+/).map(Number);
+                  const zoom = style.zoom;
+                  if (scales.some(value => !Number.isFinite(value) || Math.abs(value - 1) > 0.0001) ||
+                      (zoom && zoom !== 'normal' && zoom !== '1' && zoom !== '100%')) return;
+                  if (style.transform !== 'none') {
+                    const matrix = new DOMMatrixReadOnly(style.transform);
+                    if (Math.abs(matrix.a - 1) > 0.0001 || Math.abs(matrix.d - 1) > 0.0001) return;
+                  }
+                }
+                const clipX = /^(hidden|clip|auto|scroll)$/.test(style.overflowX);
+                const clipY = /^(hidden|clip|auto|scroll)$/.test(style.overflowY);
+                if (!clipX && !clipY) continue;
+                // Axis-aligned client boxes cannot safely describe rotated or 3-D
+                // clips, so leave those unfamiliar layouts under native control.
+                const rect = ancestor.getBoundingClientRect();
+                const scaleX = rect.width / ancestor.offsetWidth, scaleY = rect.height / ancestor.offsetHeight;
+                if (!(scaleX > 0 && scaleY > 0)) return;
+                const left = rect.left + ancestor.clientLeft * scaleX;
+                const top = rect.top + ancestor.clientTop * scaleY;
+                if (clipX) { safeLeft = Math.max(safeLeft, left); safeRight = Math.min(safeRight, left + ancestor.clientWidth * scaleX); }
+                if (clipY) { safeTop = Math.max(safeTop, top); safeBottom = Math.min(safeBottom, top + ancestor.clientHeight * scaleY); }
+              }
               // Work in rendered CSS pixels, not screen.width or devicePixelRatio.
               // This also accommodates the transformed scroll miniplayer.
-              const availableWidth = Math.min(box.right, innerWidth) - Math.max(box.left, 0) - 16;
-              const availableHeight = Math.min(trackBox.top, box.bottom, innerHeight) - Math.max(box.top, 0) - 16;
+              const availableWidth = safeRight - safeLeft - 16;
+              // Leave breathing room between a large preview and the seek bar.
+              const availableHeight = safeBottom - safeTop - 32;
               if (availableWidth < 120 || availableHeight < 80) return;
               const floating = player.parentElement === document.body &&
                 document.body.classList.contains('ytsmp-scroll-miniplayer-active') &&
@@ -11982,23 +12522,166 @@
                 mode === 'auto' ? Math.max(192, Math.min(480, box.width * .2)) : manualWidth;
               const previewHeight = floating ? Math.min(availableHeight, box.height * .45) : availableHeight;
               const scale = Math.min(desired / (image.offsetWidth * sx),
-                availableWidth / native.width, previewHeight / native.height);
+                availableWidth / (native.width + extraLeft + extraRight),
+                previewHeight / (native.height + extraTop + extraBottom));
               if (!Number.isFinite(scale) || scale <= 0) return;
+              // Only style an independently identifiable timestamp: some native
+              // layouts combine the time and chapter in one text node. In that case
+              // leave the combined label alone rather than restyling the chapter.
+              const timestampSelector = '.ytp-tooltip-text, .ytp-tooltip-progress-bar-pill-time-stamp';
+              const timestamps = new Set();
+              for (const element of textElements) {
+                const timestamp = element.closest(timestampSelector);
+                if (timestamp && node.contains(timestamp) &&
+                    /^\s*(?:\d{1,3}:)?\d{1,2}:\d{2}\s*$/.test(timestamp.textContent)) timestamps.add(timestamp);
+              }
+              const textMetrics = [], sponsorTextOffsets = [];
+              // Keep the time and chapter readable as the visible player grows,
+              // without letting text grow without bound on larger displays. The
+              // native education hint and unrelated labels retain their own size.
+              const contentSelector = `${timestampSelector}, .ytp-tooltip-title, .ytp-tooltip-progress-bar-pill-title`;
+              const contentBoost = 1.15 + .15 * Math.max(0, Math.min(1, (box.width - 400) / 1200));
+              for (const element of textElements) {
+                const contentLabel = element.closest(contentSelector);
+                const isContent = Boolean(contentLabel && node.contains(contentLabel));
+                if (scale <= 1 && !isContent) continue;
+                const style = getComputedStyle(element);
+                const fontSize = parseFloat(style.fontSize), lineHeight = parseFloat(style.lineHeight);
+                const factor = (isContent ? contentBoost : 1) / Math.max(1, scale);
+                if (sponsorLayout && style.transform !== 'none') {
+                  // SponsorBlock uses em-based translations on the hint and, in big
+                  // mode, the timestamp. A font-size adjustment would change those
+                  // offsets; preserve the original offset using our own translate.
+                  const hint = element.matches('.ytp-tooltip-edu');
+                  const bigTime = element.matches('.ytp-tooltip-text') && node.closest('.ytp-big-mode');
+                  const units = hint ? -(node.classList.contains('sponsorTwoTooltips') ? 2 : 1) : bigTime ? 0.75 : null;
+                  if (units === null || style.translate !== 'none' || !(fontSize > 0) ||
+                      element.style.getPropertyValue('transform')) return;
+                  try {
+                    const matrix = new DOMMatrixReadOnly(style.transform);
+                    if (!matrix.is2D || Math.abs(matrix.a - 1) > 0.0001 || Math.abs(matrix.d - 1) > 0.0001 ||
+                        Math.abs(matrix.b) > 0.0001 || Math.abs(matrix.c) > 0.0001 || Math.abs(matrix.e) > 0.0001 ||
+                        Math.abs(matrix.f - units * fontSize) > 0.05) return;
+                    sponsorTextOffsets.push([element, 'translate', `0px ${matrix.f * (1 - factor)}px`]);
+                  } catch { return; }
+                }
+                if (Number.isFinite(fontSize) && fontSize > 0) textMetrics.push([element, 'font-size', `${fontSize * factor}px`]);
+                if (Number.isFinite(lineHeight) && lineHeight > 0) textMetrics.push([element, 'line-height', `${lineHeight * factor}px`]);
+              }
               const left = native.left + native.width * (1 - scale) / 2;
               const top = native.bottom - native.height * scale;
-              const minLeft = Math.max(box.left, 0) + 8;
-              const maxLeft = Math.min(box.right, innerWidth) - native.width * scale - 8;
-              const minTop = Math.max(box.top, 0) + 8;
-              const maxTop = Math.min(trackBox.top, box.bottom, innerHeight) - native.height * scale - 8;
+              const minLeft = safeLeft + 8 + extraLeft * scale;
+              const maxLeft = safeRight - (native.width + extraRight) * scale - 8;
+              const minTop = safeTop + 8 + extraTop * scale;
+              const maxTop = safeBottom - (native.height + extraBottom) * scale - 24;
               const dx = (Math.max(minLeft, Math.min(left, maxLeft)) - left) / sx;
-              const dy = (Math.max(minTop, Math.min(top, maxTop)) - top) / sy;
+              // Individual scale is applied before the existing transform. Without
+              // compensation it would also scale SponsorBlock's vertical offset.
+              const dy = (Math.max(minTop, Math.min(top, maxTop)) - top) / sy -
+                (scale - 1) * sponsorOffsetY;
               write(node, 'transform-origin', '50% 100%');
               write(node, 'scale', String(scale));
               write(node, 'translate', `${dx}px ${dy}px`);
-            } finally { observe(); }
+              for (const [element, property, value] of textMetrics) write(element, property, value);
+              for (const [element, property, value] of sponsorTextOffsets) write(element, property, value);
+              if (!window.matchMedia?.('(forced-colors: active)')?.matches) {
+                // YouTube owns the rounded backing, not the text span. Only adjust a
+                // recognised pill with an existing translucent solid background;
+                // unfamiliar, opaque or image-backed layouts remain native.
+                const styledPills = new Set();
+                for (const timestamp of timestamps) {
+                  const pill = timestamp.closest('.ytp-tooltip-bottom-text, .ytp-tooltip-progress-bar-pill');
+                  if (!pill || !node.contains(pill) || styledPills.has(pill)) continue;
+                  const style = getComputedStyle(pill);
+                  const colour = style.backgroundColor.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/);
+                  const alpha = colour && Number(colour[4]);
+                  if (!colour || !(alpha > 0 && alpha < 1) || style.backgroundImage !== 'none' ||
+                      !(parseFloat(style.borderTopLeftRadius) > 0)) continue;
+                  write(pill, 'background-color', `rgba(${colour[1]}, ${colour[2]}, ${colour[3]}, ${Math.min(1, alpha + 0.15)})`);
+                  styledPills.add(pill);
+                }
+                // Apply to text-bearing children as well as the native labels: a
+                // descendant's own shadow otherwise overrides inherited readability.
+                // This is text only; do not introduce a rectangular background.
+                const shadowTargets = new Set([
+                  ...timestamps,
+                  ...labels.filter(label => label.matches('.ytp-tooltip-edu')),
+                ]);
+                for (const element of textElements) {
+                  const timeLabel = element.closest(timestampSelector);
+                  // Some layouts put a timestamp and chapter in one text node. A
+                  // text-only shadow is safe for the entire combined run; styling
+                  // a separate chapter element is unnecessary and is avoided.
+                  const combinedTime = timeLabel && [...element.childNodes].some(child =>
+                    child.nodeType === Node.TEXT_NODE && /^\s*(?:\d{1,3}:)?\d{1,2}:\d{2}(?:\s|$)/.test(child.textContent));
+                  if (timestamps.has(timeLabel) || combinedTime ||
+                      element.closest('.ytp-tooltip-edu')) shadowTargets.add(element);
+                }
+                // CSS shadow lengths are transformed along with the preview. Keep
+                // the rendered shadow broadly consistent across player/preview sizes.
+                const shadowScale = Math.max(0.5, Math.min(4, scale * Math.min(sx, sy)));
+                const shadowLength = value => `${Number((value / shadowScale).toFixed(3))}px`;
+                const shadow = `0 ${shadowLength(1)} ${shadowLength(2)} rgba(0, 0, 0, 1), ` +
+                  `0 0 ${shadowLength(3)} rgba(0, 0, 0, 1), 0 0 ${shadowLength(5)} rgba(0, 0, 0, 0.9)`;
+                for (const element of shadowTargets) {
+                  write(element, 'text-shadow', shadow);
+                }
+              }
+              if (hintNodes.some((text, index) => hintWasUnclipped[index] && hintFitsInternalClips(text, node) !== true)) {
+                restore(); return;
+              }
+              // Font metrics may change wrapping and out-of-flow labels can extend
+              // beyond the tooltip box. Refuse this override if the final geometry
+              // clips a known label or puts it over the storyboard or seek bar.
+              const imageBox = image.getBoundingClientRect();
+              if (imageBox.left < safeLeft || imageBox.right > safeRight || imageBox.top < safeTop || imageBox.bottom > safeBottom) {
+                restore(); return;
+              }
+              const labelRects = visualRects();
+              if (nativeTextRects) {
+                const finalTextRects = new Map([...textNodes].map(text => [text, textRect(text)]));
+                for (const sponsor of sponsorTexts) {
+                  for (const other of textNodes) {
+                    if (sponsor === other || sponsor.parentElement === other.parentElement) continue;
+                    if (!textOverlaps(nativeTextRects.get(sponsor), nativeTextRects.get(other)) &&
+                        textOverlaps(finalTextRects.get(sponsor), finalTextRects.get(other))) { restore(); return; }
+                  }
+                }
+              }
+              if (labelRects.some(rect => {
+                if (!rect.width || !rect.height) return false;
+                const outside = rect.left < safeLeft || rect.right > safeRight || rect.top < safeTop || rect.bottom > safeBottom;
+                const overlapsImage = rect.left < imageBox.right - 1 && rect.right > imageBox.left + 1 &&
+                  rect.top < imageBox.bottom - 1 && rect.bottom > imageBox.top + 1;
+                return outside || overlapsImage;
+              })) restore();
+            } finally { observe(); if (sponsorTransitionActive) schedule(); }
           }
           function schedule() {
             if (player && !frame) frame = requestAnimationFrame(update);
+          }
+          function activateTrack(nextPlayer, nextTrack) {
+            if (player === nextPlayer && track === nextTrack) return;
+            stop(); resumeCandidate = null; player = nextPlayer; track = nextTrack; observe();
+            for (const name of previewMotionEndEvents) player.addEventListener(name, onPreviewMotionEnd, true);
+            if (typeof ResizeObserver === 'function') {
+              resizeObserver = new ResizeObserver(schedule); resizeObserver.observe(player);
+            }
+            suite.addWindowListener('resize', schedule, { passive: true }); schedule();
+          }
+          function suspendHover() {
+            if (player && track) resumeCandidate = { player, track };
+            stop();
+          }
+          function resumeHover() {
+            if (document.hidden || suspended || !isWatchPath() || !document.hasFocus()) return;
+            const candidate = resumeCandidate;
+            resumeCandidate = null;
+            if (!candidate?.player.isConnected || !candidate.track.isConnected ||
+                !candidate.player.contains(candidate.track) ||
+                candidate.player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') ||
+                !candidate.track.getClientRects().length || !candidate.track.matches(':hover')) return;
+            activateTrack(candidate.player, candidate.track);
           }
           document.addEventListener('pointerover', event => {
             if (suspended || !isWatchPath()) return;
@@ -12006,22 +12689,19 @@
             const nextPlayer = hit?.closest('#movie_player');
             if (!nextPlayer || nextPlayer.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer')) return;
             const nextTrack = hit.closest('.ytp-progress-bar-container') || hit;
-            if (track === nextTrack) return;
-            stop(); player = nextPlayer; track = nextTrack; observe();
-            if (typeof ResizeObserver === 'function') {
-              resizeObserver = new ResizeObserver(schedule); resizeObserver.observe(player);
-            }
-            suite.addWindowListener('resize', schedule, { passive: true }); schedule();
+            activateTrack(nextPlayer, nextTrack);
           }, true);
           document.addEventListener('pointerout', event => {
             if (track && track.contains(event.target) && !track.contains(event.relatedTarget)) stop();
+            if (resumeCandidate?.track.contains(event.target) && !resumeCandidate.track.contains(event.relatedTarget)) resumeCandidate = null;
           }, true);
-          document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
+          document.addEventListener('visibilitychange', () => { if (document.hidden) suspendHover(); else resumeHover(); });
           document.addEventListener('fullscreenchange', schedule, true);
-          suite.addWindowListener('blur', stop);
-          suite.addWindowListener('yt-navigate-start', () => { suspended = true; stop(); }, true);
+          suite.addWindowListener('blur', suspendHover);
+          suite.addWindowListener('focus', resumeHover);
+          suite.addWindowListener('yt-navigate-start', () => { suspended = true; resumeCandidate = null; stop(); }, true);
           suite.addWindowListener('yt-navigate-finish', () => { suspended = false; }, true);
-          suite.addWindowListener('pagehide', () => { suspended = true; stop(); }, true);
+          suite.addWindowListener('pagehide', () => { suspended = true; resumeCandidate = null; stop(); }, true);
           suite.addWindowListener('pageshow', () => { suspended = false; }, true);
         }
 
@@ -12154,7 +12834,7 @@
 
   suite.registerModule(
     "scrollMiniplayer",
-    "Scroll Miniplayer v5.27",
+    "Scroll Miniplayer v5.29",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -14215,12 +14895,19 @@
         }, true);
 
         syncRouteState();
+        // The settings panel must compare the saved corner with the value actually
+        // in use, rather than assuming every storage change requires a reload.
+        // Expose this only after successful initialisation; the standalone script
+        // does not have the master's private suite object.
+        if (typeof suite !== "undefined") {
+          suite.getAppliedScrollMiniplayerCorner = () => currentCorner;
+        }
     },
   );
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.61",
+    "Watch Layout Cleaner v1.63",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -15356,19 +16043,40 @@
                 finish("The queue changed; no item was moved.");
                 return;
               }
-              const index = queue.videos.findIndex(video => video.videoId === operation.videoId);
-              if (index < 0) return;
               const currentIndex = queue.currentIndex;
-              if (index === currentIndex || index === currentIndex + 1) { finish("Playing next in queue"); return; }
-              if (operation.committed) return; // Wait for native data to confirm, never commit twice.
+              const next = queue.videos[currentIndex + 1];
+              if (operation.committed) {
+                // A duplicate video may have appeared next independently while the
+                // native move was pending. Confirm the specific committed queue
+                // entry, not merely another occurrence with the same video ID.
+                if (next?.videoId === operation.videoId && next.playlistSetVideoId === operation.entryId) {
+                  finish("Playing next in queue");
+                }
+                return; // Wait for native data to confirm, never commit twice.
+              }
+              if (next?.videoId === operation.videoId) { finish("Playing next in queue"); return; }
+              const matches = queue.videos.flatMap((video, index) => video.videoId === operation.videoId ? [index] : []);
+              if (!matches.length) return;
+              if (matches.length > 1) {
+                finish("This video appears more than once in the queue. Please reorder it manually.");
+                return;
+              }
+              const index = matches[0];
+              if (index === currentIndex) { finish("Playing next in queue"); return; }
               const binding = reorderRows(queue);
               if (!binding) return;
+              const entryId = queue.videos[index].playlistSetVideoId;
+              if (!entryId || queue.videos.filter(video => video.playlistSetVideoId === entryId).length !== 1) {
+                finish("Could not identify the queue entry. Please reorder it manually.");
+                return;
+              }
               const { items, rows } = binding;
               const row = rows[index];
               // This is the same DOM move + controller commit used by native dragging.
               // Never change the queue model, call a private network API or reload playback.
               items.insertBefore(row, rows[currentIndex].nextSibling);
               operation.committed = true;
+              operation.entryId = entryId;
               try {
                 queue.owner.handleDrop({ currDragItem: row });
                 scheduleMove();
@@ -16747,7 +17455,7 @@
 
   suite.registerModule(
     "suiteSettings",
-    "Suite Settings v1.42",
+    "Suite Settings v1.49",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -16853,7 +17561,7 @@
             liveChatButton: 'Show a playback-bar button for native live chat when available, including supported fullscreen views. Chat visibility is temporary for the current video. This button preference applies after reload.',
             hideFullscreenQuickActions: 'Hide the fullscreen Likes, Dislikes, Comments, Share and More action strip. The main playback controls are unchanged. Off by default; applies after reload.',
             timeDisplayMode: 'Choose elapsed or remaining time beside the total duration using YouTube’s native timer toggle. Live streams, adverts and unsupported timers are unchanged. Applies after reload.',
-            timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. Applies after reload.',
+            timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. The preview may briefly flicker or resize near SponsorBlock segments or chapter boundaries. Applies after reload.',
             theatreMode: 'Start watch videos in YouTube’s theatre view.',
             wheelVolume: 'Hold the right mouse button and scroll over the player to adjust volume.',
             wheelStep: 'Choose the volume change for each wheel step during the right-button gesture.',
@@ -16891,8 +17599,33 @@
 
           let supportPanel = null;
           const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
+          const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
+          const searchInput = document.createElement('input');
+          searchInput.id = 'ytms-settings-search'; searchInput.type = 'search'; searchInput.maxLength = 200;
+          searchInput.placeholder = 'Search settings'; searchInput.autocomplete = 'off';
+          searchInput.setAttribute('aria-label', 'Search all Suite settings');
+          searchInput.setAttribute('aria-controls', 'ytms-settings-search-results');
+          const searchClear = document.createElement('button'); searchClear.type = 'button';
+          searchClear.className = 'settings-search-clear'; searchClear.textContent = 'Clear';
+          searchClear.setAttribute('aria-label', 'Clear settings search'); searchClear.hidden = true;
+          searchBar.append(searchInput, searchClear);
+          dialog.querySelector('nav').before(searchBar);
+          const searchResults = document.createElement('section');
+          searchResults.id = 'ytms-settings-search-results'; searchResults.hidden = true;
+          searchResults.setAttribute('aria-label', 'Settings search results');
+          const searchStatus = document.createElement('p'); searchStatus.id = 'ytms-settings-search-status';
+          searchStatus.setAttribute('role', 'status'); searchStatus.setAttribute('aria-live', 'polite');
+          const searchList = document.createElement('div'); searchList.className = 'settings-search-list';
+          searchResults.append(searchStatus, searchList); dialog.querySelector('.content').append(searchResults);
+          let searchIndex = [];
+          function resetSearch() {
+            searchInput.value = ''; searchClear.hidden = true; searchResults.hidden = true;
+            searchList.replaceChildren(); searchStatus.textContent = '';
+            dialog.querySelector('nav').hidden = false;
+          }
           function selectTab(id, focus = false) {
             closePicker(false);
+            resetSearch();
             currentTab = id;
             $('restore-section-defaults').disabled = ['channels', 'extensions', 'support', 'credits'].includes(id);
             for (const tab of tabIds) {
@@ -16951,7 +17684,7 @@
           ageDescription.textContent = 'Search and sort saved channels, or edit their upload-age limits. Channel filters are saved separately from other settings.';
           ageLabel.append(ageDescription);
           const channelNote = document.createElement('p'); channelNote.className = 'section-note';
-          channelNote.textContent = 'These are this browser profile’s Suite filters. YouTube’s own Don’t recommend channel choices are separate. Edits and removals apply only after Save filters.';
+          channelNote.textContent = 'These are this browser profile’s Suite filters. YouTube’s own Don’t recommend channel choices are separate. Edits and removals apply only after Save filters. Channel filtering overlaps with BlockTube on supported feeds, but BlockTube also offers other filters; its existing rules are not transferred.';
           const channelHelp = document.createElement('a'); channelHelp.className = 'channel-filter-help';
           channelHelp.textContent = 'Manage YouTube’s own recommendation controls';
           channelHelp.href = 'https://support.google.com/youtube/answer/6342839?hl=en&co=GENIE.Platform%3DDesktop';
@@ -17064,10 +17797,7 @@
           const heading = document.createElement('h3'); heading.textContent = 'YouTube Master Suite';
           const author = document.createElement('p'); author.textContent = 'Created by Citizen';
           const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
-          const github = document.createElement('a'); github.id = 'ytms-credits-github';
-          github.href = 'https://github.com/noswimmingplease'; github.target = '_blank'; github.rel = 'noopener noreferrer';
-          github.textContent = 'noswimmingplease on GitHub';
-          credits.append(logo, heading, author, version, github); $('section-credits').append(credits);
+          credits.append(logo, heading, author, version); $('section-credits').append(credits);
           const normaliseHex = settings.normaliseHex;
           function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
           function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -17088,10 +17818,19 @@
           function primaryActionState() {
             const invalid = draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value));
             const inaccessible = draft.headerSettingsIcon === 'off' && draft.playerSettingsIcon === 'off';
+            // Unlike most preferences, the floating player's corner may already
+            // have been applied live by its control or a storage event. A settings
+            // save on this same page does not apply it; use the actual module value
+            // when available, retaining the startup baseline if it is unavailable.
+            let appliedCorner = settings.initial.corner;
+            try {
+              const currentCorner = suite.getAppliedScrollMiniplayerCorner?.();
+              if (['top-right', 'bottom-right', 'bottom-left', 'top-left'].includes(currentCorner)) appliedCorner = currentCorner;
+            } catch { /* A failed module must not break settings. */ }
             return {
               invalid, inaccessible,
               dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-              pendingReload: !samePreferences(saved, settings.initial),
+              pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner }),
             };
           }
           function updatePrimaryAction() {
@@ -17112,7 +17851,19 @@
           function reconcileStoredPreferences() {
             if (!dialog.open) return true;
             const current = settings.read();
-            if (samePreferences(current, saved)) return !externalConflict;
+            if (samePreferences(current, saved)) {
+              // The corner storage event can arrive after a settings event already
+              // adopted the new saved values. The miniplayer applies that corner on
+              // the later event, so recompute the action even without a saved diff.
+              const previousAction = $('save-preview').dataset.action;
+              const state = updatePrimaryAction();
+              if (!externalConflict && !state.dirty && previousAction !== $('save-preview').dataset.action && !$('settings-status').hidden) {
+                $('settings-status').textContent = state.pendingReload
+                  ? 'Saved changes are waiting for reload. This page still uses its previous settings.'
+                  : 'Saved settings now match the settings applied to this page.';
+              }
+              return !externalConflict;
+            }
             if (externalConflict || primaryActionState().dirty) {
               externalConflict = true; updatePrimaryAction(); showConflictNotice();
               return false;
@@ -17229,7 +17980,7 @@
 
           for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
           dialog.addEventListener('close', () => {
-            closePicker(false); channelEntry = 'settings'; channelManager.reset({ defer: true });
+            closePicker(false); resetSearch(); channelEntry = 'settings'; channelManager.reset({ defer: true });
           });
           dialog.addEventListener('keydown', event => {
             event.stopPropagation();
@@ -17299,6 +18050,93 @@
             },
           });
           $('section-support').append(supportPanel.element);
+          // Search is a local index of static setting labels, not a copy of controls,
+          // saved channel data, diagnostic reports or current setting values.
+          const addSearchEntry = (tab, target, title, description, extras = '') => {
+            searchIndex.push({ tab, target, title, description,
+              text: `${title} ${description} ${extras} ${$(`tab-${tab}`).textContent}`.toLocaleLowerCase() });
+          };
+          addSearchEntry('comments', 'colour-mode', 'Name colours', 'Viewer names, uploader names and creator/pinned badges.', 'colour color preset palette');
+          addSearchEntry('comments', 'palette', 'Palette', 'Theme-adaptive colours for viewer and uploader names.', 'preset');
+          addSearchEntry('comments', 'viewer-hex', 'Viewer name colour', 'Custom colour for viewer names.', 'color hex');
+          addSearchEntry('comments', 'owner-hex', 'Uploader and pinned badge colour', 'Custom colour for uploader names and pinned badges.', 'creator owner color hex');
+          for (const key of ['compactComments', 'hideCommentControls']) {
+            const label = dialog.querySelector(`label[for="ytms-${key}"]`);
+            addSearchEntry('comments', key, label.firstChild.textContent, label.querySelector('.description')?.textContent || '');
+          }
+          for (const [group, rows] of Object.entries(GROUPS)) {
+            for (const [key, label, choices, format] of rows) {
+              addSearchEntry(group, key, label, DESCRIPTIONS[key] || '', choices ? choices.map(format).join(' ') : '');
+            }
+          }
+          addSearchEntry('interface', 'menu-order', 'Video context menu order', menuOrderNote.textContent,
+            Object.values(menuLabels).join(' '));
+          addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
+            'channels block age restrictions');
+          addSearchEntry('support', 'backup-heading', 'Full backup and restore',
+            'Download or import saved settings and channel upload filters.', 'export import');
+          addSearchEntry('support', 'support-heading', 'Troubleshooting',
+            'Review a local module health and video-menu diagnostic report.', 'support diagnostics report');
+          for (const extension of suite.settingsAssets.recommendedExtensions) {
+            addSearchEntry('extensions', `extension-${extension.id}`, extension.name, extension.description, extension.note);
+          }
+          addSearchEntry('credits', 'credits-logo', 'YouTube Master Suite credits', 'Author, version and licence.', 'about');
+          function showSearch() {
+            const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+            searchClear.hidden = !searchInput.value;
+            if (!terms.length) { selectTab(currentTab); return; }
+            closePicker(false);
+            // A selected tab must not point to a hidden panel while results are open.
+            // Tabs return when the query is cleared or a result is chosen.
+            dialog.querySelector('nav').hidden = true;
+            for (const tab of tabIds) $(`section-${tab}`).hidden = true;
+            $('restore-section-defaults').disabled = true;
+            if (channelFooterHost) channelFooterHost.hidden = true;
+            panelFooter.classList.remove('ytms-channels-active');
+            const matches = searchIndex.filter(entry => terms.every(term => entry.text.includes(term)));
+            searchStatus.textContent = matches.length === 0 ? 'No settings found' :
+              matches.length === 1 ? '1 setting found' : `${matches.length} settings found`;
+            searchList.replaceChildren();
+            if (!matches.length) {
+              const empty = document.createElement('p'); empty.className = 'settings-search-empty';
+              empty.textContent = 'No settings found. Try a different search.'; searchList.append(empty);
+            }
+            for (const entry of matches) {
+              const result = document.createElement('button'); result.type = 'button'; result.className = 'settings-search-result';
+              result.dataset.tab = entry.tab; result.dataset.target = entry.target;
+              const title = document.createElement('span'); title.className = 'settings-search-title'; title.textContent = entry.title;
+              const section = document.createElement('span'); section.className = 'settings-search-section';
+              section.textContent = $(`tab-${entry.tab}`).textContent;
+              const description = document.createElement('span'); description.className = 'settings-search-description';
+              description.textContent = entry.description;
+              result.append(title, section, description);
+              result.addEventListener('click', () => {
+                selectTab(entry.tab);
+                let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
+                if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
+                if (entry.target === 'menu-order') target = menuOrderHeading;
+                if (entry.target === 'credits-logo') target = heading;
+                if (entry.tab === 'extensions') target = target?.querySelector('h4') || target;
+                // Custom colour controls are conditional; do not change the user's
+                // draft just to expose one. Take them to the controlling selector.
+                if (!target || target.closest('[hidden]')) target = entry.tab === 'comments' ? $('colour-mode') : $(`tab-${entry.tab}`);
+                if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
+                target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
+              });
+              searchList.append(result);
+            }
+            searchResults.hidden = false; dialog.querySelector('.content').scrollTop = 0;
+          }
+          searchInput.addEventListener('input', event => { event.stopPropagation(); showSearch(); });
+          searchInput.addEventListener('change', event => event.stopPropagation());
+          searchInput.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && searchInput.value) {
+              event.preventDefault(); event.stopPropagation(); selectTab(currentTab); searchInput.focus();
+            } else if (event.key === 'Enter') {
+              event.preventDefault(); searchList.querySelector('button')?.click();
+            }
+          });
+          searchClear.addEventListener('click', () => { selectTab(currentTab); searchInput.focus(); });
           dialog.addEventListener('close', () => supportPanel.close());
           populate(); selectTab('comments');
           return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
@@ -17377,10 +18215,16 @@
         }
 
         function dismissPlayerTooltipOnPointerMove(event) {
-          if (!playerButton?.contains(event.target)) hidePlayerTooltip();
+          if (!playerButton?.contains(event.target) && !hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
         }
         function dismissPlayerTooltipOnPointerOut(event) {
-          if (!event.relatedTarget) hidePlayerTooltip();
+          if (!event.relatedTarget && !hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
+        }
+        function hasPlayerTooltipKeyboardFocus() {
+          return document.activeElement === playerButton && playerButton?.matches(':focus-visible');
+        }
+        function hidePlayerTooltipOnMouseLeave() {
+          if (!hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
         }
         function dismissHiddenPlayerTooltip() {
           if (document.visibilityState === 'hidden') hidePlayerTooltip();
@@ -17456,7 +18300,7 @@
             playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(); });
             playerButton.addEventListener('mouseenter', showPlayerTooltip);
             playerButton.addEventListener('focus', showPlayerTooltip);
-            playerButton.addEventListener('mouseleave', hidePlayerTooltip);
+            playerButton.addEventListener('mouseleave', hidePlayerTooltipOnMouseLeave);
             playerButton.addEventListener('blur', hidePlayerTooltip);
           }
           const anchor = controls.querySelector('#ytppl-video-mirror-button') || controls.querySelector('.ytp-size-button, .ytp-fullscreen-button');

@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.16
+// @version      2.20
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
-// @homepageURL  https://github.com/noswimmingplease/youtube-feed-ui-cleaner
-// @supportURL   https://github.com/noswimmingplease/youtube-feed-ui-cleaner/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-feed-ui-cleaner/main/youtube-feed-ui-cleaner.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-feed-ui-cleaner/main/youtube-feed-ui-cleaner.user.js
+// @updateURL    none
+// @downloadURL  none
 // @match        https://www.youtube.com/*
 // @run-at       document-idle
 // @grant        GM_addStyle
@@ -132,6 +130,11 @@
   const FILTER_REVEAL_ATTRIBUTE = 'data-yt-master-show-filtered';
   const FILTER_TOGGLE_ID = 'yt-master-filter-toggle';
   const CONFIRMATION_ATTRIBUTE = 'data-ytms-channel-filter-confirmation';
+  const HISTORY_AUX_ATTRIBUTE = 'data-ytms-history-aux-hidden';
+  const HISTORY_ACTIONS_SELECTOR = 'ytd-two-column-browse-results-renderer #secondary ytd-browse-feed-actions-renderer > #contents';
+  const HISTORY_ACTION_ROW_SELECTOR = 'ytd-button-renderer, ytd-compact-link-renderer, yt-button-view-model, button-view-model, button, a';
+  const hiddenHistoryActions = new Set();
+  let historyActionsFrame = 0;
   const confirmations = new Map();
   const FILTERED_CARD_SELECTOR = [
     `[${HIDDEN_FLAG}="1"]`,
@@ -344,7 +347,38 @@
       buildStaticCss(),
       buildFeedGridCss(),
       buildFilteredCardCss(),
+      CONFIG.hideStaticUi ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
     ].filter(css => css.trim()).join('\n');
+  }
+
+  // Restrict text-based matching to individual rows in the History action
+  // sidebar. Unknown layouts and non-English labels are left unchanged.
+  function reconcileHistoryActions() {
+    historyActionsFrame = 0;
+    const found = new Set();
+    if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+      document.querySelectorAll(HISTORY_ACTIONS_SELECTOR).forEach(contents => {
+        for (const row of contents.children) {
+          if (!row.matches(HISTORY_ACTION_ROW_SELECTOR)) continue;
+          const controls = row.matches('button, a') ? [row] : [...row.querySelectorAll('button, a, [role="button"]')];
+          if (controls.length !== 1) continue;
+          const label = getText(controls[0]);
+          if (!/^(?:send feedback|why am i seeing this\?)$/i.test(label)) continue;
+          found.add(row);
+          if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) !== '1') row.setAttribute(HISTORY_AUX_ATTRIBUTE, '1');
+        }
+      });
+    }
+    for (const row of hiddenHistoryActions) {
+      if (found.has(row)) continue;
+      if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+      hiddenHistoryActions.delete(row);
+    }
+    for (const row of found) hiddenHistoryActions.add(row);
+  }
+
+  function scheduleHistoryActions() {
+    if (!historyActionsFrame) historyActionsFrame = requestAnimationFrame(reconcileHistoryActions);
   }
 
   function getCardContainer(el) {
@@ -773,6 +807,17 @@
   const observer = new MutationObserver((mutations) => {
     let toggleDirty = false;
     for (const mutation of mutations) {
+      if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+        const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
+        const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
+        if (target?.closest?.('ytd-browse-feed-actions-renderer') ||
+            [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE &&
+              (node.matches('ytd-browse-feed-actions-renderer') ||
+               ((inHistorySecondary || node.matches('ytd-browse, ytd-two-column-browse-results-renderer, #secondary')) &&
+                node.querySelector('ytd-browse-feed-actions-renderer'))))) {
+          scheduleHistoryActions();
+        }
+      }
       if (!mutationCanAffectFiltering(mutation)) continue;
 
       if (mutation.type !== 'childList') {
@@ -842,8 +887,10 @@
   function resetScheduledWork() {
     if (filterToggleUpdateFrame) cancelAnimationFrame(filterToggleUpdateFrame);
     if (cleanUpFrame) cancelAnimationFrame(cleanUpFrame);
+    if (historyActionsFrame) cancelAnimationFrame(historyActionsFrame);
     filterToggleUpdateFrame = 0;
     cleanUpFrame = 0;
+    historyActionsFrame = 0;
     pendingCleanUpRoots.clear();
   }
 
@@ -851,15 +898,21 @@
     reconcileConfirmations(document);
     resetTemporaryReveal();
     if (syncMutationObservation()) cleanUp(document);
+    reconcileHistoryActions();
   }
 
   syncMutationObservation();
+  reconcileHistoryActions();
 
   window.addEventListener('yt-navigate-start', () => {
     clearConfirmations();
     resetTemporaryReveal();
     stopMutationObservation();
     resetScheduledWork();
+    for (const row of hiddenHistoryActions) {
+      if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+    }
+    hiddenHistoryActions.clear();
   }, true);
   window.addEventListener('yt-navigate-finish', reconcileRoute, true);
   window.addEventListener('yt-page-data-updated', reconcileRoute, true);
@@ -871,6 +924,10 @@
     clearConfirmations();
     stopMutationObservation();
     resetScheduledWork();
+    for (const row of hiddenHistoryActions) {
+      if (row.getAttribute(HISTORY_AUX_ATTRIBUTE) === '1') row.removeAttribute(HISTORY_AUX_ATTRIBUTE);
+    }
+    hiddenHistoryActions.clear();
   }, true);
   window.addEventListener('pageshow', reconcileRoute, true);
 })();

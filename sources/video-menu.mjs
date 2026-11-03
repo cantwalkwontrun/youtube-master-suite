@@ -57,6 +57,16 @@ export function installVideoMenu(suite) {
     if (item?.downloadListItemViewModel) return 'download';
     const model = item?.menuServiceItemRenderer || item?.menuNavigationItemRenderer || item?.menuServiceItemDownloadRenderer || item?.listItemViewModel;
     const icon = String(model?.icon?.iconType || model?.leadingImage?.sources?.[0]?.clientResource?.imageName || '').toUpperCase();
+    // BlockTube's menu commands deliberately reuse YouTube's NOT_INTERESTED
+    // icon (and can clone its endpoint). Its current model uses these exact
+    // English titles; older models also expose an explicit action marker.
+    // Keep such rows as unknown native actions, preserving their handlers and
+    // their slots; never relax the duplicate guard for actual YouTube actions.
+    const title = typeof model?.title?.content === 'string' ? model.title.content :
+      typeof model?.text?.simpleText === 'string' ? model.text.simpleText :
+        Array.isArray(model?.text?.runs) ? model.text.runs.map(run => typeof run?.text === 'string' ? run.text : '').join('') : '';
+    if (['block_channel', 'block_video'].includes(model?._btMenuAction) ||
+        (icon === 'NOT_INTERESTED' && ['Block Channel', 'Block Video'].includes(title))) return null;
     if (['QUEUE_PLAY_NEXT', 'ADD_TO_QUEUE_HEAD'].includes(icon) || model?.targetId === 'yt-master-play-next') return 'playNext';
     if (queuedVideoId(item)) return 'addToQueue';
     if (['WATCH_LATER', 'WATCH_LATER_OUTLINE'].includes(icon)) return 'watchLater';

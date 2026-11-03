@@ -3,43 +3,43 @@
   "modules": {
     "commentCleaner": {
       "path": "sources/modules/youtube-comment-cleaner.user.js",
-      "version": "1.26",
-      "sha256": "aec5207a78b73b45446343c9bcf086eece24b63555d445788cebc1d22ccc4118"
+      "version": "1.29",
+      "sha256": "b9b0ffc85b19a81d823352dbde52fe38bde34e5bf63b698f3e7eb17c77caf42a"
     },
     "feedUiCleaner": {
       "path": "sources/modules/youtube-feed-ui-cleaner.user.js",
-      "version": "2.16",
-      "sha256": "e45ef58c9897bf5c266e10bc36e4de744b321cb91c02376b865abba12f070bf0"
+      "version": "2.20",
+      "sha256": "6e963bfc79aec3c4c80b21e4f157f279a51c780619edbdeac824d366a777ec40"
     },
     "miniplayerButtonRestorer": {
       "path": "sources/modules/youtube-miniplayer-button-restorer.user.js",
-      "version": "1.14",
-      "sha256": "681a05d9f49b430e7f2bfd3dbb792f1327ea6123183a1b5ebecd7c066d4bad55"
+      "version": "1.16",
+      "sha256": "1c002708874c007b9deb3f87b2e1194b8dee92eb5dc8bc2d30ef1813f9f12d53"
     },
     "pageCoherence": {
       "path": "sources/modules/youtube-page-coherence.user.js",
-      "version": "1.15",
-      "sha256": "65d85949aa5b1f725391b79a33821c75ca7677e29b15ac812bc09ae594afc189"
+      "version": "1.16",
+      "sha256": "3a60229949c64053479d7c4d716ecc59721fdad3c5965964f1cf94212496e635"
     },
     "playerPreferencesLite": {
       "path": "sources/modules/youtube-player-preferences-lite.user.js",
-      "version": "1.92",
-      "sha256": "c3b7ca7b244e64ff28539dc19563f187212fe9196b00bc598c2f7c0ba8fa98dc"
+      "version": "1.120",
+      "sha256": "39cf6dfab91972f5db97189a696d948917d57d7b5f577ff5576fa6c70b2d3c44"
     },
     "scrollMiniplayer": {
       "path": "sources/modules/youtube-scroll-miniplayer.user.js",
-      "version": "5.27",
-      "sha256": "6bd1cda3f9a32e2282ec1aa27dfa97de66f1411387118b5d93c972f36d86a7cb"
+      "version": "5.29",
+      "sha256": "fe96ab7a1b47bd0c11a5d0fbe86daa7f14c23f06242dab52f796fed0775050b1"
     },
     "suiteSettings": {
       "path": "sources/modules/youtube-suite-settings.user.js",
-      "version": "1.42",
-      "sha256": "844d0e8968499bc88d712bc9bcd9c85a6a2d0f6be60b4cdba676b6963b6ca723"
+      "version": "1.49",
+      "sha256": "fdf710812870c242aa52946a91c61fddcfc484b58882653a450c4310406ef15b"
     },
     "watchLayoutCleaner": {
       "path": "sources/modules/youtube-watch-layout-cleaner.user.js",
-      "version": "1.61",
-      "sha256": "25d2e3b16d43aca52ec22077d082d7dcdd42b4ec9ff62db858fbb5654e51155c"
+      "version": "1.63",
+      "sha256": "476010cc0c629fe906eb2c389c5b9e70631d3c7cbf1ad02bf5449f98687f2036"
     }
   }
 }

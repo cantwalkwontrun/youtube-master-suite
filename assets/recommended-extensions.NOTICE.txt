@@ -1,9 +1,11 @@
 Recommended extension logos
 ===========================
 
-The logos in recommended-extensions.json are unmodified project assets, embedded
-for identification only. They remain the property of their respective projects;
-their inclusion does not imply endorsement of YouTube Master Suite.
+The logos in recommended-extensions.json are sourced from the named projects
+and embedded for identification only. Nonessential PNG metadata was removed;
+the encoded pixel data is unchanged. The logos remain the property of their
+respective projects; their inclusion does not imply endorsement of YouTube
+Master Suite.
 
 Return YouTube Dislike - Anarios and contributors
 Source: https://github.com/Anarios/return-youtube-dislike

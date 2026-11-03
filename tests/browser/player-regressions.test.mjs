@@ -50,6 +50,68 @@ async function openMenu(page) {
   await page.locator(".ytp-contextmenu").waitFor({ state: "visible" });
 }
 
+for (const background of ["rgb(255, 255, 255)", "rgb(0, 0, 0)"]) {
+  test(`player controls retain legible contrast over ${background} footage without changing geometry`, async t => {
+    const page = await openFixture(t);
+    await page.evaluate(background => {
+      const player = document.querySelector("#movie_player");
+      const bar = document.createElement("div");
+      bar.className = "ytp-chrome-controls";
+      bar.style.cssText = "position:absolute;bottom:0;width:400px;height:48px";
+      player.style.backgroundColor = background;
+      player.querySelector("video").style.backgroundColor = background;
+      const button = document.createElement("button");
+      button.className = "ytp-button";
+      button.setAttribute("aria-label", "Test native control");
+      button.style.cssText = "width:48px;height:48px;background:transparent";
+      button.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="white" d="M2 2h20v20H2z"/></svg>';
+      button.querySelector("svg").style.filter = "brightness(0.8)";
+      const time = document.createElement("span");
+      time.className = "ytp-time-display"; time.textContent = "7:22 / 10:00"; time.style.color = "white";
+      const gradient = document.createElement("div"); gradient.className = "ytp-gradient-bottom";
+      gradient.style.background = "linear-gradient(transparent, rgba(0, 0, 0, 0.45))";
+      player.append(gradient, bar); bar.append(button, time);
+      window.contrastClicks = 0; button.addEventListener("click", () => window.contrastClicks++);
+    }, background);
+    const state = await page.evaluate(() => {
+      const bar = document.querySelector(".ytp-chrome-controls"), button = bar.querySelector(".ytp-button");
+      const icon = button.querySelector("svg"), time = bar.querySelector(".ytp-time-display");
+      const gradient = document.querySelector(".ytp-gradient-bottom");
+      const rect = button.getBoundingClientRect();
+      return { shadow: getComputedStyle(time).textShadow, filter: getComputedStyle(icon).filter,
+        background: getComputedStyle(bar).backgroundColor, gradient: getComputedStyle(gradient).backgroundImage,
+        width: rect.width, height: rect.height, name: button.getAttribute("aria-label") };
+    });
+    assert.match(state.shadow, /rgba\(0, 0, 0/);
+    assert.equal(state.filter, "brightness(0.8)", "existing native or extension filters remain intact");
+    assert.equal(state.background, "rgba(0, 0, 0, 0.45)");
+    assert.match(state.gradient, /0\.45/);
+    assert.deepEqual([state.width, state.height, state.name], [48, 48, "Test native control"]);
+    await page.locator('.ytp-chrome-controls [aria-label="Test native control"]').click();
+    assert.equal(await page.evaluate(() => window.contrastClicks), 1);
+  });
+}
+
+test("player toolbar contrast leaves forced-colours mode and existing icon filters under native control", async t => {
+  const page = await openFixture(t);
+  await page.emulateMedia({ forcedColors: "active" });
+  await page.evaluate(() => {
+    const bar = document.createElement("div"), button = document.createElement("button");
+    bar.className = "ytp-chrome-controls"; button.className = "ytp-button";
+    button.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z"/></svg>';
+    button.querySelector("svg").style.filter = "brightness(0.8)";
+    bar.append(button); document.querySelector("#movie_player").append(bar);
+  });
+  const actual = await page.locator(".ytp-chrome-controls").evaluate(bar => ({
+    forced: matchMedia("(forced-colors: active)").matches,
+    background: getComputedStyle(bar).backgroundColor,
+    filter: getComputedStyle(bar.querySelector("svg")).filter,
+  }));
+  assert.equal(actual.forced, true);
+  assert.notEqual(actual.background, "rgba(0, 0, 0, 0.45)");
+  assert.equal(actual.filter, "brightness(0.8)");
+});
+
 test("Firefox native pointer copy cleans the URL and preserves timestamp copying", { timeout: 20000 }, async t => {
   const page = await openFixture(t);
   await openMenu(page);

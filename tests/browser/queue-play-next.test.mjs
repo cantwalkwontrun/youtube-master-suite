@@ -222,6 +222,30 @@ const snapshot = page => page.evaluate(() => ({ ids: queueFixture.ids, adds: que
   playing: fixture.playerId, title: document.querySelector("h1").textContent,
   url: location.href, comments: document.querySelector("ytd-comments").textContent }));
 
+// Duplicate video IDs remain distinct native playlist entries. The standard
+// fixture's set IDs are video-derived, so use this helper when testing them.
+async function distinctQueue(page, entries) {
+  await page.evaluate(entries => {
+    const f = queueFixture;
+    f.entries = entries.map(([videoId, playlistSetVideoId]) => ({ videoId, playlistSetVideoId }));
+    f.render = () => {
+      f.ids = f.entries.map(entry => entry.videoId);
+      const previous = f.owner.data;
+      f.bind({ ...previous, totalVideos: f.entries.length, currentIndex: f.ids.indexOf(f.current),
+        contents: f.entries.map(entry => ({ playlistPanelVideoRenderer: { ...entry, selected: entry.videoId === f.current } })) });
+      window.dispatchEvent(new CustomEvent('yt-playlist-data-updated'));
+    };
+    f.owner.handleDrop = ({ currDragItem }) => {
+      f.moves.push(currDragItem.data.videoId);
+      f.entries = [...currDragItem.parentNode.children].map(row => ({
+        videoId: row.data.videoId, playlistSetVideoId: row.data.playlistSetVideoId,
+      }));
+      f.render();
+    };
+    f.render();
+  }, entries);
+}
+
 test("the native menu stamps Play next directly above Add to queue without changing the source menu", async t => {
   const page = await open(t);
   await page.evaluate(id => queueFixture.open(id), D);
@@ -796,6 +820,88 @@ test("an earlier queued item moves after the current item via native keyboard ac
   await choose(page, B, { keyboard: true });
   await page.waitForFunction(() => queueFixture.moves.length === 1);
   assert.deepEqual((await snapshot(page)).ids, [A, B, C]);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
+for (const homeMiniplayer of [false, true]) for (const sheet of [false, true]) {
+  test(`${homeMiniplayer ? 'Home miniplayer' : 'watch queue'} ${sheet ? 'sheet' : 'legacy menu'} leaves duplicates alone when the video is already next`, async t => {
+    const page = await open(t, { ids: [B, A, C], current: A, homeMiniplayer, sheet });
+    const entries = [[B, 'before'], [A, 'current'], [B, 'next']];
+    await distinctQueue(page, entries);
+    await choose(page, B);
+    await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent === 'Playing next in queue');
+    assert.deepEqual(await page.evaluate(() => queueFixture.entries.map(({ videoId, playlistSetVideoId }) => [videoId, playlistSetVideoId])), entries);
+    assert.deepEqual((await snapshot(page)).moves, []);
+    assert.equal((await snapshot(page)).adds.length, 0);
+    assert.equal((await snapshot(page)).playing, A);
+  });
+
+  test(`${homeMiniplayer ? 'Home miniplayer' : 'watch queue'} ${sheet ? 'sheet' : 'legacy menu'} refuses ambiguous duplicates away from next`, async t => {
+    const page = await open(t, { ids: [B, A, C], current: A, homeMiniplayer, sheet });
+    const entries = [[B, 'before'], [A, 'current'], [C, 'next'], [B, 'after']];
+    await distinctQueue(page, entries);
+    await choose(page, B);
+    await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('more than once'));
+    assert.deepEqual(await page.evaluate(() => queueFixture.entries.map(({ videoId, playlistSetVideoId }) => [videoId, playlistSetVideoId])), entries);
+    assert.deepEqual((await snapshot(page)).moves, []);
+    assert.equal((await snapshot(page)).adds.length, 0);
+    assert.equal((await snapshot(page)).playing, A);
+  });
+}
+
+test('a duplicate current video remains an unsafe queue anchor', async t => {
+  const page = await open(t, { ids: [A, B, C] });
+  const entries = [[A, 'current'], [B, 'next'], [A, 'later']];
+  await distinctQueue(page, entries);
+  await choose(page, B);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('still updating'));
+  assert.deepEqual(await page.evaluate(() => queueFixture.entries.map(({ videoId, playlistSetVideoId }) => [videoId, playlistSetVideoId])), entries);
+  assert.deepEqual((await snapshot(page)).moves, []);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
+test('duplicate entries introduced while a native append is pending are not reordered', async t => {
+  const page = await open(t, { ids: [A, B, C] });
+  await distinctQueue(page, [[A, 'current'], [B, 'next'], [C, 'later']]);
+  await page.evaluate(() => {
+    queueFixture.popup.polymerController.resolveCommand = endpoint => {
+      const command = endpoint.signalServiceEndpoint.actions[0].addToPlaylistCommand;
+      queueFixture.adds.push(structuredClone(command));
+      setTimeout(() => {
+        queueFixture.entries.push({ videoId: command.videoId, playlistSetVideoId: 'external' },
+          { videoId: command.videoId, playlistSetVideoId: 'appended' });
+        queueFixture.render();
+      }, 100);
+      return true;
+    };
+  });
+  await choose(page, D);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('more than once'));
+  assert.deepEqual((await snapshot(page)).ids, [A, B, C, D, D]);
+  assert.deepEqual((await snapshot(page)).moves, []);
+  assert.equal((await snapshot(page)).adds.length, 1);
+});
+
+test('a different duplicate cannot falsely confirm a committed native move', async t => {
+  const page = await open(t, { ids: [A, C, B] });
+  await distinctQueue(page, [[A, 'current'], [C, 'next'], [B, 'requested']]);
+  await page.evaluate(() => {
+    queueFixture.owner.handleDrop = ({ currDragItem }) => {
+      queueFixture.moves.push(currDragItem.data.videoId);
+      queueFixture.entries = [
+        { videoId: 'aaaaaaaaaaa', playlistSetVideoId: 'current' },
+        { videoId: 'bbbbbbbbbbb', playlistSetVideoId: 'different' },
+        { videoId: 'ccccccccccc', playlistSetVideoId: 'next' },
+        { videoId: 'bbbbbbbbbbb', playlistSetVideoId: 'requested' },
+      ];
+      queueFixture.render();
+    };
+  });
+  await choose(page, B);
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('[data-yt-master-queue-status]').count(), 0);
+  assert.deepEqual((await snapshot(page)).moves, [B]);
   assert.equal((await snapshot(page)).adds.length, 0);
 });
 

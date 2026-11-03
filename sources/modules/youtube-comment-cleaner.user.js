@@ -1,14 +1,12 @@
 // ==UserScript==
 // @name         YouTube Comment Cleaner
 // @namespace    Citizen.youtube.comment-cleaner
-// @version      1.26
+// @version      1.29
 // @description  Cleans YouTube comments, prevents stale comments across SPA navigation, preserves replies, compacts spacing, and colours commenter/uploader names.
 // @author       Citizen
 // @license      GNU GPLv3
-// @homepageURL  https://github.com/noswimmingplease/youtube-comment-cleaner
-// @supportURL   https://github.com/noswimmingplease/youtube-comment-cleaner/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-comment-cleaner/main/youtube-comment-cleaner.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-comment-cleaner/main/youtube-comment-cleaner.user.js
+// @updateURL    none
+// @downloadURL  none
 // @run-at       document-idle
 // @match        *://www.youtube.com/*
 // @grant        GM_addStyle
@@ -140,6 +138,7 @@
   let commentsVideoGuardFailOpenVideoId = "";
   let preNavigationCommentNodes = new Set();
   const pendingStaleCommentContainers = new Set();
+  const staleCommentNotices = new Map();
   const commentsVideoGuardRecoveryTimers = new Map();
   const commentsVideoGuardScheduledDelays = new Set();
 
@@ -436,6 +435,61 @@
     commentsVideoGuardPending = true;
   };
 
+  const clearStaleCommentNotice = (comments) => {
+    staleCommentNotices.get(comments)?.remove();
+    staleCommentNotices.delete(comments);
+  };
+
+  const clearStaleCommentNotices = () => {
+    staleCommentNotices.forEach((notice) => notice.remove());
+    staleCommentNotices.clear();
+  };
+
+  // After the bounded grace period, protect only positively identified old
+  // comments. Unknown or mixed provenance must remain available.
+  const reconcileTimedOutComments = (destinationVideoId, root = document) => {
+    staleCommentNotices.forEach((notice, comments) => {
+      if (!comments.isConnected || notice.parentElement !== comments.parentElement) {
+        clearStaleCommentNotice(comments);
+      }
+    });
+    getCommentContainers(root).forEach((comments) => {
+      const ids = getCommentsVideoIds(comments);
+      const knownOld = destinationVideoIdentityIsCoherent(destinationVideoId) &&
+        ids.size > 0 && !ids.has(destinationVideoId);
+      if (!knownOld || !comments.parentElement) {
+        if (comments.hasAttribute(STALE_COMMENTS_ATTRIBUTE)) {
+          comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE);
+        }
+        clearStaleCommentNotice(comments);
+        return;
+      }
+      if (!staleCommentNotices.has(comments)) {
+        const notice = document.createElement("div");
+        notice.setAttribute("data-iow-stale-notice", "1");
+        notice.setAttribute("role", "status");
+        const message = document.createElement("span");
+        message.textContent = "Comments may belong to the previous video. ";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Reload page (restarts video)";
+        button.addEventListener("click", () => {
+          if (notice.isConnected && getCurrentVideoId() === destinationVideoId &&
+              commentsVideoGuardFailOpenVideoId === destinationVideoId) {
+            location.reload();
+          }
+        });
+        notice.appendChild(message);
+        notice.appendChild(button);
+        comments.parentElement.insertBefore(notice, comments);
+        staleCommentNotices.set(comments, notice);
+      }
+      if (comments.getAttribute(STALE_COMMENTS_ATTRIBUTE) !== "1") {
+        comments.setAttribute(STALE_COMMENTS_ATTRIBUTE, "1");
+      }
+    });
+  };
+
   const releaseCommentsVideoGuardAfterTimeout = (destinationVideoId) => {
     if (!destinationVideoId || getCurrentVideoId() !== destinationVideoId) {
       return false;
@@ -449,10 +503,8 @@
     commentsVideoGuardFailOpenVideoId = destinationVideoId;
     preNavigationCommentNodes = new Set();
     pendingStaleCommentContainers.clear();
-    getCommentContainers(document).forEach((comments) =>
-      comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
-    );
     cancelCommentsVideoGuardRecovery();
+    reconcileTimedOutComments(destinationVideoId);
     return true;
   };
 
@@ -469,6 +521,7 @@
     commentsVideoGuardFailOpenVideoId = "";
     preNavigationCommentNodes = new Set();
     pendingStaleCommentContainers.clear();
+    clearStaleCommentNotices();
     getCommentContainers(document).forEach((comments) =>
       comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
     );
@@ -558,6 +611,7 @@
     destinationVideoId = "",
   } = {}) => {
     commentsVideoGuardGeneration += 1;
+    clearStaleCommentNotices();
     cancelCommentsVideoGuardRecovery();
     commentsVideoGuardPending = true;
     commentsVideoGuardSawFreshContainer = false;
@@ -619,9 +673,7 @@
     alignCommentsVideoGuardToCurrentUrl();
 
     if (commentsVideoGuardFailOpenVideoId === currentVideoId) {
-      getCommentContainers(document).forEach((comments) =>
-        comments.removeAttribute(STALE_COMMENTS_ATTRIBUTE),
-      );
+      reconcileTimedOutComments(currentVideoId, root);
       return;
     }
 
@@ -860,6 +912,22 @@ ytd-comments[${STALE_COMMENTS_ATTRIBUTE}="1"] {
   opacity:0 !important;
   pointer-events:none !important;
 }
+[data-iow-stale-notice="1"] {
+  color:var(--yt-spec-text-primary, inherit);
+  background:var(--yt-spec-badge-chip-background, transparent);
+  padding:12px;
+  margin:8px 0;
+  border-radius:8px;
+  font-size:1.4rem;
+}
+[data-iow-stale-notice="1"] button {
+  color:inherit;
+  background:transparent;
+  border:1px solid currentColor;
+  border-radius:18px;
+  padding:6px 12px;
+  cursor:pointer;
+}
 `;
 
   const buildCommentControlsCss = () => {
@@ -1067,6 +1135,12 @@ yt-comment-view-model #header-author-badges {
 
     const commentsVideoGuardRoots = new Set();
 
+    if (staleCommentNotices.size && mutations.some((mutation) => mutation.removedNodes?.length)) {
+      staleCommentNotices.forEach((notice, comments) => {
+        if (!comments.isConnected || !notice.isConnected) clearStaleCommentNotice(comments);
+      });
+    }
+
     for (const mutation of mutations) {
       if (mutation.type === "attributes") {
         if (
@@ -1190,6 +1264,14 @@ yt-comment-view-model #header-author-badges {
     },
     true,
   );
+
+  // Player identity can become coherent after the timeout without a DOM
+  // mutation. Recheck on the active player's native metadata event only.
+  document.addEventListener("loadedmetadata", (event) => {
+    if (!commentsVideoGuardFailOpenVideoId || !isWatchPath()) return;
+    const player = event.target?.closest?.('[id="movie_player"]');
+    if (player && player === getActivePlayer()) syncCommentsVideoGuard();
+  }, true);
 
   window.addEventListener(
     "pageshow",

@@ -13,7 +13,7 @@ import { installVideoMenu } from "./sources/video-menu.mjs";
 import { rejectYouTubeOptionalCookies } from "./sources/youtube-cookie-consent.mjs";
 import { installPlayerPresentation } from "./sources/player-presentation.mjs";
 
-const MASTER_VERSION = "1.2.44";
+const MASTER_VERSION = "1.2.60";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -1594,8 +1594,6 @@ const output = `// ==UserScript==
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
-// @homepageURL  https://github.com/noswimmingplease/youtube-master-suite
-// @supportURL   https://github.com/noswimmingplease/youtube-master-suite/issues
 // @updateURL    none
 // @downloadURL  none
 // @match        https://www.youtube.com/*

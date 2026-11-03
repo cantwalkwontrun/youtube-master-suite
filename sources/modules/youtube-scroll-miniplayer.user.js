@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         YouTube Scroll Miniplayer
 // @namespace    Citizen.youtube.scroll-miniplayer
-// @version      5.27
+// @version      5.29
 // @description  Floats the active YouTube player with compact queue context, YouTube-style controls, and synchronised corner selection across open windows.
 // @author       Citizen
-// @homepageURL  https://github.com/noswimmingplease/youtube-scroll-miniplayer
-// @supportURL   https://github.com/noswimmingplease/youtube-scroll-miniplayer/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-scroll-miniplayer/main/youtube-scroll-miniplayer.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-scroll-miniplayer/main/youtube-scroll-miniplayer.user.js
+// @updateURL    none
+// @downloadURL  none
 // @match        https://www.youtube.com/*
 // @run-at       document-idle
 // @grant        none
@@ -2075,4 +2073,11 @@
   }, true);
 
   syncRouteState();
+  // The settings panel must compare the saved corner with the value actually
+  // in use, rather than assuming every storage change requires a reload.
+  // Expose this only after successful initialisation; the standalone script
+  // does not have the master's private suite object.
+  if (typeof suite !== "undefined") {
+    suite.getAppliedScrollMiniplayerCorner = () => currentCorner;
+  }
 })();

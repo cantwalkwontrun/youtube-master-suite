@@ -39,8 +39,8 @@ Inline playback preference; unsupported layouts remain unchanged.
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) and follow its
    browser-specific setup instructions.
-2. Open the [latest released userscript](https://github.com/noswimmingplease/youtube-master-suite/releases/latest/download/youtube-master-suite.user.js)
-   and approve installation. No GitHub sign-in is needed.
+2. Open this repository's **Releases** page, download `youtube-master-suite.user.js`
+   from the latest release, and approve installation. No GitHub sign-in is needed.
 3. Disable any old standalone Suite component scripts, including **YouTube
    SponsorBlock Queue Width**, to avoid duplicate controls and processing.
    Leave companion extensions such as SponsorBlock enabled.
@@ -145,8 +145,9 @@ the row.
 
 ## Updates
 
-**Updates are manual.** Use the [latest release](https://github.com/noswimmingplease/youtube-master-suite/releases/latest),
-replace the existing script, then reload YouTube when convenient. Publishing a
+**Updates are manual.** Download the script from the latest release on this
+repository's **Releases** page, replace the existing script, then reload YouTube
+when convenient. Publishing a
 release does not update an installed copy automatically.
 
 Use release assets rather than development copies from `main`. Install and
@@ -187,9 +188,9 @@ clipboard only when requested. Restoring does not automatically reload the page.
   and applicable page. Uncertain dates stay visible for age-only rules.
 - **A menu or queue action fails:** read its status message before retrying.
   Unsupported or ambiguous native interfaces are left alone.
-- **Still a problem:** copy a report from **Support** and
-  [report the issue](https://github.com/noswimmingplease/youtube-master-suite/issues),
-  including the affected feature and steps to reproduce it.
+- **Still a problem:** copy a report from **Support** and open an issue on this
+  repository's **Issues** page, including the affected feature and steps to
+  reproduce it.
 
 The Suite targets desktop `www.youtube.com`; only the cookie-consent handler
 runs on `consent.youtube.com`. It does not run in frames. YouTube layout

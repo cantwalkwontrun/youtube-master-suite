@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         YouTube Miniplayer Button Restorer
 // @namespace    Citizen.youtube.miniplayer-button-restorer
-// @version      1.14
+// @version      1.16
 // @description  Restores a Miniplayer button to YouTube watch and live player controls, falling back to the native miniplayer shortcut when needed.
 // @author       Citizen
-// @homepageURL  https://github.com/noswimmingplease/youtube-miniplayer-button-restorer
-// @supportURL   https://github.com/noswimmingplease/youtube-miniplayer-button-restorer/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-miniplayer-button-restorer/main/youtube-miniplayer-button-restorer.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-miniplayer-button-restorer/main/youtube-miniplayer-button-restorer.user.js
+// @updateURL    none
+// @downloadURL  none
 // @match        https://www.youtube.com/*
 // @run-at       document-idle
 // @grant        none
@@ -291,7 +289,15 @@
   }
 
   function onTooltipPointerMove(event) {
-    if (!installedButton?.contains(event.target)) hideTooltip();
+    if (!installedButton?.contains(event.target) && !hasTooltipKeyboardFocus()) hideTooltip();
+  }
+
+  function hasTooltipKeyboardFocus() {
+    return document.activeElement === installedButton && installedButton?.matches(":focus-visible");
+  }
+
+  function hideTooltipOnMouseLeave() {
+    if (!hasTooltipKeyboardFocus()) hideTooltip();
   }
 
   function isTooltipAnchorVisible(player) {
@@ -469,7 +475,7 @@
     btn.addEventListener("click", triggerMiniplayer);
     btn.addEventListener("mouseenter", showTooltip);
     btn.addEventListener("focus", showTooltip);
-    btn.addEventListener("mouseleave", hideTooltip);
+    btn.addEventListener("mouseleave", hideTooltipOnMouseLeave);
     btn.addEventListener("blur", hideTooltip);
     return btn;
   }

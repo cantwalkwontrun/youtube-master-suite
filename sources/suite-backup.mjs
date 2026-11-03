@@ -97,6 +97,7 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
     return frozen({
       settingChanges: settingNames.filter(name => !same(previous.values[name], next.values[name]))
         .map(name => ({ name, before: clone(previous.values[name]), after: clone(next.values[name]) })),
+      orderChanged: !same(previous.rules.map(rule => rule.channelId), next.rules.map(rule => rule.channelId)),
       filters: {
         added: next.rules.filter(rule => !before.has(rule.channelId)).length,
         changed: next.rules.filter(rule => before.has(rule.channelId) && !same(before.get(rule.channelId), rule)).length,

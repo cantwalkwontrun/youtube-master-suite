@@ -63,6 +63,44 @@ test("malformed, oversized and unsupported storage records safely fall back", ()
   assert.equal(unavailable.save(unavailable.defaults).ok, false);
 });
 
+test('saving refuses incompatible or lossy existing settings and preserves every raw value', () => {
+  const key = 'yt-master-suite.settings.v1';
+  const cornerKey = 'yt-master-suite.scroll-miniplayer.corner.v1';
+  const records = [
+    '{', '', ' '.repeat(8193),
+    JSON.stringify({ version: 2, values: { hideShorts: false } }),
+    JSON.stringify({ version: 1, values: [], extra: 'future' }),
+    JSON.stringify({ version: 1, values: { futureOption: false, hideShorts: false } }),
+    JSON.stringify({ version: 1, values: { hideShorts: 'false' } }),
+    JSON.stringify({ version: 1, values: { menuItemOrder: ['playNext', 'futureItem'] } }),
+    JSON.stringify({ version: 1, values: { menuItemOrder: ['playNext', 'playNext'] } }),
+  ];
+  for (const raw of records) {
+    const { settings, data } = fixture({ [key]: raw });
+    settings.read(); // A fail-open read must not authorise a later destructive save.
+    const result = settings.save({ ...settings.defaults, hideChat: false });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /incompatible or damaged/);
+    assert.equal(data.get(key), raw);
+    assert.equal(data.has(cornerKey), false);
+  }
+  const { settings, data } = fixture({ [cornerKey]: 'future-corner' });
+  assert.equal(settings.save(settings.defaults).ok, false);
+  assert.equal(data.get(cornerKey), 'future-corner');
+  assert.equal(data.has(key), false);
+});
+
+test('saving accepts an absent record and recognised partial legacy settings', () => {
+  const key = 'yt-master-suite.settings.v1';
+  for (const raw of [null, JSON.stringify({ version: 1, values: { hideShorts: false, viewerColour: 'abcdef', menuItemOrder: ['playNext', 'addToQueue'] } })]) {
+    const { settings, data } = fixture(raw === null ? {} : { [key]: raw });
+    const result = settings.save({ ...settings.read(), hideChat: false });
+    assert.equal(result.ok, true);
+    assert.equal(JSON.parse(data.get(key)).values.hideChat, false);
+    if (raw !== null) assert.equal(result.values.hideShorts, false);
+  }
+});
+
 test('live-card controls preserve older defaults and reject non-boolean settings', () => {
   const { settings } = fixture({ 'yt-master-suite.settings.v1': JSON.stringify({ version: 1,
     values: { hideWatchedVideos: false, hideChat: false } }) });

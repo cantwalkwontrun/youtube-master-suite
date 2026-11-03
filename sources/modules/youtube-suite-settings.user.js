@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.42
+// @version      1.49
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -112,7 +112,7 @@
       liveChatButton: 'Show a playback-bar button for native live chat when available, including supported fullscreen views. Chat visibility is temporary for the current video. This button preference applies after reload.',
       hideFullscreenQuickActions: 'Hide the fullscreen Likes, Dislikes, Comments, Share and More action strip. The main playback controls are unchanged. Off by default; applies after reload.',
       timeDisplayMode: 'Choose elapsed or remaining time beside the total duration using YouTube’s native timer toggle. Live streams, adverts and unsupported timers are unchanged. Applies after reload.',
-      timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. Applies after reload.',
+      timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. The preview may briefly flicker or resize near SponsorBlock segments or chapter boundaries. Applies after reload.',
       theatreMode: 'Start watch videos in YouTube’s theatre view.',
       wheelVolume: 'Hold the right mouse button and scroll over the player to adjust volume.',
       wheelStep: 'Choose the volume change for each wheel step during the right-button gesture.',
@@ -150,8 +150,33 @@
 
     let supportPanel = null;
     const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
+    const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
+    const searchInput = document.createElement('input');
+    searchInput.id = 'ytms-settings-search'; searchInput.type = 'search'; searchInput.maxLength = 200;
+    searchInput.placeholder = 'Search settings'; searchInput.autocomplete = 'off';
+    searchInput.setAttribute('aria-label', 'Search all Suite settings');
+    searchInput.setAttribute('aria-controls', 'ytms-settings-search-results');
+    const searchClear = document.createElement('button'); searchClear.type = 'button';
+    searchClear.className = 'settings-search-clear'; searchClear.textContent = 'Clear';
+    searchClear.setAttribute('aria-label', 'Clear settings search'); searchClear.hidden = true;
+    searchBar.append(searchInput, searchClear);
+    dialog.querySelector('nav').before(searchBar);
+    const searchResults = document.createElement('section');
+    searchResults.id = 'ytms-settings-search-results'; searchResults.hidden = true;
+    searchResults.setAttribute('aria-label', 'Settings search results');
+    const searchStatus = document.createElement('p'); searchStatus.id = 'ytms-settings-search-status';
+    searchStatus.setAttribute('role', 'status'); searchStatus.setAttribute('aria-live', 'polite');
+    const searchList = document.createElement('div'); searchList.className = 'settings-search-list';
+    searchResults.append(searchStatus, searchList); dialog.querySelector('.content').append(searchResults);
+    let searchIndex = [];
+    function resetSearch() {
+      searchInput.value = ''; searchClear.hidden = true; searchResults.hidden = true;
+      searchList.replaceChildren(); searchStatus.textContent = '';
+      dialog.querySelector('nav').hidden = false;
+    }
     function selectTab(id, focus = false) {
       closePicker(false);
+      resetSearch();
       currentTab = id;
       $('restore-section-defaults').disabled = ['channels', 'extensions', 'support', 'credits'].includes(id);
       for (const tab of tabIds) {
@@ -210,7 +235,7 @@
     ageDescription.textContent = 'Search and sort saved channels, or edit their upload-age limits. Channel filters are saved separately from other settings.';
     ageLabel.append(ageDescription);
     const channelNote = document.createElement('p'); channelNote.className = 'section-note';
-    channelNote.textContent = 'These are this browser profile’s Suite filters. YouTube’s own Don’t recommend channel choices are separate. Edits and removals apply only after Save filters.';
+    channelNote.textContent = 'These are this browser profile’s Suite filters. YouTube’s own Don’t recommend channel choices are separate. Edits and removals apply only after Save filters. Channel filtering overlaps with BlockTube on supported feeds, but BlockTube also offers other filters; its existing rules are not transferred.';
     const channelHelp = document.createElement('a'); channelHelp.className = 'channel-filter-help';
     channelHelp.textContent = 'Manage YouTube’s own recommendation controls';
     channelHelp.href = 'https://support.google.com/youtube/answer/6342839?hl=en&co=GENIE.Platform%3DDesktop';
@@ -323,10 +348,7 @@
     const heading = document.createElement('h3'); heading.textContent = 'YouTube Master Suite';
     const author = document.createElement('p'); author.textContent = 'Created by Citizen';
     const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
-    const github = document.createElement('a'); github.id = 'ytms-credits-github';
-    github.href = 'https://github.com/noswimmingplease'; github.target = '_blank'; github.rel = 'noopener noreferrer';
-    github.textContent = 'noswimmingplease on GitHub';
-    credits.append(logo, heading, author, version, github); $('section-credits').append(credits);
+    credits.append(logo, heading, author, version); $('section-credits').append(credits);
     const normaliseHex = settings.normaliseHex;
     function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
     function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -347,10 +369,19 @@
     function primaryActionState() {
       const invalid = draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value));
       const inaccessible = draft.headerSettingsIcon === 'off' && draft.playerSettingsIcon === 'off';
+      // Unlike most preferences, the floating player's corner may already
+      // have been applied live by its control or a storage event. A settings
+      // save on this same page does not apply it; use the actual module value
+      // when available, retaining the startup baseline if it is unavailable.
+      let appliedCorner = settings.initial.corner;
+      try {
+        const currentCorner = suite.getAppliedScrollMiniplayerCorner?.();
+        if (['top-right', 'bottom-right', 'bottom-left', 'top-left'].includes(currentCorner)) appliedCorner = currentCorner;
+      } catch { /* A failed module must not break settings. */ }
       return {
         invalid, inaccessible,
         dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-        pendingReload: !samePreferences(saved, settings.initial),
+        pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner }),
       };
     }
     function updatePrimaryAction() {
@@ -371,7 +402,19 @@
     function reconcileStoredPreferences() {
       if (!dialog.open) return true;
       const current = settings.read();
-      if (samePreferences(current, saved)) return !externalConflict;
+      if (samePreferences(current, saved)) {
+        // The corner storage event can arrive after a settings event already
+        // adopted the new saved values. The miniplayer applies that corner on
+        // the later event, so recompute the action even without a saved diff.
+        const previousAction = $('save-preview').dataset.action;
+        const state = updatePrimaryAction();
+        if (!externalConflict && !state.dirty && previousAction !== $('save-preview').dataset.action && !$('settings-status').hidden) {
+          $('settings-status').textContent = state.pendingReload
+            ? 'Saved changes are waiting for reload. This page still uses its previous settings.'
+            : 'Saved settings now match the settings applied to this page.';
+        }
+        return !externalConflict;
+      }
       if (externalConflict || primaryActionState().dirty) {
         externalConflict = true; updatePrimaryAction(); showConflictNotice();
         return false;
@@ -488,7 +531,7 @@
 
     for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
     dialog.addEventListener('close', () => {
-      closePicker(false); channelEntry = 'settings'; channelManager.reset({ defer: true });
+      closePicker(false); resetSearch(); channelEntry = 'settings'; channelManager.reset({ defer: true });
     });
     dialog.addEventListener('keydown', event => {
       event.stopPropagation();
@@ -558,6 +601,93 @@
       },
     });
     $('section-support').append(supportPanel.element);
+    // Search is a local index of static setting labels, not a copy of controls,
+    // saved channel data, diagnostic reports or current setting values.
+    const addSearchEntry = (tab, target, title, description, extras = '') => {
+      searchIndex.push({ tab, target, title, description,
+        text: `${title} ${description} ${extras} ${$(`tab-${tab}`).textContent}`.toLocaleLowerCase() });
+    };
+    addSearchEntry('comments', 'colour-mode', 'Name colours', 'Viewer names, uploader names and creator/pinned badges.', 'colour color preset palette');
+    addSearchEntry('comments', 'palette', 'Palette', 'Theme-adaptive colours for viewer and uploader names.', 'preset');
+    addSearchEntry('comments', 'viewer-hex', 'Viewer name colour', 'Custom colour for viewer names.', 'color hex');
+    addSearchEntry('comments', 'owner-hex', 'Uploader and pinned badge colour', 'Custom colour for uploader names and pinned badges.', 'creator owner color hex');
+    for (const key of ['compactComments', 'hideCommentControls']) {
+      const label = dialog.querySelector(`label[for="ytms-${key}"]`);
+      addSearchEntry('comments', key, label.firstChild.textContent, label.querySelector('.description')?.textContent || '');
+    }
+    for (const [group, rows] of Object.entries(GROUPS)) {
+      for (const [key, label, choices, format] of rows) {
+        addSearchEntry(group, key, label, DESCRIPTIONS[key] || '', choices ? choices.map(format).join(' ') : '');
+      }
+    }
+    addSearchEntry('interface', 'menu-order', 'Video context menu order', menuOrderNote.textContent,
+      Object.values(menuLabels).join(' '));
+    addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
+      'channels block age restrictions');
+    addSearchEntry('support', 'backup-heading', 'Full backup and restore',
+      'Download or import saved settings and channel upload filters.', 'export import');
+    addSearchEntry('support', 'support-heading', 'Troubleshooting',
+      'Review a local module health and video-menu diagnostic report.', 'support diagnostics report');
+    for (const extension of suite.settingsAssets.recommendedExtensions) {
+      addSearchEntry('extensions', `extension-${extension.id}`, extension.name, extension.description, extension.note);
+    }
+    addSearchEntry('credits', 'credits-logo', 'YouTube Master Suite credits', 'Author, version and licence.', 'about');
+    function showSearch() {
+      const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      searchClear.hidden = !searchInput.value;
+      if (!terms.length) { selectTab(currentTab); return; }
+      closePicker(false);
+      // A selected tab must not point to a hidden panel while results are open.
+      // Tabs return when the query is cleared or a result is chosen.
+      dialog.querySelector('nav').hidden = true;
+      for (const tab of tabIds) $(`section-${tab}`).hidden = true;
+      $('restore-section-defaults').disabled = true;
+      if (channelFooterHost) channelFooterHost.hidden = true;
+      panelFooter.classList.remove('ytms-channels-active');
+      const matches = searchIndex.filter(entry => terms.every(term => entry.text.includes(term)));
+      searchStatus.textContent = matches.length === 0 ? 'No settings found' :
+        matches.length === 1 ? '1 setting found' : `${matches.length} settings found`;
+      searchList.replaceChildren();
+      if (!matches.length) {
+        const empty = document.createElement('p'); empty.className = 'settings-search-empty';
+        empty.textContent = 'No settings found. Try a different search.'; searchList.append(empty);
+      }
+      for (const entry of matches) {
+        const result = document.createElement('button'); result.type = 'button'; result.className = 'settings-search-result';
+        result.dataset.tab = entry.tab; result.dataset.target = entry.target;
+        const title = document.createElement('span'); title.className = 'settings-search-title'; title.textContent = entry.title;
+        const section = document.createElement('span'); section.className = 'settings-search-section';
+        section.textContent = $(`tab-${entry.tab}`).textContent;
+        const description = document.createElement('span'); description.className = 'settings-search-description';
+        description.textContent = entry.description;
+        result.append(title, section, description);
+        result.addEventListener('click', () => {
+          selectTab(entry.tab);
+          let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
+          if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
+          if (entry.target === 'menu-order') target = menuOrderHeading;
+          if (entry.target === 'credits-logo') target = heading;
+          if (entry.tab === 'extensions') target = target?.querySelector('h4') || target;
+          // Custom colour controls are conditional; do not change the user's
+          // draft just to expose one. Take them to the controlling selector.
+          if (!target || target.closest('[hidden]')) target = entry.tab === 'comments' ? $('colour-mode') : $(`tab-${entry.tab}`);
+          if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
+          target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
+        });
+        searchList.append(result);
+      }
+      searchResults.hidden = false; dialog.querySelector('.content').scrollTop = 0;
+    }
+    searchInput.addEventListener('input', event => { event.stopPropagation(); showSearch(); });
+    searchInput.addEventListener('change', event => event.stopPropagation());
+    searchInput.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && searchInput.value) {
+        event.preventDefault(); event.stopPropagation(); selectTab(currentTab); searchInput.focus();
+      } else if (event.key === 'Enter') {
+        event.preventDefault(); searchList.querySelector('button')?.click();
+      }
+    });
+    searchClear.addEventListener('click', () => { selectTab(currentTab); searchInput.focus(); });
     dialog.addEventListener('close', () => supportPanel.close());
     populate(); selectTab('comments');
     return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
@@ -636,10 +766,16 @@
   }
 
   function dismissPlayerTooltipOnPointerMove(event) {
-    if (!playerButton?.contains(event.target)) hidePlayerTooltip();
+    if (!playerButton?.contains(event.target) && !hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
   }
   function dismissPlayerTooltipOnPointerOut(event) {
-    if (!event.relatedTarget) hidePlayerTooltip();
+    if (!event.relatedTarget && !hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
+  }
+  function hasPlayerTooltipKeyboardFocus() {
+    return document.activeElement === playerButton && playerButton?.matches(':focus-visible');
+  }
+  function hidePlayerTooltipOnMouseLeave() {
+    if (!hasPlayerTooltipKeyboardFocus()) hidePlayerTooltip();
   }
   function dismissHiddenPlayerTooltip() {
     if (document.visibilityState === 'hidden') hidePlayerTooltip();
@@ -715,7 +851,7 @@
       playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(); });
       playerButton.addEventListener('mouseenter', showPlayerTooltip);
       playerButton.addEventListener('focus', showPlayerTooltip);
-      playerButton.addEventListener('mouseleave', hidePlayerTooltip);
+      playerButton.addEventListener('mouseleave', hidePlayerTooltipOnMouseLeave);
       playerButton.addEventListener('blur', hidePlayerTooltip);
     }
     const anchor = controls.querySelector('#ytppl-video-mirror-button') || controls.querySelector('.ytp-size-button, .ytp-fullscreen-button');

@@ -73,6 +73,13 @@ async function openChannels(page) {
   await page.locator('#ytms-channel-search').waitFor();
 }
 
+test('Channels explains the limited overlap with BlockTube without claiming its rules are transferred', async t => {
+  const page = await openFixture(t, [], undefined, true);
+  await openChannels(page);
+  assert.equal(await page.getByText(/Channel filtering overlaps with BlockTube on supported feeds/).count(), 1);
+  assert.equal(await page.getByText(/its existing rules are not transferred/).count(), 1);
+});
+
 test('older-video filter manager starts empty, is theme-aware and makes no persistent changes when opened', async t => {
   const page = await openFixture(t);
   assert.equal(await page.locator('#ytms-age-dialog').getAttribute('lang'), 'en-GB');

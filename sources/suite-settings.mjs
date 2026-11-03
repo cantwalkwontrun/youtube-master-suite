@@ -92,6 +92,31 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
   const initialValues = read();
   Object.freeze(initialValues.menuItemOrder);
   const initial = Object.freeze(initialValues);
+  // Reads deliberately fail open, but an editor must never turn an unknown or
+  // damaged saved record into a valid-looking new one by silently discarding it.
+  function savedSettingsAreWritable(raw) {
+    if (raw === null) return true;
+    if (typeof raw !== "string" || raw.length > 8192) return false;
+    try {
+      const record = JSON.parse(raw);
+      if (!record || typeof record !== "object" || Array.isArray(record) ||
+          Object.keys(record).some(name => name !== "version" && name !== "values") ||
+          record.version !== 1 || !record.values || typeof record.values !== "object" || Array.isArray(record.values)) return false;
+      for (const [name, value] of Object.entries(record.values)) {
+        if (!Object.hasOwn(defaults, name)) return false;
+        const fallback = defaults[name];
+        if (typeof fallback === "boolean") {
+          if (typeof value !== "boolean") return false;
+        } else if (name === "menuItemOrder") {
+          if (!Array.isArray(value) || value.length > defaults.menuItemOrder.length ||
+              new Set(value).size !== value.length || value.some(item => !defaults.menuItemOrder.includes(item))) return false;
+        } else if (name === "viewerColour" || name === "ownerColour") {
+          if (!normaliseHex(value)) return false;
+        } else if (!choices[name]?.includes(value)) return false;
+      }
+      return !(record.values.headerSettingsIcon === "off" && record.values.playerSettingsIcon === "off");
+    } catch { return false; }
+  }
   function save(input) {
     if (input?.headerSettingsIcon === "off" && input?.playerSettingsIcon === "off") {
       return { ok: false, error: "Keep at least one settings button enabled." };
@@ -101,6 +126,11 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
     let storage, previous;
     try {
       storage = getStorage(); previous = storage.getItem(key);
+      const previousCorner = storage.getItem(cornerKey);
+      if (!savedSettingsAreWritable(previous) ||
+          (previousCorner !== null && !choices.corner.includes(previousCorner))) {
+        return { ok: false, error: "Saved settings are incompatible or damaged. Nothing was overwritten; recover the existing data before saving." };
+      }
       storage.setItem(key, desired);
       if (storage.getItem(cornerKey) !== values.corner) storage.setItem(cornerKey, values.corner);
       return { ok: true, values };

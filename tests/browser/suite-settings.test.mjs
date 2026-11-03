@@ -329,6 +329,12 @@ for (const [name, buttonId, tooltipId] of [
     await page.keyboard.press('Tab'); await button.focus();
     await tooltip.waitFor({ state: 'visible' });
     assert.equal(await button.evaluate(button => button.matches(':focus-visible')), true);
+    await page.evaluate(() => document.body.dispatchEvent(new PointerEvent('pointermove', { bubbles: true })));
+    await page.evaluate(() => document.body.dispatchEvent(new PointerEvent('pointerout', { bubbles: true })));
+    await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseleave')));
+    await button.evaluate(button => button.dispatchEvent(new MouseEvent('mouseleave')));
+    assert.equal(await tooltip.count(), 1, 'pointer exit must not dismiss keyboard-focused tooltip');
+    assert.equal(await button.getAttribute('aria-describedby'), tooltipId);
     await page.keyboard.press('Escape');
     assert.equal(await tooltip.count(), 0);
     await page.evaluate(() => window.dispatchEvent(new Event('resize')));
@@ -717,8 +723,78 @@ test('clean settings reconcile external writes, clears and corner changes withou
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   await other.evaluate(() => localStorage.setItem('yt-master-suite.scroll-miniplayer.corner.v1', 'bottom-left'));
   await page.waitForFunction(() => document.getElementById('ytms-corner').value === 'bottom-left');
-  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Save');
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
+  await other.evaluate(key => localStorage.setItem(key, JSON.stringify({ version: 1, values: { hideShorts: false } })), KEY);
+  await page.waitForFunction(() => document.getElementById('ytms-hideShorts').checked === false);
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now', 'other unapplied changes still require reload');
+});
+
+test('a live miniplayer corner change does not request reload when settings are opened', async t => {
+  const page = await openFixture(t, { theatreMode: false });
+  await page.evaluate(() => {
+    const player = document.getElementById('player');
+    const anchor = document.createElement('div'); anchor.id = 'single-column-container';
+    player.before(anchor); anchor.append(player);
+    window.scrollTo(0, 800);
+  });
+  await page.locator('#ytsmp-corner-button').waitFor({ state: 'attached' });
+  await page.locator('#movie_player').hover();
+  await page.locator('#ytsmp-corner-button').click();
+  await page.locator('.ytsmp-corner-option[data-corner="bottom-left"]').click();
+  assert.equal(await page.locator('#ytsmp-corner-button').getAttribute('aria-label'), 'Move miniplayer. Current position: bottom left');
+  assert.equal(await page.evaluate(() => localStorage.getItem('yt-master-suite.scroll-miniplayer.corner.v1')), 'bottom-left');
+  await page.locator('#ytms-player-settings-button').click();
+  assert.equal(await page.locator('#ytms-corner').inputValue(), 'bottom-left');
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Save');
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+  await page.getByRole('tab', { name: 'Feed', exact: true }).click();
+  await page.locator('#ytms-hideShorts').uncheck();
+  await page.locator('#ytms-save-preview').click();
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now', 'unapplied non-corner change still requires reload');
+});
+
+test('a corner saved in settings still requires reload until the miniplayer applies it', async t => {
+  const page = await openFixture(t);
+  await openPanel(page);
+  await page.getByRole('tab', { name: 'Miniplayer', exact: true }).click();
+  await page.locator('#ytms-corner').selectOption('bottom-left');
+  await page.locator('#ytms-save-preview').click();
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
+  assert.equal(await page.locator('#ytms-save-preview').isEnabled(), true);
+  await page.locator('#ytms-cancel-panel').click();
+  await openPanel(page);
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
+});
+
+test('a cross-tab settings save followed by its corner event clears a stale reload action', async t => {
+  const page = await openFixture(t);
+  await openPanel(page);
+  const other = await page.context().newPage();
+  await other.goto(WATCH_URL); await healthy(other);
+  await other.evaluate(key => {
+    localStorage.setItem(key, JSON.stringify({ version: 1, values: { corner: 'bottom-left' } }));
+    localStorage.setItem('yt-master-suite.scroll-miniplayer.corner.v1', 'bottom-left');
+  }, KEY);
+  await page.waitForFunction(() => document.getElementById('ytms-corner').value === 'bottom-left' &&
+    document.getElementById('ytms-save-preview').disabled);
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Save');
+  assert.doesNotMatch(await page.locator('#ytms-settings-status').textContent(), /reload/i);
+});
+
+test('a disabled miniplayer can synchronise its corner without masking enablement reload', async t => {
+  const page = await openFixture(t, { miniplayerEnabled: false });
+  await openPanel(page);
+  const other = await page.context().newPage();
+  await other.goto(WATCH_URL); await healthy(other);
+  await other.evaluate(() => localStorage.setItem('yt-master-suite.scroll-miniplayer.corner.v1', 'bottom-left'));
+  await page.waitForFunction(() => document.getElementById('ytms-corner').value === 'bottom-left');
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+  await page.getByRole('tab', { name: 'Miniplayer', exact: true }).click();
+  await page.locator('#ytms-miniplayerEnabled').check();
+  await page.locator('#ytms-save-preview').click();
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
 });
 
 test('external saves preserve dirty and invalid inputs while blocking overwrites until Cancel and reopen', async t => {
@@ -858,17 +934,14 @@ test("panel dimensions stay fixed across every tab, colour picker, field errors 
   assert.equal(await page.locator('#ytms-section-interface .row .description').count(), 11);
 });
 
-test("Credits uses the bundled coloured logo and a safe GitHub profile link", async t => {
+test("Credits uses the bundled coloured logo and generic author attribution", async t => {
   const page = await openFixture(t, undefined, undefined, true);
   await openPanel(page);
   await page.getByRole('tab', { name: 'Credits', exact: true }).click();
   const logo = page.locator('#ytms-credits-logo');
   await logo.evaluate(image => image.decode());
   assert.equal(await logo.getAttribute('src'), await page.locator('#ytms-settings-button img').getAttribute('src'));
-  const github = page.locator('#ytms-credits-github');
-  assert.equal(await github.getAttribute('href'), 'https://github.com/noswimmingplease');
-  assert.equal(await github.getAttribute('target'), '_blank');
-  assert.equal(await github.getAttribute('rel'), 'noopener noreferrer');
+  assert.ok((await page.locator('#ytms-section-credits').innerText()).includes('Created by Citizen'));
   assert.ok((await page.locator('#ytms-section-credits').innerText()).includes(`Version ${MANIFEST.version}`));
 });
 

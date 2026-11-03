@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.61
+// @version      1.63
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
-// @homepageURL  https://github.com/noswimmingplease/youtube-watch-layout-cleaner
-// @supportURL   https://github.com/noswimmingplease/youtube-watch-layout-cleaner/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-watch-layout-cleaner/main/youtube-watch-layout-cleaner.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-watch-layout-cleaner/main/youtube-watch-layout-cleaner.user.js
+// @updateURL    none
+// @downloadURL  none
 // @match        https://www.youtube.com/*
 // @run-at       document-start
 // @grant        none
@@ -1137,19 +1135,40 @@ ${buildQueueCompatibilityCss()}
           finish("The queue changed; no item was moved.");
           return;
         }
-        const index = queue.videos.findIndex(video => video.videoId === operation.videoId);
-        if (index < 0) return;
         const currentIndex = queue.currentIndex;
-        if (index === currentIndex || index === currentIndex + 1) { finish("Playing next in queue"); return; }
-        if (operation.committed) return; // Wait for native data to confirm, never commit twice.
+        const next = queue.videos[currentIndex + 1];
+        if (operation.committed) {
+          // A duplicate video may have appeared next independently while the
+          // native move was pending. Confirm the specific committed queue
+          // entry, not merely another occurrence with the same video ID.
+          if (next?.videoId === operation.videoId && next.playlistSetVideoId === operation.entryId) {
+            finish("Playing next in queue");
+          }
+          return; // Wait for native data to confirm, never commit twice.
+        }
+        if (next?.videoId === operation.videoId) { finish("Playing next in queue"); return; }
+        const matches = queue.videos.flatMap((video, index) => video.videoId === operation.videoId ? [index] : []);
+        if (!matches.length) return;
+        if (matches.length > 1) {
+          finish("This video appears more than once in the queue. Please reorder it manually.");
+          return;
+        }
+        const index = matches[0];
+        if (index === currentIndex) { finish("Playing next in queue"); return; }
         const binding = reorderRows(queue);
         if (!binding) return;
+        const entryId = queue.videos[index].playlistSetVideoId;
+        if (!entryId || queue.videos.filter(video => video.playlistSetVideoId === entryId).length !== 1) {
+          finish("Could not identify the queue entry. Please reorder it manually.");
+          return;
+        }
         const { items, rows } = binding;
         const row = rows[index];
         // This is the same DOM move + controller commit used by native dragging.
         // Never change the queue model, call a private network API or reload playback.
         items.insertBefore(row, rows[currentIndex].nextSibling);
         operation.committed = true;
+        operation.entryId = entryId;
         try {
           queue.owner.handleDrop({ currDragItem: row });
           scheduleMove();

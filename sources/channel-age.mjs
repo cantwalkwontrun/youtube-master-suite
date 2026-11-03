@@ -52,6 +52,23 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
     return validateRules(record?.version === 1 ? record.rules : null);
   }
 
+  function savedRulesAreWritable(raw) {
+    if (raw === null) return true;
+    if (typeof raw !== "string" || raw.length > 65536) return false;
+    try {
+      const record = JSON.parse(raw);
+      if (!record || typeof record !== "object" || Array.isArray(record) ||
+          Object.keys(record).some(name => name !== "version" && name !== "rules") ||
+          record.version !== 1 || !Array.isArray(record.rules) || record.rules.length > 100) return false;
+      const allowed = ["channelId", "name", "maxAge", "unit", "enabled", "blocked"];
+      const normalised = validateRules(record.rules);
+      if (normalised.length !== record.rules.length) return false;
+      return record.rules.every((rule, index) =>
+        Object.keys(rule).every(name => allowed.includes(name) &&
+          JSON.stringify(rule[name]) === JSON.stringify(normalised[index][name])));
+    } catch { return false; }
+  }
+
   function read() {
     try {
       setCurrent(storedRules(getStorage().getItem(key)));
@@ -73,6 +90,9 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
     try {
       storage = getStorage();
       previous = storage.getItem(key);
+      if (!savedRulesAreWritable(previous)) {
+        return { ok: false, error: "Saved channel filters are incompatible or damaged. Nothing was overwritten; recover the existing data before saving." };
+      }
       if (expectedRules !== undefined) {
         let latest = [];
         try { latest = storedRules(previous); } catch { /* A corrupt record follows read()'s empty-rule fallback. */ }

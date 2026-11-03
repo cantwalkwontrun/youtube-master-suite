@@ -14,10 +14,11 @@ const CSS = `<style>
   .ytp-tooltip { position:absolute; bottom:70px; left:500px; width:200px; height:150px; z-index:2; }
   .ytp-tooltip-bg { width:200px; height:112px; border-radius:8px;
     background-image:linear-gradient(45deg,red,blue); background-size:1000px 560px; background-position:-400px -224px; }
-  .ytp-tooltip-text { height:38px; color:white; background:#222; }
+  .ytp-tooltip-text { height:38px; color:white; background:#222; font-size:14px; line-height:18px; overflow:hidden; }
+  .ytp-tooltip-edu { position:absolute; bottom:150px; left:0; width:200px; text-align:center; font-size:12px; line-height:16px; }
 </style>`;
 const MARKUP = `<div class="ytp-progress-bar-container"><div class="ytp-progress-bar"></div></div>
-  <div class="ytp-tooltip ytp-preview"><div class="ytp-tooltip-bg"></div><div class="ytp-tooltip-text">4:42 Video starts</div></div>`;
+  <div class="ytp-tooltip ytp-preview"><div class="ytp-tooltip-edu">Pull up for precise seeking</div><div class="ytp-tooltip-bg"></div><div class="ytp-tooltip-text"><span>4:42 Video starts</span></div></div>`;
 const FLOATING_SETUP = `<script>
   const host=document.getElementById('player'), anchor=document.createElement('div');
   anchor.id='single-column-container'; host.before(anchor); anchor.append(host);
@@ -55,6 +56,7 @@ async function geometry(page) {
     const node = document.querySelector('.ytp-tooltip'), image = node.querySelector('.ytp-tooltip-bg');
     const rect = element => { const r=element.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; };
     return { tip:rect(node), image:rect(image), player:rect(document.getElementById('movie_player')),
+      labels:[...node.querySelectorAll('.ytp-tooltip-edu, .ytp-tooltip-text')].map(rect),
       track:rect(document.querySelector('.ytp-progress-bar-container')), scale:node.style.scale,
       nativeWidth:node.style.width, background:getComputedStyle(image).backgroundPosition,
       backgroundSize:getComputedStyle(image).backgroundSize };
@@ -70,11 +72,359 @@ for (const [mode, expected] of [['auto',320], ['small',240], ['medium',320], ['l
     if (mode === 'native') assert.equal(g.scale, '');
   });
 }
+test('Large preserves hint size, enlarges combined time and chapter, and restores styles', async t => {
+  const page = await fixture(t, 'large');
+  const labels = page.locator('.ytp-tooltip-edu, .ytp-tooltip-text span');
+  const native = await labels.evaluateAll(nodes => nodes.map(node => ({
+    font: parseFloat(getComputedStyle(node).fontSize), line: parseFloat(getComputedStyle(node).lineHeight),
+    inlineFont: node.style.fontSize, inlineLine: node.style.lineHeight,
+  })));
+  await hover(page);
+  const scaled = await labels.evaluateAll(nodes => nodes.map(node => ({
+    font: parseFloat(getComputedStyle(node).fontSize), line: parseFloat(getComputedStyle(node).lineHeight),
+    scale: parseFloat(node.closest('.ytp-tooltip').style.scale),
+  })));
+  for (let i = 0; i < native.length; i++) {
+    const boost = i === 0 ? 1 : 1.3;
+    assert.ok(Math.abs(scaled[i].font * scaled[i].scale - native[i].font * boost) < .15);
+    assert.ok(Math.abs(scaled[i].line * scaled[i].scale - native[i].line * boost) < .15);
+  }
+  await page.mouse.move(10, 10);
+  assert.deepEqual(await labels.evaluateAll(nodes => nodes.map(node => ({
+    font: parseFloat(getComputedStyle(node).fontSize), line: parseFloat(getComputedStyle(node).lineHeight),
+    inlineFont: node.style.fontSize, inlineLine: node.style.lineHeight,
+  }))), native);
+});
+for (const width of [1024, 1920]) {
+  test(`time-only label is slightly larger and readable at ${width}px, then restores`, async t => {
+    const page = await fixture(t, 'large', { width, height:1080 });
+    const timestamp = page.locator('.ytp-tooltip-text');
+    await timestamp.evaluate(node => { node.textContent = '2:41'; });
+    const before = await timestamp.evaluate(node => ({
+      font:parseFloat(getComputedStyle(node).fontSize), background:node.style.backgroundColor,
+      colour:node.style.color, inlineFont:node.style.fontSize,
+    }));
+    await hover(page);
+    const after = await timestamp.evaluate(node => ({
+      font:parseFloat(getComputedStyle(node).fontSize), background:getComputedStyle(node).backgroundColor,
+      colour:getComputedStyle(node).color, scale:parseFloat(node.closest('.ytp-tooltip').style.scale),
+      playerWidth:document.querySelector('#movie_player').getBoundingClientRect().width,
+    }));
+    const boost = 1.15 + .15 * Math.max(0, Math.min(1, (after.playerWidth - 400) / 1200));
+    assert.ok(Math.abs(after.font * after.scale - before.font * boost) < .15, JSON.stringify(after));
+    assert.equal(after.background, 'rgb(34, 34, 34)', 'timestamp itself keeps its native background');
+    assert.equal(after.colour, 'rgb(255, 255, 255)');
+    await page.mouse.move(10, 10);
+    assert.deepEqual(await timestamp.evaluate(node => ({
+      font:parseFloat(getComputedStyle(node).fontSize), background:node.style.backgroundColor,
+      colour:node.style.color, inlineFont:node.style.fontSize,
+    })), before);
+  });
+}
+for (const width of [800, 1920]) {
+  test(`chapter label follows player width at ${width}px without shrinking Large`, async t => {
+    const page = await fixture(t, 'large', { width, height:1080 });
+    await page.locator('.ytp-tooltip-text').evaluate(node => {
+      node.className = 'ytp-tooltip-title';
+      node.textContent = 'A chapter title';
+      node.style.cssText = 'height:38px;color:white;background:transparent;font-size:14px;line-height:18px';
+    });
+    const chapter = page.locator('.ytp-tooltip-title');
+    const before = await chapter.evaluate(node => parseFloat(getComputedStyle(node).fontSize));
+    await hover(page);
+    const result = await chapter.evaluate(node => ({
+      font: parseFloat(getComputedStyle(node).fontSize),
+      scale: parseFloat(node.closest('.ytp-tooltip').style.scale),
+      playerWidth: document.querySelector('#movie_player').getBoundingClientRect().width,
+      imageWidth: document.querySelector('.ytp-tooltip-bg').getBoundingClientRect().width,
+      textBottom: node.getBoundingClientRect().bottom,
+      trackTop: document.querySelector('.ytp-progress-bar-container').getBoundingClientRect().top,
+    }));
+    const boost = 1.15 + .15 * Math.max(0, Math.min(1, (result.playerWidth - 400) / 1200));
+    assert.ok(Math.abs(result.font * result.scale - before * boost) < .15, JSON.stringify(result));
+    assert.ok(Math.abs(result.imageWidth - 480) < 1, JSON.stringify(result));
+    assert.ok(result.textBottom <= result.trackTop, JSON.stringify(result));
+    await page.mouse.move(10, 10);
+    assert.equal(await chapter.evaluate(node => node.style.fontSize), '14px');
+  });
+}
+test('a combined time and chapter label keeps native colours', async t => {
+  const page = await fixture(t, 'large');
+  const label = page.locator('.ytp-tooltip-text');
+  const before = await label.evaluate(node => ({ colour:getComputedStyle(node).color, background:getComputedStyle(node).backgroundColor }));
+  await hover(page);
+  assert.deepEqual(await label.evaluate(node => ({ colour:getComputedStyle(node).color, background:getComputedStyle(node).backgroundColor })), before);
+  assert.equal(await label.evaluate(node => node.style.backgroundColor), '');
+  assert.notEqual(await label.locator('span').evaluate(node => getComputedStyle(node).textShadow), 'none',
+    'a combined timestamp and chapter remains readable over bright footage');
+});
+test('native preview mode leaves a time-only timestamp entirely unchanged', async t => {
+  const page = await fixture(t, 'native');
+  const timestamp = page.locator('.ytp-tooltip-text');
+  await timestamp.evaluate(node => {
+    node.textContent = '2:41'; node.style.background = 'transparent';
+    const pill = document.createElement('div'); pill.className = 'ytp-tooltip-bottom-text';
+    pill.style.cssText = 'height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+    node.replaceWith(pill); pill.append(node);
+  });
+  const before = await timestamp.evaluate(node => node.getAttribute('style'));
+  await hover(page);
+  assert.equal(await timestamp.evaluate(node => node.getAttribute('style')), before);
+});
+for (const dark of [true, false]) {
+  test(`native rounded timestamp pill is less transparent in ${dark ? 'dark' : 'light'} theme`, async t => {
+    const page = await fixture(t, 'large');
+    await page.evaluate(dark => document.documentElement.toggleAttribute('dark', dark), dark);
+    await page.locator('.ytp-tooltip-text').evaluate(node => {
+      node.textContent = '2:41';
+      node.style.background = 'transparent';
+      const pill = document.createElement('div');
+      pill.className = 'ytp-tooltip-bottom-text';
+      pill.style.cssText = 'height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+      node.replaceWith(pill); pill.append(node);
+    });
+    await hover(page);
+    assert.deepEqual(await page.locator('.ytp-tooltip-text').evaluate(node => ({
+      background:getComputedStyle(node).backgroundColor, colour:getComputedStyle(node).color,
+      pill:getComputedStyle(node.parentElement).backgroundColor,
+      radius:getComputedStyle(node.parentElement).borderTopLeftRadius,
+    })), { background:'rgba(0, 0, 0, 0)', colour:'rgb(255, 255, 255)', pill:'rgba(0, 0, 0, 0.65)', radius:'20px' });
+    assert.notEqual(await page.locator('.ytp-tooltip-edu').evaluate(node => getComputedStyle(node).textShadow), 'none');
+    await page.mouse.move(10, 10);
+    assert.equal(await page.locator('.ytp-tooltip-bottom-text').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0.5)');
+    assert.equal(await page.locator('.ytp-tooltip-edu').evaluate(node => node.style.textShadow), '');
+  });
+}
+test('unrecognised, opaque, square or image-backed timestamp backgrounds are left alone', async t => {
+  const page = await fixture(t, 'large');
+  const stamp = page.locator('.ytp-tooltip-text');
+  await stamp.evaluate(node => {
+    node.textContent='2:41'; node.style.background='transparent';
+    const pill=document.createElement('div'); pill.className='ytp-tooltip-bottom-text';
+    pill.style.cssText='height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+    node.replaceWith(pill); pill.append(node);
+  });
+  for (const style of [
+    'height:38px;border-radius:0;background-color:rgba(0,0,0,.5)',
+    'height:38px;border-radius:20px;background-color:rgb(0,0,0)',
+    'height:38px;border-radius:20px;background-color:rgba(0,0,0,.5);background-image:linear-gradient(black,transparent)',
+  ]) {
+    await page.mouse.move(10,10);
+    await page.locator('.ytp-tooltip-bottom-text').evaluate((node, css) => { node.style.cssText=css; }, style);
+    const before=await page.locator('.ytp-tooltip-bottom-text').evaluate(node=>node.style.backgroundColor);
+    await hover(page);
+    assert.equal(await page.locator('.ytp-tooltip-bottom-text').evaluate(node=>node.style.backgroundColor),before);
+  }
+});
+test('time-only pill preserves another extension’s later background changes after hover', async t => {
+  const page = await fixture(t, 'large');
+  const stamp = page.locator('.ytp-tooltip-text');
+  await stamp.evaluate(node => {
+    node.textContent='2:41';
+    const pill=document.createElement('div'); pill.className='ytp-tooltip-bottom-text';
+    pill.style.cssText='height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+    node.replaceWith(pill); pill.append(node);
+  });
+  await hover(page);
+  await page.locator('.ytp-tooltip-bottom-text').evaluate(node => node.style.setProperty('background-color','rgb(10, 20, 30)','important'));
+  await page.waitForTimeout(100); await page.mouse.move(10,10);
+  assert.deepEqual(await page.locator('.ytp-tooltip-bottom-text').evaluate(node => [node.style.getPropertyValue('background-color'),node.style.getPropertyPriority('background-color')]), ['rgb(10, 20, 30)','important']);
+});
+test('forced colours keep system timestamp colours while retaining a larger time', async t => {
+  const page = await fixture(t, 'large');
+  await page.emulateMedia({ forcedColors:'active' });
+  assert.equal(await page.evaluate(() => matchMedia('(forced-colors: active)').matches), true);
+  const stamp = page.locator('.ytp-tooltip-text');
+  await stamp.evaluate(node => {
+    node.textContent='2:41';
+    const pill=document.createElement('div'); pill.className='ytp-tooltip-bottom-text';
+    pill.style.cssText='height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+    node.replaceWith(pill); pill.append(node);
+  });
+  const before = await stamp.evaluate(node => parseFloat(getComputedStyle(node).fontSize));
+  await hover(page);
+  const result = await stamp.evaluate(node => ({
+    background:node.style.backgroundColor, colour:node.style.color,
+    font:parseFloat(getComputedStyle(node).fontSize), scale:parseFloat(node.closest('.ytp-tooltip').style.scale),
+  }));
+  assert.equal(result.background, '');
+  assert.equal(result.colour, '');
+  assert.equal(await stamp.evaluate(node => node.style.textShadow), '');
+  assert.equal(await page.locator('.ytp-tooltip-bottom-text').evaluate(node => node.style.backgroundColor), 'rgba(0, 0, 0, 0.5)');
+  assert.equal(await page.locator('.ytp-tooltip-edu').evaluate(node => node.style.textShadow), '');
+  assert.ok(result.font * result.scale > before);
+});
+
+test('timestamp and instruction shadows remain visible over white without changing pill shape', async t => {
+  const page = await fixture(t, 'large');
+  const hint = page.locator('.ytp-tooltip-edu');
+  const stamp = page.locator('.ytp-tooltip-text');
+  await page.evaluate(() => {
+    const player = document.querySelector('#movie_player');
+    player.style.background = '#fff';
+    const hint = document.querySelector('.ytp-tooltip-edu');
+    hint.style.color = '#fff';
+    hint.innerHTML = '<span style="color:#fff;text-shadow:none">Pull up for precise seeking</span>';
+    const stamp = document.querySelector('.ytp-tooltip-text');
+    stamp.style.cssText = 'height:38px;color:#fff;background:transparent';
+    stamp.innerHTML = '<span style="color:#fff;text-shadow:none">2:41</span>';
+  });
+  await hover(page);
+  for (const locator of [hint.locator('span'), stamp.locator('span')]) {
+    const result = await locator.evaluate(node => ({
+      shadow: getComputedStyle(node).textShadow,
+      background: getComputedStyle(node).backgroundColor,
+      width: node.getBoundingClientRect().width,
+      height: node.getBoundingClientRect().height,
+    }));
+    assert.notEqual(result.shadow, 'none');
+    assert.equal(result.background, 'rgba(0, 0, 0, 0)');
+    assert.ok(result.width > 0 && result.height > 0);
+    const png = await locator.screenshot();
+    const darkPixels = await page.evaluate(async encoded => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${encoded}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] < 100 && data[i + 1] < 100 && data[i + 2] < 100) count++;
+      }
+      return count;
+    }, png.toString('base64'));
+    assert.ok(darkPixels > 10, `Expected visible dark shadow pixels on white, got ${darkPixels}`);
+  }
+  await page.mouse.move(10, 10);
+  assert.equal(await hint.locator('span').evaluate(node => node.style.textShadow), 'none');
+  assert.equal(await stamp.locator('span').evaluate(node => node.style.textShadow), 'none');
+});
+
+test('later extension text-shadow changes are retained after the preview closes', async t => {
+  const page = await fixture(t, 'large');
+  const stamp = page.locator('.ytp-tooltip-text');
+  await stamp.evaluate(node => { node.textContent = '2:41'; });
+  await hover(page);
+  await stamp.evaluate(node => node.style.setProperty('text-shadow', '1px 1px 1px blue', 'important'));
+  await page.waitForTimeout(100);
+  await page.mouse.move(10, 10);
+  assert.deepEqual(await stamp.evaluate(node => [node.style.getPropertyValue('text-shadow'), node.style.getPropertyPriority('text-shadow')]),
+    ['blue 1px 1px 1px', 'important']);
+});
+
+for (const mode of ['small', 'large']) {
+  test(`${mode} preview retains a consistent rendered shadow thickness`, async t => {
+    const page = await fixture(t, mode);
+    await page.locator('.ytp-tooltip-text').evaluate(node => { node.textContent = '2:41'; });
+    await hover(page);
+    const geometry = await page.locator('.ytp-tooltip-text').evaluate(node => {
+      const player = document.querySelector('#movie_player');
+      const preview = node.closest('.ytp-tooltip');
+      const lengths = [...getComputedStyle(node).textShadow.matchAll(/(-?\d*\.?\d+)px/g)].map(match => Number(match[1]));
+      return { blur:lengths[2], scale:parseFloat(preview.style.scale),
+        playerScale:player.getBoundingClientRect().width / player.offsetWidth };
+    });
+    assert.ok(Math.abs(geometry.blur * geometry.scale * geometry.playerScale - 2) < .1, JSON.stringify(geometry));
+  });
+}
+test('timestamp pill is styled separately from its chapter title', async t => {
+  const page = await fixture(t, 'large');
+  await page.locator('.ytp-tooltip-text').evaluate(node => {
+    node.textContent = '';
+    const pill = document.createElement('span'); pill.className='ytp-tooltip-progress-bar-pill';
+    pill.style.cssText='border-radius:20px;background-color:rgba(0,0,0,.5)';
+    const stamp = document.createElement('span'); stamp.className='ytp-tooltip-progress-bar-pill-time-stamp'; stamp.textContent='2:41';
+    const title = document.createElement('span'); title.className='ytp-tooltip-progress-bar-pill-title'; title.textContent='Chapter';
+    pill.append(stamp, document.createTextNode(' '), title); node.append(pill);
+  });
+  await hover(page);
+  const result = await page.evaluate(() => {
+    const stamp=document.querySelector('.ytp-tooltip-progress-bar-pill-time-stamp');
+    const title=document.querySelector('.ytp-tooltip-progress-bar-pill-title');
+    return { stampBg:getComputedStyle(stamp).backgroundColor, titleBg:getComputedStyle(title).backgroundColor,
+      pillBg:getComputedStyle(stamp.parentElement).backgroundColor,
+      stampFont:parseFloat(getComputedStyle(stamp).fontSize), titleFont:parseFloat(getComputedStyle(title).fontSize),
+      stampShadow:getComputedStyle(stamp).textShadow, titleShadow:title.style.textShadow };
+  });
+  assert.equal(result.stampBg, 'rgba(0, 0, 0, 0)');
+  assert.equal(result.pillBg, 'rgba(0, 0, 0, 0.65)');
+  assert.equal(result.titleBg, 'rgba(0, 0, 0, 0)');
+  assert.ok(Math.abs(result.stampFont - result.titleFont) < .1);
+  assert.notEqual(result.stampShadow, 'none');
+  assert.equal(result.titleShadow, '', 'a separate chapter title keeps its native shadow');
+});
+test('recognised out-of-flow and wrapping labels are bounded or safely left native at both edges', async t => {
+  const page = await fixture(t, 'large');
+  for (const left of [-60, 1490]) {
+    await page.mouse.move(10, 10);
+    await page.locator('.ytp-tooltip').evaluate((node, left) => {
+      node.style.left = left + 'px';
+      node.querySelector('.ytp-tooltip-edu').style.lineHeight = 'normal';
+      node.querySelector('.ytp-tooltip-edu').textContent = 'Pull up for precise seeking and additional long instructions that may wrap';
+    }, left);
+    await hover(page);
+    const result = await page.evaluate(() => {
+      const tip = document.querySelector('.ytp-tooltip'), image = tip.querySelector('.ytp-tooltip-bg').getBoundingClientRect();
+      const player = document.querySelector('#movie_player').getBoundingClientRect(), track = document.querySelector('.ytp-progress-bar-container').getBoundingClientRect();
+      const labels = [...tip.querySelectorAll('.ytp-tooltip-edu, .ytp-tooltip-text')].map(node => node.getBoundingClientRect());
+      return { scale: tip.style.scale, safe: labels.every(r => r.left >= Math.max(0, player.left) && r.right <= Math.min(innerWidth, player.right) &&
+        r.top >= Math.max(0, player.top) && r.bottom <= Math.min(innerHeight, player.bottom, track.top) &&
+        !(r.left < image.right - 1 && r.right > image.left + 1 && r.top < image.bottom - 1 && r.bottom > image.top + 1)) };
+    });
+    assert.ok(!result.scale || result.safe, JSON.stringify(result));
+  }
+});
+test('unrecognised preview labels do not receive resized presentation', async t => {
+  const page = await fixture(t, 'large');
+  await page.locator('.ytp-tooltip').evaluate(node => {
+    node.querySelector('.ytp-tooltip-edu').className = 'unknown-label';
+    node.querySelector('.ytp-tooltip-text').className = 'unknown-timestamp';
+  });
+  await hover(page);
+  assert.equal((await geometry(page)).scale, '');
+});
+test('oversized label trees and images outside the preview box are left native', async t => {
+  const page = await fixture(t, 'large');
+  await page.locator('.ytp-tooltip-text').evaluate(node => {
+    for (let index = 0; index < 140; index++) node.append(document.createTextNode(' '));
+  });
+  await hover(page);
+  assert.equal((await geometry(page)).scale, '');
+  await page.mouse.move(10, 10);
+  await page.locator('.ytp-tooltip-text').evaluate(node => node.replaceChildren(document.createTextNode('4:42')));
+  await page.locator('.ytp-tooltip-bg').evaluate(node => node.style.width = '300px');
+  await hover(page);
+  assert.equal((await geometry(page)).scale, '');
+});
+test('mixed unknown text and excessively long labels leave native sizing untouched', async t => {
+  const page = await fixture(t, 'large');
+  await page.locator('.ytp-tooltip').evaluate(node => {
+    const unknown = document.createElement('span'); unknown.className = 'unknown-label';
+    unknown.textContent = 'Additional label'; node.append(unknown);
+  });
+  await hover(page); assert.equal((await geometry(page)).scale, '');
+  await page.mouse.move(10, 10);
+  await page.locator('.ytp-tooltip').evaluate(node => {
+    node.querySelector('.unknown-label').remove();
+    node.querySelector('.ytp-tooltip-edu').textContent = 'x'.repeat(2049);
+  });
+  await hover(page); assert.equal((await geometry(page)).scale, '');
+});
+test('external label font changes remain intact when preview sizing ends', async t => {
+  const page = await fixture(t, 'large'); await hover(page);
+  const text = page.locator('.ytp-tooltip-text span');
+  await text.evaluate(node => node.style.setProperty('font-size', '19px', 'important'));
+  await page.waitForTimeout(80);
+  await page.mouse.move(10, 10);
+  assert.deepEqual(await text.evaluate(node => [node.style.getPropertyValue('font-size'), node.style.getPropertyPriority('font-size')]), ['19px', 'important']);
+});
 for (const viewport of [{width:1024,height:768}, {width:2560,height:1440}, {width:3840,height:2160}]) {
   test(`automatic preview fits a ${viewport.width}px viewport and follows player resizing`, async t => {
     const page = await fixture(t, 'auto', viewport); await hover(page);
     const initial = await geometry(page);
-    assert.ok(Math.abs(initial.image.width - Math.max(192, Math.min(480, initial.player.width * .2))) < 1);
+    assert.ok(Math.abs(initial.image.width - Math.max(192, Math.min(480, initial.player.width * .2))) < 1, JSON.stringify(initial));
     await page.evaluate(() => { const p=document.getElementById('movie_player'); p.style.width='400px'; p.style.height='260px'; });
     await hover(page);
     const g = await geometry(page);
@@ -150,6 +500,7 @@ test('Player settings expose the size selector with normal save, revert and defa
   const page=await fixture(t);
   await page.locator('#ytms-settings-button').click(); await page.locator('#ytms-tab-player').click();
   const control=page.locator('#ytms-timelinePreviewSize');
+  assert.equal(await page.getByText('The preview may briefly flicker or resize near SponsorBlock segments or chapter boundaries.', { exact: false }).count(),1);
   assert.equal(await control.inputValue(),'auto');
   await control.selectOption('large'); assert.equal(await page.locator('#ytms-save-preview').isEnabled(),true);
   await control.selectOption('auto'); assert.equal(await page.locator('#ytms-save-preview').isDisabled(),true);
@@ -232,6 +583,30 @@ async function floatPlayer(page) {
   await hover(page);
 }
 
+test('scroll-miniplayer timestamp stays proportional and retains a readable backing', async t => {
+  const page = await fixture(t, 'large', { width:1920, height:1080 }, { miniplayer:true });
+  const timestamp = page.locator('.ytp-tooltip-text');
+  await timestamp.evaluate(node => {
+    node.textContent = '2:41'; node.style.background = 'transparent';
+    const pill = document.createElement('div'); pill.className = 'ytp-tooltip-bottom-text';
+    pill.style.cssText = 'height:38px;border-radius:20px;background-color:rgba(0,0,0,.5)';
+    node.replaceWith(pill); pill.append(node);
+  });
+  const nativeFont = await timestamp.evaluate(node => parseFloat(getComputedStyle(node).fontSize));
+  await floatPlayer(page);
+  const result = await timestamp.evaluate(node => {
+    const player = document.querySelector('#movie_player');
+    return { font:parseFloat(getComputedStyle(node).fontSize),
+      scale:parseFloat(node.closest('.ytp-tooltip').style.scale),
+      background:getComputedStyle(node.parentElement).backgroundColor,
+      width:player.getBoundingClientRect().width };
+  });
+  const boost = 1.15 + .15 * Math.max(0, Math.min(1, (result.width - 400) / 1200));
+  assert.ok(Number.isFinite(result.scale));
+  assert.ok(Math.abs(result.font * Math.max(1, result.scale) - nativeFont * boost) < .15, JSON.stringify(result));
+  assert.equal(result.background, 'rgba(0, 0, 0, 0.65)');
+});
+
 for (const mode of ['auto','small','medium','large']) {
   test(`${mode} preview is proportionate to the real scroll miniplayer and follows its resizing`, async t=>{
     const page=await fixture(t,mode,{width:1920,height:1080},{miniplayer:true});
@@ -240,8 +615,14 @@ for (const mode of ['auto','small','medium','large']) {
     await floatPlayer(page);
     const assertFloating=g=>{
       const fraction=({auto:.2,small:.2,medium:320/1200,large:.4})[mode];
-      const expected=Math.min(g.player.width*fraction,g.player.height*.45/150*200);
-      assert.ok(Math.abs(g.image.width-expected)<1,JSON.stringify(g));
+      const desired=g.player.width*fraction;
+      const labelTop=Math.min(g.tip.top,...g.labels.map(label=>label.top));
+      const labelBottom=Math.max(g.tip.bottom,...g.labels.map(label=>label.bottom));
+      // Font compensation makes text height independent of the image scale;
+      // check the rendered union rather than a fixed native-height ratio.
+      assert.ok(g.image.width<=desired+1,JSON.stringify(g));
+      assert.ok(labelBottom-labelTop<=g.player.height*.45+1,JSON.stringify(g));
+      if (g.image.width<desired-1) assert.ok(labelBottom-labelTop>=g.player.height*.45-2,JSON.stringify(g));
       assert.ok(g.tip.height<=g.player.height*.45+1,JSON.stringify(g));
       assert.ok(g.tip.left>=g.player.left+7 && g.tip.right<=g.player.right-7,JSON.stringify(g));
       assert.ok(g.tip.top>=g.player.top+7 && g.tip.bottom<=g.track.top-7,JSON.stringify(g));
@@ -283,6 +664,7 @@ for(const imageHeight of [150,300]) {
     const page=await fixture(t,'large',{width:1920,height:1080},{miniplayer:true});
     await page.locator('.ytp-tooltip-bg').evaluate((n,h)=>n.style.height=h+'px',imageHeight);
     await page.locator('.ytp-tooltip').evaluate((n,h)=>n.style.height=(h+38)+'px',imageHeight);
+    await page.locator('.ytp-tooltip-edu').evaluate((n,h)=>n.style.bottom=(h+38)+'px',imageHeight);
     await floatPlayer(page); const g=await geometry(page);
     assert.ok(g.image.width<=g.player.width*.4+1,JSON.stringify(g));
     assert.ok(g.tip.height<=g.player.height*.45+1,JSON.stringify(g));

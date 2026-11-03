@@ -79,9 +79,10 @@ export function createSettingsSupportPanel(document, suite, hooks) {
   const settingName = value => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, letter => letter.toUpperCase());
   function showPreview(result) {
     token = result.preview; preview.replaceChildren(); preview.hidden = false;
-    const { settingChanges, filters, warning } = result.summary;
+    const { settingChanges, filters, orderChanged, warning } = result.summary;
     preview.append(node('h4', 'Restore preview'), node('p', warning),
       node('p', `${settingChanges.length} ${settingChanges.length === 1 ? 'setting' : 'settings'} changed. Channel filters: ${filters.added} added, ${filters.changed} updated, ${filters.removed} removed; ${filters.total} after restore.`));
+    if (orderChanged) preview.append(node('p', 'Channel filter order will change.'));
     if (settingChanges.length) {
       const details = node('details'); details.append(node('summary', 'Review setting changes'));
       const list = node('ul');
@@ -95,7 +96,7 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     const cancel = button('cancel-restore', 'Cancel restore');
     const buttons = node('div', '', { class: 'support-actions' }); buttons.append(restore, cancel);
     preview.append(acknowledgement, buttons);
-    const changed = settingChanges.length || filters.added || filters.changed || filters.removed;
+    const changed = settingChanges.length || filters.added || filters.changed || filters.removed || orderChanged;
     const update = () => {
       const dirty = hooks.hasDraft();
       restore.disabled = !check.checked || !changed || dirty;

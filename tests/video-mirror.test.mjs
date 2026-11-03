@@ -312,6 +312,7 @@ function createHarness({ enabled = true } = {}) {
     "getVideoMirrorLabel", "hideVideoMirrorTooltip", "positionVideoMirrorTooltip",
     "refreshVideoMirrorTooltip",
     "isVideoMirrorTooltipOwnerVisible", "handleVideoMirrorTooltipPointerMove", "handleVideoMirrorTooltipVisibility",
+    "hasVideoMirrorTooltipKeyboardFocus", "hideVideoMirrorTooltipOnMouseLeave",
     "handleVideoMirrorTooltipDocumentLeave",
     "showVideoMirrorTooltip", "handleVideoMirrorKeyDown", "replaceObserverRegistrations",
     "placeVideoMirrorButton", "syncVideoMirror", "scheduleVideoMirrorSync", "mutationAffectsVideoMirror",
@@ -590,6 +591,20 @@ test("mouse or programmatic focus cannot reopen a dismissed mirror tooltip", () 
   assert.ok(h.tooltip(), "keyboard-visible focus retains the accessible tooltip");
 });
 
+test("mirror tooltip stays for keyboard focus when the pointer leaves, then closes on blur", () => {
+  const h = createHarness();
+  const button = h.button();
+  button.focus();
+  const tooltip = h.tooltip();
+  h.dispatch("pointermove", "document", h.player, { clientX: 650, clientY: 380 });
+  button.dispatch("mouseleave");
+  h.dispatch("mouseleave", "document", h.document.documentElement);
+  assert.equal(h.tooltip(), tooltip);
+  assert.equal(button.getAttribute("aria-describedby"), "ytppl-video-mirror-tooltip");
+  button.blur();
+  assert.equal(h.tooltip(), null);
+});
+
 test("mirror tooltip dismisses on a missed pointer exit or outside press without consuming input", () => {
   for (const exit of [
     (h) => h.dispatch("pointermove", "document", h.player, { clientX: 650, clientY: 380 }),
@@ -765,7 +780,6 @@ test("tooltip hides for zero-sized controls and cannot open against a stale or h
 
 test("tooltip lifecycle cleanup releases its node and description without consuming Escape", () => {
   const exits = [
-    (h) => h.button().dispatch("mouseleave"),
     (h) => h.button().blur(),
     (h) => h.key({ key: "Escape" }),
     (h) => h.dispatch("blur"),

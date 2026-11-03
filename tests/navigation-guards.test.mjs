@@ -413,7 +413,10 @@ class FakeDocument extends FakeEventTarget {
 
 function createLocation(initialUrl) {
   let current = new URL(initialUrl);
+  let reloadCount = 0;
   return {
+    get reloadCount() { return reloadCount; },
+    reload() { reloadCount += 1; },
     get href() {
       return current.href;
     },
@@ -1868,7 +1871,7 @@ test("Comment Cleaner fails open after a bounded wait for coherent recycled comm
   );
 });
 
-test("Comment Cleaner never hides a coherent page indefinitely for an old permalink", () => {
+test("Comment Cleaner warns instead of displaying proven old comments after timeout", () => {
   const { harness, watch } = initialiseCommentCleanerWatch();
   const reused = createCommentsContainer({ permalinkVideoId: VIDEO_A });
   harness.document.body.appendChild(reused.comments);
@@ -1880,10 +1883,17 @@ test("Comment Cleaner never hides a coherent page indefinitely for an old permal
   harness.dispatchWindow("yt-navigate-finish");
   harness.clock.tick(8_100);
   assert.equal(
-    reused.comments.hasAttribute("data-iow-stale-video"),
-    false,
-    "availability must win after the bounded stale-content protection window",
+    reused.comments.getAttribute("data-iow-stale-video"),
+    "1",
+    "a known old permalink must not be presented as current",
   );
+  const notice = harness.document.querySelector('[data-iow-stale-notice="1"]');
+  assert.ok(notice);
+  assert.equal(notice.getAttribute("role"), "status");
+  assert.match(notice.querySelector("button").textContent, /restarts video/i);
+  assert.equal(harness.location.reloadCount, 0, "recovery never reloads automatically");
+  notice.querySelector("button").dispatchEvent({ type: "click" });
+  assert.equal(harness.location.reloadCount, 1);
 
   harness.emitMutations([
     {
@@ -1895,10 +1905,105 @@ test("Comment Cleaner never hides a coherent page indefinitely for an old permal
     },
   ]);
   assert.equal(
-    reused.comments.hasAttribute("data-iow-stale-video"),
-    false,
-    "a released destination must stay available until the next navigation",
+    reused.comments.getAttribute("data-iow-stale-video"),
+    "1",
+    "known old comments remain guarded after a mutation",
   );
+  assert.equal(harness.document.querySelectorAll('[data-iow-stale-notice="1"]').length, 1);
+  reused.comments.querySelector('a[href*="lc="]').setAttribute("href", `https://www.youtube.com/watch?v=${VIDEO_B}&lc=current`);
+  harness.emitMutations([{ type: "attributes", attributeName: "href", target: reused.comments.querySelector('a[href*="lc="]'), addedNodes: [], removedNodes: [] }]);
+  assert.equal(reused.comments.hasAttribute("data-iow-stale-video"), false);
+  assert.equal(harness.document.querySelector('[data-iow-stale-notice="1"]'), null);
+  notice.querySelector("button").dispatchEvent({ type: "click" });
+  assert.equal(harness.location.reloadCount, 1, "a detached notice cannot reload later");
+});
+
+test("Comment Cleaner keeps ambiguous and mixed comments available after timeout", () => {
+  for (const provenance of ["none", "mixed", "incoherent"]) {
+    const { harness, watch } = initialiseCommentCleanerWatch();
+    const entry = createCommentsContainer({ permalinkVideoId: provenance === "none" ? "" : VIDEO_A });
+    harness.document.body.appendChild(entry.comments);
+    harness.dispatchWindow("yt-navigate-start");
+    setWatchUrl(harness, VIDEO_B);
+    if (provenance !== "incoherent") {
+      watch.setIdentity(VIDEO_B);
+      watch.setFlexyIdentity(VIDEO_B);
+    }
+    if (provenance === "mixed") entry.comments.appendChild(createCommentsContainer({ permalinkVideoId: VIDEO_B }).renderers[0]);
+    harness.dispatchWindow("yt-navigate-finish");
+    harness.clock.tick(8100);
+    assert.equal(entry.comments.hasAttribute("data-iow-stale-video"), false, provenance);
+    assert.equal(harness.document.querySelector('[data-iow-stale-notice="1"]'), null, provenance);
+    assert.equal(harness.location.reloadCount, 0, provenance);
+  }
+});
+
+test("Comment Cleaner rechecks old comments when active player metadata arrives after timeout", () => {
+  const { harness, watch } = initialiseCommentCleanerWatch();
+  const entry = createCommentsContainer({ permalinkVideoId: VIDEO_A });
+  harness.document.body.appendChild(entry.comments);
+  harness.dispatchWindow("yt-navigate-start");
+  setWatchUrl(harness, VIDEO_B);
+  watch.setFlexyIdentity(VIDEO_B);
+  harness.dispatchWindow("yt-navigate-finish");
+  harness.clock.tick(8100);
+  assert.equal(entry.comments.hasAttribute("data-iow-stale-video"), false);
+  watch.setIdentity(VIDEO_B);
+  harness.dispatchDocument("loadedmetadata", watch.video);
+  assert.equal(entry.comments.getAttribute("data-iow-stale-video"), "1");
+  assert.ok(harness.document.querySelector('[data-iow-stale-notice="1"]'));
+});
+
+test("Comment Cleaner only rescans the affected container after timeout", () => {
+  const { harness, watch } = initialiseCommentCleanerWatch();
+  const first = createCommentsContainer({ permalinkVideoId: VIDEO_A });
+  const second = createCommentsContainer({ permalinkVideoId: VIDEO_A });
+  harness.document.body.appendChild(first.comments);
+  harness.document.body.appendChild(second.comments);
+  harness.dispatchWindow("yt-navigate-start");
+  setWatchUrl(harness, VIDEO_B);
+  watch.setIdentity(VIDEO_B);
+  watch.setFlexyIdentity(VIDEO_B);
+  harness.dispatchWindow("yt-navigate-finish");
+  harness.clock.tick(8100);
+  let unrelatedReads = 0;
+  const originalQuery = second.comments.querySelectorAll.bind(second.comments);
+  second.comments.querySelectorAll = (selector) => {
+    if (selector.includes("lc=")) unrelatedReads += 1;
+    return originalQuery(selector);
+  };
+  const link = first.comments.querySelector('a[href*="lc="]');
+  link.setAttribute("href", `https://www.youtube.com/watch?v=${VIDEO_B}&lc=fresh`);
+  harness.emitMutations([{ type: "attributes", attributeName: "href", target: link, addedNodes: [], removedNodes: [] }]);
+  assert.equal(unrelatedReads, 0, "another container's permalinks are not rescanned");
+  assert.equal(first.comments.hasAttribute("data-iow-stale-video"), false);
+  assert.equal(second.comments.getAttribute("data-iow-stale-video"), "1");
+  assert.equal(harness.document.querySelectorAll('[data-iow-stale-notice="1"]').length, 1);
+});
+
+test("Comment Cleaner removes a stale notice on navigation, pagehide and container removal", () => {
+  for (const action of ["navigation", "pagehide", "removal"]) {
+    const { harness, watch } = initialiseCommentCleanerWatch();
+    const entry = createCommentsContainer({ permalinkVideoId: VIDEO_A });
+    harness.document.body.appendChild(entry.comments);
+    harness.dispatchWindow("yt-navigate-start");
+    setWatchUrl(harness, VIDEO_B);
+    watch.setIdentity(VIDEO_B);
+    watch.setFlexyIdentity(VIDEO_B);
+    harness.dispatchWindow("yt-navigate-finish");
+    harness.clock.tick(8100);
+    assert.ok(harness.document.querySelector('[data-iow-stale-notice="1"]'), action);
+    const staleButton = harness.document.querySelector('[data-iow-stale-notice="1"]').querySelector("button");
+    if (action === "navigation") harness.dispatchWindow("yt-navigate-start");
+    else if (action === "pagehide") harness.dispatchWindow("pagehide");
+    else {
+      entry.comments.remove();
+      harness.emitMutations([{ type: "childList", target: harness.document.body, addedNodes: [], removedNodes: [entry.comments] }]);
+    }
+    assert.equal(harness.document.querySelector('[data-iow-stale-notice="1"]'), null, action);
+    staleButton.dispatchEvent({ type: "click" });
+    assert.equal(harness.location.reloadCount, 0, action);
+  }
 });
 
 test("Comment Cleaner reconciles multiple comment containers independently", () => {
@@ -2201,9 +2306,9 @@ test("Comment Cleaner releases an unbound destination after the original hiding 
   harness.clock.tick(7999);
   assert.equal(comments.getAttribute("data-iow-stale-video"), "1");
   harness.clock.tick(1);
-  assert.equal(comments.hasAttribute("data-iow-stale-video"), false);
+  assert.equal(comments.getAttribute("data-iow-stale-video"), "1");
   harness.emitMutations([{ type: "childList", target: comments, addedNodes: [], removedNodes: [] }]);
-  assert.equal(comments.hasAttribute("data-iow-stale-video"), false, "later mutations cannot re-latch the fail-open destination");
+  assert.equal(comments.getAttribute("data-iow-stale-video"), "1", "proven stale comments remain guarded after late binding");
   assert.equal(harness.clock.pendingCount, 0);
 });
 

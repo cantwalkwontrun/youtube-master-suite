@@ -64,6 +64,19 @@ test("backup factory embeds without imports or external runtime state", () => {
   assert.equal(service.exportData().ok, true);
 });
 
+test('full backup detects and restores a channel-order-only difference', () => {
+  const f = fixture({ [FILTERS]: rawRules([rule(), rule(OTHER)]) });
+  const result = staged(f, {}, [rule(OTHER), rule()]);
+  assert.equal(result.summary.orderChanged, true);
+  assert.deepEqual(result.summary.settingChanges, []);
+  assert.deepEqual(result.summary.filters, { added: 0, changed: 0, removed: 0, total: 2 });
+  assert.deepEqual(f.writes, []);
+  assert.equal(f.backup.restore(result.preview).ok, true);
+  assert.deepEqual(JSON.parse(f.data.get(FILTERS)).rules, [rule(OTHER), rule()]);
+  const identical = staged(f, {}, [rule(OTHER), rule()]);
+  assert.equal(identical.summary.orderChanged, false);
+});
+
 test("export includes saved values, the synchronised corner and channel names/IDs, not active or unrelated data", () => {
   const f = fixture({ unrelatedHistory: "private", account: "private" });
   f.data.set(SETTINGS, JSON.stringify({ version: 1, values: { hideChat: false, corner: "top-left" } }));

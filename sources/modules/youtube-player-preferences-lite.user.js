@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.92
+// @version      1.120
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
-// @homepageURL  https://github.com/noswimmingplease/youtube-player-preferences-lite
-// @supportURL   https://github.com/noswimmingplease/youtube-player-preferences-lite/issues
-// @updateURL    https://raw.githubusercontent.com/noswimmingplease/youtube-player-preferences-lite/main/youtube-player-preferences-lite.user.js
-// @downloadURL  https://raw.githubusercontent.com/noswimmingplease/youtube-player-preferences-lite/main/youtube-player-preferences-lite.user.js
+// @updateURL    none
+// @downloadURL  none
 // @match        https://www.youtube.com/*
 // @run-at       document-idle
 // @grant        none
@@ -2800,9 +2798,27 @@
     `;
   }
 
+  function buildPlayerControlsContrastCss() {
+    // Keep the native gradient, SVG filters, hit targets and colours intact.
+    // A translucent toolbar backing improves contrast against bright footage;
+    // forced-colours mode remains under the browser's accessibility control.
+    return `
+      @media (forced-colors: none) {
+        .html5-video-player .ytp-chrome-controls {
+          background-color: rgba(0, 0, 0, 0.45);
+        }
+        .html5-video-player .ytp-chrome-controls .ytp-time-display,
+        .html5-video-player .ytp-chrome-controls .ytp-chapter-title {
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 0.8);
+        }
+      }
+    `;
+  }
+
   function buildCss() {
     return [
       buildVolumeOverlayCss(),
+      buildPlayerControlsContrastCss(),
       buildVideoMirrorCss(),
       buildCaptionCss(),
       buildShortsCss(),
@@ -2999,6 +3015,7 @@
 
   function handleVideoMirrorTooltipPointerMove(event) {
     if (!videoMirrorTooltip) return;
+    if (hasVideoMirrorTooltipKeyboardFocus()) return;
     const rect = videoMirrorButton?.getBoundingClientRect();
     if (
       !videoMirrorButton?.contains(event.target) || !rect?.width || !rect.height ||
@@ -3008,12 +3025,21 @@
     ) hideVideoMirrorTooltip();
   }
 
+  function hasVideoMirrorTooltipKeyboardFocus() {
+    return document.activeElement === videoMirrorButton && videoMirrorButton?.matches(":focus-visible");
+  }
+
+  function hideVideoMirrorTooltipOnMouseLeave() {
+    if (!hasVideoMirrorTooltipKeyboardFocus()) hideVideoMirrorTooltip();
+  }
+
   function handleVideoMirrorTooltipVisibility() {
     if (document.hidden) hideVideoMirrorTooltip();
   }
 
   function handleVideoMirrorTooltipDocumentLeave(event) {
-    if (event.target === document || event.target === document.documentElement) hideVideoMirrorTooltip();
+    if ((event.target === document || event.target === document.documentElement) &&
+      !hasVideoMirrorTooltipKeyboardFocus()) hideVideoMirrorTooltip();
   }
 
   function positionVideoMirrorTooltip() {
@@ -3167,7 +3193,7 @@
     button.addEventListener("click", handleVideoMirrorClick);
     button.addEventListener("mouseenter", showVideoMirrorTooltip);
     button.addEventListener("focus", showVideoMirrorTooltip);
-    button.addEventListener("mouseleave", hideVideoMirrorTooltip);
+    button.addEventListener("mouseleave", hideVideoMirrorTooltipOnMouseLeave);
     button.addEventListener("blur", hideVideoMirrorTooltip);
     return button;
   }
@@ -4895,28 +4921,44 @@
     if (!['auto', 'small', 'medium', 'large'].includes(mode)) return;
     const trackSelector = '.ytp-progress-bar-container, .ytp-progress-bar';
     const previewSelector = '.ytp-tooltip.ytp-preview';
-    let player = null, track = null, frame = 0, owned = null, resizeObserver = null;
+    const previewMotionEndEvents = ['animationend', 'animationcancel', 'transitionend', 'transitioncancel'];
+    let player = null, track = null, frame = 0, owned = null, resizeObserver = null, textRoot = null;
+    let resumeCandidate = null, sponsorMotion = null;
     let suspended = false;
+    // YouTube may update an existing text node without a child-list mutation.
+    // Observe only the active preview, never the whole player's text churn.
+    const textObserver = new MutationObserver(() => schedule());
     const observer = new MutationObserver(records => {
-      if (records.some(record => record.target.closest?.(previewSelector) ||
+      if (records.some(record => (record.target === player && record.attributeName === 'class') ||
+          record.target.closest?.(previewSelector) ||
+          (textRoot && (record.target === textRoot || textRoot.contains(record.target))) ||
           [...record.addedNodes, ...record.removedNodes].some(node =>
-            node.matches?.(previewSelector) || node.querySelector?.(previewSelector)))) schedule();
+            node.matches?.(previewSelector) || node.querySelector?.(previewSelector) ||
+            (textRoot && (node === textRoot || node.contains?.(textRoot)))))) schedule();
     });
     function restore() {
       if (!owned) return;
-      for (const [name, entry] of owned.values) {
-        const style = owned.node.style;
-        if (style.getPropertyValue(name) !== entry.written || style.getPropertyPriority(name) !== 'important') continue;
-        if (entry.before) style.setProperty(name, entry.before, entry.priority);
-        else style.removeProperty(name);
+      for (const [element, values] of owned.values) {
+        for (const [name, entry] of values) {
+          const style = element.style;
+          if (style.getPropertyValue(name) !== entry.written || style.getPropertyPriority(name) !== 'important') continue;
+          if (entry.before) style.setProperty(name, entry.before, entry.priority);
+          else style.removeProperty(name);
+        }
       }
       owned = null;
     }
     function stop() {
       observer.disconnect(); resizeObserver?.disconnect(); resizeObserver = null;
+      textObserver.disconnect(); textRoot = null;
       if (frame) cancelAnimationFrame(frame);
-      frame = 0; restore(); player = null; track = null;
+      if (player) for (const name of previewMotionEndEvents) player.removeEventListener(name, onPreviewMotionEnd, true);
+      frame = 0; restore(); player = null; track = null; sponsorMotion = null;
       window.removeEventListener('resize', schedule);
+    }
+    function onPreviewMotionEnd(event) {
+      const preview = event.target?.closest?.(previewSelector);
+      if (preview && player?.contains(preview)) schedule();
     }
     function observe() {
       if (!player) return;
@@ -4926,37 +4968,322 @@
     }
     function write(node, name, value) {
       if (!owned) owned = { node, values: new Map() };
+      if (!owned.values.has(node)) owned.values.set(node, new Map());
       const entry = { before: node.style.getPropertyValue(name),
         priority: node.style.getPropertyPriority(name), written: '' };
       node.style.setProperty(name, value, 'important');
       // CSSOM canonicalises zero translations and transform origins. Compare
       // read-back values when restoring, not the unnormalised input string.
       entry.written = node.style.getPropertyValue(name);
-      owned.values.set(name, entry);
+      owned.values.get(node).set(name, entry);
+    }
+    function hasVisibleGlyphs(textNode) {
+      const parent = textNode.parentElement;
+      if (!parent) return false;
+      const visibility = getComputedStyle(parent).visibility;
+      if (visibility === 'hidden' || visibility === 'collapse') return false;
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    }
+    function previewStylePaintsBox(style) {
+      const transparent = colour => colour === 'transparent' || /rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(colour);
+      if (!transparent(style.backgroundColor) || style.backgroundImage !== 'none' ||
+          style.boxShadow !== 'none' || (style.backdropFilter && style.backdropFilter !== 'none') ||
+          (style.borderImageSource && style.borderImageSource !== 'none')) return true;
+      for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+        if (parseFloat(style[`border${side}Width`]) > 0 && style[`border${side}Style`] !== 'none' &&
+            !transparent(style[`border${side}Color`])) return true;
+      }
+      if (style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0 &&
+          !transparent(style.outlineColor)) return true;
+      return false;
+    }
+    function paintsPreviewBox(element) {
+      return previewStylePaintsBox(getComputedStyle(element));
+    }
+    function hasPaintedPreviewPseudo(element) {
+      return ['::before', '::after'].some(pseudo => {
+        const decoration = getComputedStyle(element, pseudo);
+        if (decoration.display === 'none' || decoration.visibility === 'hidden' ||
+            decoration.visibility === 'collapse' || decoration.content === 'none' ||
+            decoration.content === 'normal') return false;
+        // Generated boxes have no DOM rectangle; their paint can extend beyond
+        // their parent's bounds. Empty, nonpainting native helpers are harmless.
+        return previewStylePaintsBox(decoration) || (decoration.content !== '""' && decoration.content !== "''");
+      });
+    }
+    function hasUnsupportedPreviewTransform(style) {
+      if ((style.clipPath && style.clipPath !== 'none') || (style.rotate && style.rotate !== 'none')) return true;
+      if (style.scale && style.scale !== 'none') {
+        const scales = style.scale.trim().split(/\s+/);
+        if (scales.length > 2 || scales.some(value => !Number.isFinite(parseFloat(value)) || parseFloat(value) <= 0)) return true;
+      }
+      if (style.transform && style.transform !== 'none') {
+        try {
+          const matrix = new DOMMatrixReadOnly(style.transform);
+          if (!matrix.is2D || matrix.a <= 0 || matrix.d <= 0 || Math.abs(matrix.b) > 0.0001 || Math.abs(matrix.c) > 0.0001) return true;
+        } catch { return true; }
+      }
+      return false;
+    }
+    // Check hint glyphs against clips inside the tooltip itself. A translated
+    // or rescaled tooltip cannot escape an internal clip; if the script would
+    // newly hide a previously visible hint, restore YouTube's presentation.
+    function hintFitsInternalClips(textNode, root) {
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const rects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+      if (!rects.length) return false;
+      for (let ancestor = textNode.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor);
+        if (hasUnsupportedPreviewTransform(style)) return null;
+        const clipX = /^(hidden|clip|auto|scroll)$/.test(style.overflowX);
+        const clipY = /^(hidden|clip|auto|scroll)$/.test(style.overflowY);
+        if (clipX || clipY) {
+          const rect = ancestor.getBoundingClientRect();
+          const scaleX = rect.width / ancestor.offsetWidth, scaleY = rect.height / ancestor.offsetHeight;
+          if (!(scaleX > 0 && scaleY > 0)) return null;
+          const left = rect.left + ancestor.clientLeft * scaleX, top = rect.top + ancestor.clientTop * scaleY;
+          const right = left + ancestor.clientWidth * scaleX, bottom = top + ancestor.clientHeight * scaleY;
+          if (rects.some(glyph => (clipX && (glyph.left < left - 1 || glyph.right > right + 1)) ||
+              (clipY && (glyph.top < top - 1 || glyph.bottom > bottom + 1)))) return false;
+        }
+        if (ancestor === root) return true;
+      }
+      return null;
     }
     function update() {
       frame = 0;
       observer.disconnect(); restore();
       if (!player?.isConnected || !track?.isConnected || !player.contains(track) ||
           document.hidden || !track.matches(':hover')) { stop(); return; }
+      let sponsorTransitionActive = false;
       try {
         const previews = [...player.querySelectorAll(previewSelector)].filter(node =>
           node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden');
-        if (previews.length !== 1) return;
+        if (previews.length !== 1) {
+          textObserver.disconnect(); textRoot = null; sponsorMotion = null; return;
+        }
         const node = previews[0], image = node.querySelector('.ytp-tooltip-bg');
+        if (textRoot !== node) {
+          textObserver.disconnect(); textRoot = node; sponsorMotion = null;
+          textObserver.observe(node, { subtree: true, characterData: true });
+        }
         if (!image || !image.offsetWidth || !node.offsetWidth || !node.offsetHeight) return;
+        // Native and extension chapter descriptions can add passive text to the
+        // native wrapper. Keep that text bounded and measured rather than
+        // requiring every description to use a particular class name.
+        const labelSelector = '.ytp-tooltip-text, .ytp-tooltip-title, .ytp-tooltip-edu, .ytp-tooltip-progress-bar-pill-time-stamp, .ytp-tooltip-progress-bar-pill-title';
+        const wrapperSelector = '.ytp-tooltip-text-wrapper';
+        const unsafeSelector = 'a, button, input, textarea, select, form, label, details, summary, img, picture, object, embed, video, audio, iframe, canvas, [role="button"], [role="link"], [role="checkbox"], [role="switch"], [role="slider"], [role="combobox"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="textbox"], [role="spinbutton"], [role="radio"], [role="tab"], [role="treeitem"], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])';
+        const labels = [], wrappers = [], unknownText = [], textElements = new Set(), textNodes = new Set(), wrapperTextBoxes = new Set(), decorations = new Set();
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_ALL);
+        let visited = 0, textLength = 0;
+        while (walker.nextNode()) {
+          if (++visited > 128) return;
+          const child = walker.currentNode;
+          if (child.nodeType === Node.ELEMENT_NODE && child.matches(unsafeSelector)) return;
+          if (child.nodeType === Node.ELEMENT_NODE && child.localName === 'svg') {
+            if (!child.closest('.ytp-tooltip-edu')) return;
+            if (getComputedStyle(child).visibility !== 'hidden') decorations.add(child);
+          }
+          if (child.nodeType === Node.ELEMENT_NODE && child.matches(wrapperSelector)) wrappers.push(child);
+          if (child.nodeType === Node.ELEMENT_NODE && child.matches(labelSelector)) {
+            const visibility = getComputedStyle(child).visibility;
+            if (visibility !== 'hidden' && visibility !== 'collapse') labels.push(child);
+            if (labels.length > 16) return;
+          } else if (child.nodeType === Node.TEXT_NODE) {
+            textLength += child.length;
+            if (textLength > 2048) return;
+            if (!child.textContent.trim()) continue;
+            const textLabel = child.parentElement?.closest(labelSelector);
+            if (!hasVisibleGlyphs(child)) continue;
+            if (!textLabel || !node.contains(textLabel)) unknownText.push(child);
+            textNodes.add(child); textElements.add(child.parentElement);
+            if (textNodes.size > 64 || textElements.size > 64) return;
+          }
+        }
+        if (!labels.length) return;
+        const nativeWrapper = wrappers.length === 1 ? wrappers[0] : null;
+        for (const textNode of unknownText) {
+          if (!nativeWrapper || !nativeWrapper.contains(textNode)) return;
+        }
+        for (const textNode of textNodes) {
+          for (let element = textNode.parentElement; element && element !== node; element = element.parentElement) {
+            wrapperTextBoxes.add(element);
+            if (element === nativeWrapper) break;
+          }
+        }
+        const hintNodes = [...textNodes].filter(text => text.parentElement?.closest('.ytp-tooltip-edu'));
+        const hintWasUnclipped = hintNodes.map(text => hintFitsInternalClips(text, node));
+        if (hintWasUnclipped.includes(null)) return;
         const nativeStyle = getComputedStyle(node);
-        // Do not compete with a new native animation or another extension's
-        // transforms; unknown preview layouts retain YouTube's presentation.
-        if (nativeStyle.transform !== 'none' || nativeStyle.scale !== 'none' || nativeStyle.translate !== 'none') return;
+        // SponsorBlock shifts its category tooltip upwards with a CSS transform.
+        // Accept only its known marker and a pure vertical translation: leave
+        // every other transform, including inline ownership, under native control.
+        let sponsorOffsetY = 0;
+        if (nativeStyle.scale !== 'none' || nativeStyle.translate !== 'none' ||
+            (nativeStyle.rotate && nativeStyle.rotate !== 'none')) return;
+        const sponsorVisible = node.classList.contains('sponsorCategoryTooltipVisible');
+        if (nativeStyle.transform !== 'none' || sponsorVisible) {
+          if (node.style.getPropertyValue('transform')) return;
+          try {
+            const matrix = new DOMMatrixReadOnly(nativeStyle.transform === 'none' ? undefined : nativeStyle.transform);
+            const near = (value, target) => Number.isFinite(value) && Math.abs(value - target) < 0.0001;
+            if (!matrix.is2D || !near(matrix.a, 1) || !near(matrix.b, 0) ||
+                !near(matrix.c, 0) || !near(matrix.d, 1) || !near(matrix.e, 0) ||
+                !Number.isFinite(matrix.f) || matrix.f > 0) return;
+            const em = parseFloat(nativeStyle.fontSize);
+            const two = node.classList.contains('sponsorTwoTooltips');
+            const original = node.classList.contains('sponsorHasOriginalTooltip');
+            const big = Boolean(node.closest('.ytp-big-mode'));
+            const units = big ? (two ? 4 : 2) : 1 + Number(two) + Number(original);
+            if (!(em > 0)) return;
+            const target = sponsorVisible ? -units * em : 0;
+            // CSS transitions expose their resolved start and end keyframes.
+            // Accept an intermediate position only when the target matches
+            // SponsorBlock and its start is a documented offset or lies within
+            // a previously witnessed transition on this same tooltip. This
+            // also handles reversal before the transition reaches its endpoint.
+            if (Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
+              const transitions = node.getAnimations?.().filter(animation =>
+                animation.transitionProperty === 'transform' && animation.playState === 'running' &&
+                animation.effect?.target === node) || [];
+              // The class mutation can be observed one frame before the
+              // browser creates its transition. At the untouched zero offset,
+              // retain the measured layout for at most one frame and retry.
+              if (!transitions.length && sponsorVisible && Math.abs(matrix.f) <= 0.05 &&
+                  !(sponsorMotion?.node === node && sponsorMotion.pending)) {
+                sponsorMotion = { node, low: 0, high: 0, pending: true };
+                sponsorTransitionActive = true;
+              } else {
+                if (transitions.length !== 1) return;
+                const animation = transitions[0], timing = animation.effect.getComputedTiming();
+                // Do not run a frame loop indefinitely for an unrecognised or
+                // unusually long animation. Ordinary player transitions are short.
+                if (!Number.isFinite(timing.endTime) || timing.endTime > 2000) return;
+                const keyframes = transitions[0].effect.getKeyframes();
+                if (keyframes.length !== 2) return;
+                const readOffset = value => {
+                  const part = new DOMMatrixReadOnly(!value || value === 'none' ? undefined : value);
+                  if (!part.is2D || !near(part.a, 1) || !near(part.b, 0) || !near(part.c, 0) ||
+                      !near(part.d, 1) || !near(part.e, 0) || !Number.isFinite(part.f)) throw new Error('Unsupported tooltip transition');
+                  return part.f;
+                };
+                const start = readOffset(keyframes[0].transform), end = readOffset(keyframes[1].transform);
+                const witnessed = sponsorMotion?.node === node && start >= sponsorMotion.low - 0.05 &&
+                  start <= sponsorMotion.high + 0.05;
+                // When observation starts during an existing SponsorBlock
+                // transition, its source can be another documented offset.
+                // Without a prior witness, require the current SponsorBlock
+                // marker and an exact documented source; never infer an exit.
+                const documentedStart = sponsorVisible && (Math.abs(start) <= 0.05 ||
+                  (big ? [2, 4] : [1, 2, 3]).some(units => Math.abs(start + units * em) <= 0.05));
+                if (Math.abs(end - target) > 0.05 || (!witnessed && !documentedStart) ||
+                    matrix.f < Math.min(start, end) - 0.05 || matrix.f > Math.max(start, end) + 0.05) return;
+                // A continuous series of valid reversals is not one long
+                // transition. Re-arm only for a verified new destination;
+                // recreated animations with the same target stay bounded.
+                const previous = sponsorMotion?.node === node ? sponsorMotion : null;
+                const deadline = previous?.deadline && Math.abs(previous.end - end) <= 0.05
+                  ? previous.deadline : performance.now() + 2000;
+                if (performance.now() > deadline) return;
+                // A reversed CSS transition can be re-created with a slightly
+                // different intermediate start as the browser advances a frame.
+                // Retain the previously validated envelope instead of narrowing
+                // it on each recalculation; never accept a start outside it.
+                sponsorMotion = { node,
+                  low: Math.min(start, end, witnessed ? sponsorMotion.low : start),
+                  high: Math.max(start, end, witnessed ? sponsorMotion.high : start), animation, end, deadline };
+                sponsorTransitionActive = true;
+              }
+            } else if (sponsorVisible) {
+              // SponsorBlock's published stylesheet uses this exact offset.
+              sponsorMotion = { node, low: target, high: target };
+            } else {
+              sponsorMotion = null;
+            }
+            sponsorOffsetY = matrix.f;
+          } catch { return; }
+        } else sponsorMotion = null;
         const box = player.getBoundingClientRect(), native = node.getBoundingClientRect();
         const trackBox = track.getBoundingClientRect();
+        const nativeImage = image.getBoundingClientRect();
+        if (nativeImage.left < native.left - 1 || nativeImage.right > native.right + 1 ||
+            nativeImage.top < native.top - 1 || nativeImage.bottom > native.bottom + 1) return;
+        // Transparent native title containers may span the image even when the
+        // glyphs are safely below it. Measure real text, plus boxes that paint a
+        // backing/border/decoration, not empty transparent container geometry.
+        const boxCandidates = [...new Set([...labels, ...wrapperTextBoxes])];
+        if (boxCandidates.some(hasPaintedPreviewPseudo)) return;
+        const paintedBoxes = boxCandidates.filter(paintsPreviewBox);
+        const visualRects = () => {
+          const rectangles = [...paintedBoxes, ...decorations].map(element => element.getBoundingClientRect());
+          for (const textNode of textNodes) {
+            const range = document.createRange(); range.selectNodeContents(textNode);
+            rectangles.push(...range.getClientRects());
+          }
+          return rectangles.filter(rect => rect.width && rect.height);
+        };
+        const labelBoxes = visualRects();
+        const sponsorLayout = sponsorVisible || Boolean(sponsorOffsetY);
+        const sponsorTexts = sponsorLayout ? [...textNodes].filter(text =>
+          text.parentElement?.closest('.sponsorCategoryTooltip')) : [];
+        const textRect = text => {
+          const range = document.createRange(); range.selectNodeContents(text);
+          return range.getBoundingClientRect();
+        };
+        const textOverlaps = (a, b) => a.width && a.height && b.width && b.height &&
+          a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+        const nativeTextRects = sponsorTexts.length ? new Map([...textNodes].map(text => [text, textRect(text)])) : null;
+        const extraLeft = Math.max(0, ...labelBoxes.map(rect => native.left - rect.left));
+        const extraRight = Math.max(0, ...labelBoxes.map(rect => rect.right - native.right));
+        const extraTop = Math.max(0, ...labelBoxes.map(rect => native.top - rect.top));
+        const extraBottom = Math.max(0, ...labelBoxes.map(rect => rect.bottom - native.bottom));
         const sx = box.width / player.offsetWidth, sy = box.height / player.offsetHeight;
         if (!(sx > 0 && sy > 0) || !native.width || !native.height) return;
+        // A tooltip can be clipped by a player-internal scrolling/overflow
+        // ancestor even when its rectangles are within the player. Intersect
+        // the visible client area on each clipping axis before positioning.
+        let safeLeft = Math.max(box.left, 0), safeRight = Math.min(box.right, innerWidth);
+        let safeTop = Math.max(box.top, 0), safeBottom = Math.min(trackBox.top, box.bottom, innerHeight);
+        for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor);
+          // A non-rectangular clip or independent rotation cannot be bounded
+          // by the axis-aligned client rectangle used below.
+          if (hasUnsupportedPreviewTransform(style)) return;
+          if (ancestor === player) break;
+          if (sponsorLayout) {
+            // Compensation uses the player's rendered scale. A separately
+            // scaled tooltip ancestor changes that coordinate space.
+            const scales = style.scale === 'none' ? [1] : style.scale.trim().split(/\s+/).map(Number);
+            const zoom = style.zoom;
+            if (scales.some(value => !Number.isFinite(value) || Math.abs(value - 1) > 0.0001) ||
+                (zoom && zoom !== 'normal' && zoom !== '1' && zoom !== '100%')) return;
+            if (style.transform !== 'none') {
+              const matrix = new DOMMatrixReadOnly(style.transform);
+              if (Math.abs(matrix.a - 1) > 0.0001 || Math.abs(matrix.d - 1) > 0.0001) return;
+            }
+          }
+          const clipX = /^(hidden|clip|auto|scroll)$/.test(style.overflowX);
+          const clipY = /^(hidden|clip|auto|scroll)$/.test(style.overflowY);
+          if (!clipX && !clipY) continue;
+          // Axis-aligned client boxes cannot safely describe rotated or 3-D
+          // clips, so leave those unfamiliar layouts under native control.
+          const rect = ancestor.getBoundingClientRect();
+          const scaleX = rect.width / ancestor.offsetWidth, scaleY = rect.height / ancestor.offsetHeight;
+          if (!(scaleX > 0 && scaleY > 0)) return;
+          const left = rect.left + ancestor.clientLeft * scaleX;
+          const top = rect.top + ancestor.clientTop * scaleY;
+          if (clipX) { safeLeft = Math.max(safeLeft, left); safeRight = Math.min(safeRight, left + ancestor.clientWidth * scaleX); }
+          if (clipY) { safeTop = Math.max(safeTop, top); safeBottom = Math.min(safeBottom, top + ancestor.clientHeight * scaleY); }
+        }
         // Work in rendered CSS pixels, not screen.width or devicePixelRatio.
         // This also accommodates the transformed scroll miniplayer.
-        const availableWidth = Math.min(box.right, innerWidth) - Math.max(box.left, 0) - 16;
-        const availableHeight = Math.min(trackBox.top, box.bottom, innerHeight) - Math.max(box.top, 0) - 16;
+        const availableWidth = safeRight - safeLeft - 16;
+        // Leave breathing room between a large preview and the seek bar.
+        const availableHeight = safeBottom - safeTop - 32;
         if (availableWidth < 120 || availableHeight < 80) return;
         const floating = player.parentElement === document.body &&
           document.body.classList.contains('ytsmp-scroll-miniplayer-active') &&
@@ -4970,23 +5297,166 @@
           mode === 'auto' ? Math.max(192, Math.min(480, box.width * .2)) : manualWidth;
         const previewHeight = floating ? Math.min(availableHeight, box.height * .45) : availableHeight;
         const scale = Math.min(desired / (image.offsetWidth * sx),
-          availableWidth / native.width, previewHeight / native.height);
+          availableWidth / (native.width + extraLeft + extraRight),
+          previewHeight / (native.height + extraTop + extraBottom));
         if (!Number.isFinite(scale) || scale <= 0) return;
+        // Only style an independently identifiable timestamp: some native
+        // layouts combine the time and chapter in one text node. In that case
+        // leave the combined label alone rather than restyling the chapter.
+        const timestampSelector = '.ytp-tooltip-text, .ytp-tooltip-progress-bar-pill-time-stamp';
+        const timestamps = new Set();
+        for (const element of textElements) {
+          const timestamp = element.closest(timestampSelector);
+          if (timestamp && node.contains(timestamp) &&
+              /^\s*(?:\d{1,3}:)?\d{1,2}:\d{2}\s*$/.test(timestamp.textContent)) timestamps.add(timestamp);
+        }
+        const textMetrics = [], sponsorTextOffsets = [];
+        // Keep the time and chapter readable as the visible player grows,
+        // without letting text grow without bound on larger displays. The
+        // native education hint and unrelated labels retain their own size.
+        const contentSelector = `${timestampSelector}, .ytp-tooltip-title, .ytp-tooltip-progress-bar-pill-title`;
+        const contentBoost = 1.15 + .15 * Math.max(0, Math.min(1, (box.width - 400) / 1200));
+        for (const element of textElements) {
+          const contentLabel = element.closest(contentSelector);
+          const isContent = Boolean(contentLabel && node.contains(contentLabel));
+          if (scale <= 1 && !isContent) continue;
+          const style = getComputedStyle(element);
+          const fontSize = parseFloat(style.fontSize), lineHeight = parseFloat(style.lineHeight);
+          const factor = (isContent ? contentBoost : 1) / Math.max(1, scale);
+          if (sponsorLayout && style.transform !== 'none') {
+            // SponsorBlock uses em-based translations on the hint and, in big
+            // mode, the timestamp. A font-size adjustment would change those
+            // offsets; preserve the original offset using our own translate.
+            const hint = element.matches('.ytp-tooltip-edu');
+            const bigTime = element.matches('.ytp-tooltip-text') && node.closest('.ytp-big-mode');
+            const units = hint ? -(node.classList.contains('sponsorTwoTooltips') ? 2 : 1) : bigTime ? 0.75 : null;
+            if (units === null || style.translate !== 'none' || !(fontSize > 0) ||
+                element.style.getPropertyValue('transform')) return;
+            try {
+              const matrix = new DOMMatrixReadOnly(style.transform);
+              if (!matrix.is2D || Math.abs(matrix.a - 1) > 0.0001 || Math.abs(matrix.d - 1) > 0.0001 ||
+                  Math.abs(matrix.b) > 0.0001 || Math.abs(matrix.c) > 0.0001 || Math.abs(matrix.e) > 0.0001 ||
+                  Math.abs(matrix.f - units * fontSize) > 0.05) return;
+              sponsorTextOffsets.push([element, 'translate', `0px ${matrix.f * (1 - factor)}px`]);
+            } catch { return; }
+          }
+          if (Number.isFinite(fontSize) && fontSize > 0) textMetrics.push([element, 'font-size', `${fontSize * factor}px`]);
+          if (Number.isFinite(lineHeight) && lineHeight > 0) textMetrics.push([element, 'line-height', `${lineHeight * factor}px`]);
+        }
         const left = native.left + native.width * (1 - scale) / 2;
         const top = native.bottom - native.height * scale;
-        const minLeft = Math.max(box.left, 0) + 8;
-        const maxLeft = Math.min(box.right, innerWidth) - native.width * scale - 8;
-        const minTop = Math.max(box.top, 0) + 8;
-        const maxTop = Math.min(trackBox.top, box.bottom, innerHeight) - native.height * scale - 8;
+        const minLeft = safeLeft + 8 + extraLeft * scale;
+        const maxLeft = safeRight - (native.width + extraRight) * scale - 8;
+        const minTop = safeTop + 8 + extraTop * scale;
+        const maxTop = safeBottom - (native.height + extraBottom) * scale - 24;
         const dx = (Math.max(minLeft, Math.min(left, maxLeft)) - left) / sx;
-        const dy = (Math.max(minTop, Math.min(top, maxTop)) - top) / sy;
+        // Individual scale is applied before the existing transform. Without
+        // compensation it would also scale SponsorBlock's vertical offset.
+        const dy = (Math.max(minTop, Math.min(top, maxTop)) - top) / sy -
+          (scale - 1) * sponsorOffsetY;
         write(node, 'transform-origin', '50% 100%');
         write(node, 'scale', String(scale));
         write(node, 'translate', `${dx}px ${dy}px`);
-      } finally { observe(); }
+        for (const [element, property, value] of textMetrics) write(element, property, value);
+        for (const [element, property, value] of sponsorTextOffsets) write(element, property, value);
+        if (!window.matchMedia?.('(forced-colors: active)')?.matches) {
+          // YouTube owns the rounded backing, not the text span. Only adjust a
+          // recognised pill with an existing translucent solid background;
+          // unfamiliar, opaque or image-backed layouts remain native.
+          const styledPills = new Set();
+          for (const timestamp of timestamps) {
+            const pill = timestamp.closest('.ytp-tooltip-bottom-text, .ytp-tooltip-progress-bar-pill');
+            if (!pill || !node.contains(pill) || styledPills.has(pill)) continue;
+            const style = getComputedStyle(pill);
+            const colour = style.backgroundColor.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/);
+            const alpha = colour && Number(colour[4]);
+            if (!colour || !(alpha > 0 && alpha < 1) || style.backgroundImage !== 'none' ||
+                !(parseFloat(style.borderTopLeftRadius) > 0)) continue;
+            write(pill, 'background-color', `rgba(${colour[1]}, ${colour[2]}, ${colour[3]}, ${Math.min(1, alpha + 0.15)})`);
+            styledPills.add(pill);
+          }
+          // Apply to text-bearing children as well as the native labels: a
+          // descendant's own shadow otherwise overrides inherited readability.
+          // This is text only; do not introduce a rectangular background.
+          const shadowTargets = new Set([
+            ...timestamps,
+            ...labels.filter(label => label.matches('.ytp-tooltip-edu')),
+          ]);
+          for (const element of textElements) {
+            const timeLabel = element.closest(timestampSelector);
+            // Some layouts put a timestamp and chapter in one text node. A
+            // text-only shadow is safe for the entire combined run; styling
+            // a separate chapter element is unnecessary and is avoided.
+            const combinedTime = timeLabel && [...element.childNodes].some(child =>
+              child.nodeType === Node.TEXT_NODE && /^\s*(?:\d{1,3}:)?\d{1,2}:\d{2}(?:\s|$)/.test(child.textContent));
+            if (timestamps.has(timeLabel) || combinedTime ||
+                element.closest('.ytp-tooltip-edu')) shadowTargets.add(element);
+          }
+          // CSS shadow lengths are transformed along with the preview. Keep
+          // the rendered shadow broadly consistent across player/preview sizes.
+          const shadowScale = Math.max(0.5, Math.min(4, scale * Math.min(sx, sy)));
+          const shadowLength = value => `${Number((value / shadowScale).toFixed(3))}px`;
+          const shadow = `0 ${shadowLength(1)} ${shadowLength(2)} rgba(0, 0, 0, 1), ` +
+            `0 0 ${shadowLength(3)} rgba(0, 0, 0, 1), 0 0 ${shadowLength(5)} rgba(0, 0, 0, 0.9)`;
+          for (const element of shadowTargets) {
+            write(element, 'text-shadow', shadow);
+          }
+        }
+        if (hintNodes.some((text, index) => hintWasUnclipped[index] && hintFitsInternalClips(text, node) !== true)) {
+          restore(); return;
+        }
+        // Font metrics may change wrapping and out-of-flow labels can extend
+        // beyond the tooltip box. Refuse this override if the final geometry
+        // clips a known label or puts it over the storyboard or seek bar.
+        const imageBox = image.getBoundingClientRect();
+        if (imageBox.left < safeLeft || imageBox.right > safeRight || imageBox.top < safeTop || imageBox.bottom > safeBottom) {
+          restore(); return;
+        }
+        const labelRects = visualRects();
+        if (nativeTextRects) {
+          const finalTextRects = new Map([...textNodes].map(text => [text, textRect(text)]));
+          for (const sponsor of sponsorTexts) {
+            for (const other of textNodes) {
+              if (sponsor === other || sponsor.parentElement === other.parentElement) continue;
+              if (!textOverlaps(nativeTextRects.get(sponsor), nativeTextRects.get(other)) &&
+                  textOverlaps(finalTextRects.get(sponsor), finalTextRects.get(other))) { restore(); return; }
+            }
+          }
+        }
+        if (labelRects.some(rect => {
+          if (!rect.width || !rect.height) return false;
+          const outside = rect.left < safeLeft || rect.right > safeRight || rect.top < safeTop || rect.bottom > safeBottom;
+          const overlapsImage = rect.left < imageBox.right - 1 && rect.right > imageBox.left + 1 &&
+            rect.top < imageBox.bottom - 1 && rect.bottom > imageBox.top + 1;
+          return outside || overlapsImage;
+        })) restore();
+      } finally { observe(); if (sponsorTransitionActive) schedule(); }
     }
     function schedule() {
       if (player && !frame) frame = requestAnimationFrame(update);
+    }
+    function activateTrack(nextPlayer, nextTrack) {
+      if (player === nextPlayer && track === nextTrack) return;
+      stop(); resumeCandidate = null; player = nextPlayer; track = nextTrack; observe();
+      for (const name of previewMotionEndEvents) player.addEventListener(name, onPreviewMotionEnd, true);
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(schedule); resizeObserver.observe(player);
+      }
+      window.addEventListener('resize', schedule, { passive: true }); schedule();
+    }
+    function suspendHover() {
+      if (player && track) resumeCandidate = { player, track };
+      stop();
+    }
+    function resumeHover() {
+      if (document.hidden || suspended || !isWatchPath() || !document.hasFocus()) return;
+      const candidate = resumeCandidate;
+      resumeCandidate = null;
+      if (!candidate?.player.isConnected || !candidate.track.isConnected ||
+          !candidate.player.contains(candidate.track) ||
+          candidate.player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') ||
+          !candidate.track.getClientRects().length || !candidate.track.matches(':hover')) return;
+      activateTrack(candidate.player, candidate.track);
     }
     document.addEventListener('pointerover', event => {
       if (suspended || !isWatchPath()) return;
@@ -4994,22 +5464,19 @@
       const nextPlayer = hit?.closest('#movie_player');
       if (!nextPlayer || nextPlayer.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer')) return;
       const nextTrack = hit.closest('.ytp-progress-bar-container') || hit;
-      if (track === nextTrack) return;
-      stop(); player = nextPlayer; track = nextTrack; observe();
-      if (typeof ResizeObserver === 'function') {
-        resizeObserver = new ResizeObserver(schedule); resizeObserver.observe(player);
-      }
-      window.addEventListener('resize', schedule, { passive: true }); schedule();
+      activateTrack(nextPlayer, nextTrack);
     }, true);
     document.addEventListener('pointerout', event => {
       if (track && track.contains(event.target) && !track.contains(event.relatedTarget)) stop();
+      if (resumeCandidate?.track.contains(event.target) && !resumeCandidate.track.contains(event.relatedTarget)) resumeCandidate = null;
     }, true);
-    document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) suspendHover(); else resumeHover(); });
     document.addEventListener('fullscreenchange', schedule, true);
-    window.addEventListener('blur', stop);
-    window.addEventListener('yt-navigate-start', () => { suspended = true; stop(); }, true);
+    window.addEventListener('blur', suspendHover);
+    window.addEventListener('focus', resumeHover);
+    window.addEventListener('yt-navigate-start', () => { suspended = true; resumeCandidate = null; stop(); }, true);
     window.addEventListener('yt-navigate-finish', () => { suspended = false; }, true);
-    window.addEventListener('pagehide', () => { suspended = true; stop(); }, true);
+    window.addEventListener('pagehide', () => { suspended = true; resumeCandidate = null; stop(); }, true);
     window.addEventListener('pageshow', () => { suspended = false; }, true);
   }
 

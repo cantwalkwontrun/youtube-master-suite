@@ -135,6 +135,44 @@ async function styling(page, expression = "document.querySelector('ytd-comments'
   }, expression);
 }
 
+test("confirmed stale comments show a stable notice and recover on fresh provenance", { timeout: 15000 }, async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const flexy = document.querySelector("ytd-watch-flexy");
+    flexy.style.display = "block";
+    const player = document.createElement("div");
+    player.id = "movie_player";
+    player.style.cssText = "width:100px;height:100px";
+    player.getVideoData = () => ({ video_id: new URL(location.href).searchParams.get("v") });
+    flexy.prepend(player);
+    document.querySelector("ytd-comment-renderer").insertAdjacentHTML("beforeend", '<span id="published-time-text"><a href="/watch?v=aaaaaaaaaaa&lc=old">Old</a></span>');
+    fixture.noticeMutations = 0;
+    fixture.noticeObserver = new MutationObserver(records => { fixture.noticeMutations += records.length; });
+    fixture.noticeObserver.observe(flexy, { childList: true, subtree: true, attributes: true });
+  });
+  await page.evaluate(source => (0, eval)(source.replace(
+    "const COMMENTS_VIDEO_GUARD_FAIL_OPEN_DELAY_MS = 8000;",
+    "const COMMENTS_VIDEO_GUARD_FAIL_OPEN_DELAY_MS = 120;",
+  )), SOURCE);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("yt-navigate-start"));
+    history.replaceState(null, "", "/watch?v=bbbbbbbbbbb");
+    document.querySelector("ytd-watch-flexy").setAttribute("video-id", "bbbbbbbbbbb");
+    window.dispatchEvent(new Event("yt-navigate-finish"));
+  });
+  const notice = page.locator('[data-iow-stale-notice="1"]');
+  await notice.waitFor({ state: "visible" });
+  assert.equal(await page.locator("ytd-comments").evaluate(node => getComputedStyle(node).visibility), "hidden");
+  assert.match(await notice.innerText(), /restarts video/i);
+  await page.waitForTimeout(300);
+  const before = await page.evaluate(() => fixture.noticeMutations);
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => fixture.noticeMutations), before, "notice insertion must not trigger an observer loop");
+  await page.locator('#published-time-text a').evaluate(link => link.href = "/watch?v=bbbbbbbbbbb&lc=fresh");
+  await notice.waitFor({ state: "detached" });
+  assert.equal(await page.locator("ytd-comments").evaluate(node => getComputedStyle(node).visibility), "visible");
+});
+
 test("source discovers 900 comment descendants once per immediate and delayed pass", async t => {
   const page = await open(t, 100);
   const first = await install(page);

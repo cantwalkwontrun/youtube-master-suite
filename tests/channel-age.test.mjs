@@ -72,6 +72,37 @@ test("empty and invalid stored rules fail open without writing storage", () => {
   }
 });
 
+test('saving refuses incompatible or lossy saved channel records without overwriting them', () => {
+  const records = [
+    '{', '', ' '.repeat(65537),
+    JSON.stringify({ version: 2, rules: [rule()] }),
+    JSON.stringify({ version: 1, rules: [rule()], future: true }),
+    JSON.stringify({ version: 1, rules: [rule({ futureFlag: true })] }),
+    JSON.stringify({ version: 1, rules: [rule(), rule()] }),
+    JSON.stringify({ version: 1, rules: [rule({ maxAge: 0 })] }),
+    JSON.stringify({ version: 1, rules: [rule({ name: 'X'.repeat(101) })] }),
+    JSON.stringify({ version: 1, rules: Array(101).fill(rule()) }),
+  ];
+  for (const raw of records) {
+    const { service, data, writes } = fixture(raw);
+    const baseline = service.read();
+    const result = service.save([rule({ channelId: OTHER_ID })], baseline);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /incompatible or damaged/);
+    assert.equal(data.get(KEY), raw);
+    assert.equal(writes(), 0);
+  }
+});
+
+test('saving accepts absent storage and recognised legacy records with omitted optional fields', () => {
+  for (const raw of [null, JSON.stringify({ version: 1, rules: [{ channelId: ID, maxAge: 1, unit: 'weeks' }] })]) {
+    const { service, data } = fixture(raw);
+    const baseline = service.read();
+    assert.equal(service.save([rule({ channelId: OTHER_ID })], baseline).ok, true);
+    assert.equal(JSON.parse(data.get(KEY)).rules[0].channelId, OTHER_ID);
+  }
+});
+
 test("explicit saves reject invalid, duplicate and oversized lists without modifying existing rules", () => {
   const { service, data, writes } = fixture();
   assert.equal(service.save([rule()]).ok, true);

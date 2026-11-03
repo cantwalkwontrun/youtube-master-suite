@@ -41,6 +41,20 @@ async function stored(page) {
   return page.evaluate(([a, b, c]) => [localStorage.getItem(a), localStorage.getItem(b), localStorage.getItem(c)], [KEY, FILTER_KEY, CORNER_KEY]);
 }
 
+test('full restore permits and explains channel-order-only changes', async t => {
+  const page = await openFixture(t);
+  const other = { ...channel, channelId: 'UC' + 'b'.repeat(22), name: 'Second channel' };
+  await page.evaluate(({ key, rules }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules })),
+    { key: FILTER_KEY, rules: [channel, other] });
+  await importBackup(page, envelope({}, [other, channel]));
+  await page.locator('#ytms-backup-preview').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#ytms-backup-preview').innerText(), /Channel filter order will change/);
+  await page.locator('#ytms-confirm-restore').check();
+  assert.equal(await page.locator('#ytms-restore-backup').isEnabled(), true);
+  await page.locator('#ytms-restore-backup').click();
+  assert.deepEqual(JSON.parse((await stored(page))[1]).rules, [other, channel]);
+});
+
 test('backup download contains saved values only and does not save a settings draft', async t => {
   const page = await openFixture(t);
   await page.locator('#ytms-tab-layout').click();

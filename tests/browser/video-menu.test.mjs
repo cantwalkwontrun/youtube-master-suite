@@ -41,7 +41,7 @@ async function open(t, options = {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.goto(fixtureUrl);
-  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover }) => {
+  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover, blockTube, duplicateNotInterested }) => {
     let card = document.getElementById('card');
     if (cardTag) {
       const replacement = document.createElement(cardTag); replacement.id = card.id;
@@ -84,7 +84,10 @@ async function open(t, options = {}) {
       definitions.push(['hideRecord', 'Hide native record', 'HIDE', { feedbackEndpoint: { feedbackToken: 'fixture-library-feedback' } }]);
     }
     if (unknown) definitions.splice(3, 0, ['unrecognised', 'Unrecognised native action', 'SOMETHING_NEW']);
+    if (blockTube) definitions.push(['blockChannel', 'Block Channel', 'NOT_INTERESTED', { feedbackEndpoint: { feedbackToken: 'fixture-cloned' } }],
+      ['blockVideo', 'Block Video', 'NOT_INTERESTED', { feedbackEndpoint: { feedbackToken: 'fixture-cloned' } }]);
     if (ambiguous) definitions.push(['duplicateReport', 'Second report', 'FLAG']);
+    if (duplicateNotInterested) definitions.push(['duplicateNotInterested', 'Another native action', 'NOT_INTERESTED', { feedbackEndpoint: { feedbackToken: 'fixture-cloned' } }]);
     if (unsupported) definitions.find(entry => entry[0] === 'addToQueue')[3] = {};
     const items = definitions.map(([id, label, icon, endpoint]) => {
       if (nativeContract && id === 'download') return sheet ? {
@@ -173,7 +176,7 @@ async function open(t, options = {}) {
     cardTag: options.cardTag, containerTag: options.containerTag, noQueue: Boolean(options.noQueue), nativeBinding: Boolean(options.nativeBinding), bindingFault: options.bindingFault,
     libraryActions: Boolean(options.libraryActions), contentType: options.contentType, modelVideo: options.modelVideo,
     nativeAutofocus: options.nativeAutofocus, presentationRows: Boolean(options.presentationRows),
-    lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover) });
+    lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover), blockTube: Boolean(options.blockTube), duplicateNotInterested: Boolean(options.duplicateNotInterested) });
   await page.addScriptTag({ content: `window.disposeVideoMenu = (${installVideoMenu.toString()})(window.suite);` });
   return page;
 }
@@ -278,6 +281,35 @@ for (const sheet of [false, true]) {
     assert.equal(await page.evaluate(() => JSON.stringify(menuFixture.items)), before);
     await page.getByRole('menuitem', { name: 'Unrecognised native action', exact: true }).click();
     assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), ['unrecognised']);
+  });
+
+  test(`BlockTube-style actions remain native while the Suite customises the ${sheet ? 'current' : 'legacy'} menu`, async t => {
+    const page = await open(t, { sheet, blockTube: true });
+    const before = await page.evaluate(() => JSON.stringify(menuFixture.items));
+    await show(page);
+    assert.equal(await page.locator('html').getAttribute('data-ytms-video-menu-status'), 'ready');
+    assert.equal(await page.getByRole('menuitem', { name: 'Download', exact: true }).isVisible(), false);
+    assert.equal(await page.getByRole('menuitem', { name: 'Block Channel', exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole('menuitem', { name: 'Block Video', exact: true }).isVisible(), true);
+    assert.equal(await page.evaluate(() => JSON.stringify(menuFixture.items)), before);
+    await page.getByRole('menuitem', { name: 'Channel tools', exact: true }).click();
+    assert.equal(await page.getByRole('menuitem', { name: 'Filter channel uploads', exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole('menuitem', { name: 'Report', exact: true }).isVisible(), true);
+    await page.getByRole('menuitem', { name: 'Back', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Block Channel', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), ['blockChannel']);
+    await show(page);
+    await page.getByRole('menuitem', { name: 'Block Video', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), ['blockChannel', 'blockVideo']);
+  });
+
+  test(`duplicate native Not interested actions still fail open in the ${sheet ? 'current' : 'legacy'} menu`, async t => {
+    const page = await open(t, { sheet, duplicateNotInterested: true });
+    await page.locator('#trigger').click();
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-ytms-video-menu-status') === 'duplicate-actions');
+    assert.equal(await page.locator('[data-ytms-video-menu="1"]').count(), 0);
+    assert.equal(await page.getByRole('menuitem', { name: 'Download', exact: true }).isVisible(), true);
+    assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), []);
   });
 }
 
