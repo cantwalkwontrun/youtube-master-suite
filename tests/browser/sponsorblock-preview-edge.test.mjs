@@ -48,7 +48,8 @@ for(const kind of ['none','sponsor','child','big','foreign']) test(`crossing a S
       .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)
       .replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
   t.after(async()=>{try{assert.deepEqual(errors,[])}finally{await context.close()}});
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
+  // Explicit Suite health and geometry checks below define fixture readiness.
+  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   if(kind==='foreign')await page.addStyleTag({content:'#movie_player .ytp-tooltip.sponsorCategoryTooltipVisible{transform:translateY(-250px)!important}'});
   if(kind==='big')await page.locator('#movie_player').evaluate(node=>{node.classList.add('ytp-big-mode');node.querySelector('.ytp-tooltip-title:not(.sponsorCategoryTooltip)').textContent=''});

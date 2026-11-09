@@ -30,7 +30,8 @@ async function fixture(t, { mode = 'large', clipStyle = '', tipStyle = '', scrol
   const page = await context.newPage();
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
     route.fulfill({contentType:'text/html',body:base.replace('</head>',css+'</head>').replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup).replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
+  // Explicit Suite health and geometry checks below define fixture readiness.
+  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
   await waitForSuiteHealth(page, manifest.registeredModules, {timeoutMs:10000});
   await page.evaluate(({ clipStyle, tipStyle, scroll }) => {
     const clip = document.querySelector('.fixture-clip');

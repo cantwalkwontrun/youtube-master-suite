@@ -44,7 +44,8 @@ async function fixture(t, mode = 'auto', viewport = { width: 1920, height: 1080 
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>' + MARKUP)
       .replace('</body>', `${miniplayer?FLOATING_SETUP:''}<script>${wrapFixtureUserscript(SUITE)}</script></body>`) }) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
+  // Explicit Suite health and geometry checks below define fixture readiness.
+  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs:10000, errors });
   return page;
 }
