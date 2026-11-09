@@ -47,7 +47,9 @@ for (const transition of [false, true]) for (const scenario of ['twoSponsorLabel
     ? route.fulfill({contentType:'text/html', body:base.replace('</head>', styles+'</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup)
       .replace('</body>', `<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
+  // Suite health and the geometry assertions below are the readiness contract;
+  // unrelated image load completion is not required by this fixture.
+  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   await page.locator('.ytp-progress-bar').hover();
   await page.locator('.ytp-tooltip').evaluate((tip, useTransition) => {

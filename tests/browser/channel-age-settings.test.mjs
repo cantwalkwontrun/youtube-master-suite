@@ -325,11 +325,11 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   await page.locator('#ytms-video-menu-settings > summary').click();
-  assert.equal(await page.getByRole('heading', { name: 'Video context menu order', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('heading', { name: 'Video context menu editor', exact: true }).count(), 1);
   const list = page.locator('#ytms-menu-order');
   const initial = await list.locator('li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem));
   assert.equal(await page.locator('#ytms-menuShowDownload').isChecked(), false);
-  assert.equal(await page.locator('#ytms-menuGroupChannelTools').isChecked(), true);
+  assert.equal(await page.locator('#ytms-menu-location option[value="channelTools"]').count(), 1);
   await page.getByRole('button', { name: 'Move Download up', exact: true }).click();
   assert.notDeepEqual(await list.locator('li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), initial);
   await page.locator('#ytms-cancel-panel').click();
@@ -339,17 +339,19 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   assert.deepEqual(await list.locator('li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), initial);
   await page.getByRole('button', { name: 'Move Download up', exact: true }).click();
   await page.locator('#ytms-menuShowDownload').check();
-  await page.locator('#ytms-menuGroupChannelTools').uncheck();
+  await page.locator('#ytms-menu-location').selectOption('channelTools');
+  await page.getByLabel('Menu for Report', { exact: true }).selectOption('root');
+  await page.locator('#ytms-menu-location').selectOption('root');
   await page.locator('#ytms-save-preview').click();
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, SETTINGS_KEY);
-  assert.equal(saved.menuShowDownload, true);
-  assert.equal(saved.menuGroupChannelTools, false);
-  assert.equal(saved.menuItemOrder[3], 'download');
+  assert.equal(saved.menuLayout.nodes.find(node => node.id === 'download').visible, true);
+  assert.equal(saved.menuLayout.nodes.find(node => node.id === 'report').parent, 'root');
+  assert.equal(saved.menuLayout.nodes.filter(node => node.parent === 'root')[3].id, 'download');
   await page.locator('#ytms-restore-defaults').click();
   assert.deepEqual(await list.locator('li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), initial);
   assert.equal(await page.locator('#ytms-menuShowDownload').isChecked(), false);
-  assert.equal(await page.locator('#ytms-menuGroupChannelTools').isChecked(), true);
-  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.menuShowDownload, SETTINGS_KEY), true);
+  assert.equal(await page.locator('#ytms-menu-location option[value="channelTools"]').count(), 1);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.menuLayout.nodes.find(node => node.id === 'download').visible, SETTINGS_KEY), true);
   await page.setViewportSize({ width: 360, height: 600 });
   const dialog = page.locator('#ytms-settings-dialog'), bounds = await dialog.boundingBox();
   assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 360 && bounds.y + bounds.height <= 600);
@@ -360,7 +362,7 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   await page.locator('#ytms-settings-button').click();
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   await page.locator('#ytms-video-menu-settings > summary').click();
-  assert.equal(await page.locator('#ytms-menuGroupChannelTools').isChecked(), false);
+  assert.equal(await page.getByLabel('Menu for Report', { exact: true }).inputValue(), 'root');
 });
 
 test('Hide this channel keeps the age selection but disables it and persists only after explicit Save', async t => {
