@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.20
+// @version      2.23
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -17,6 +17,15 @@
 
   const CONFIG = {
     hideStaticUi: true,
+    hideHomeCategories: true,
+    hideNotifications: true,
+    hideVoiceSearch: true,
+    hideCreateButton: true,
+    hideSidebarSections: true,
+    hideGuideFooter: true,
+    hideFeedShelves: true,
+    hideFeedNudges: true,
+    hideHistoryAuxActions: true,
     tightenFeedGrid: true,
     filterProfiles: {
       default: { mixes: true, membersOnly: true, podcasts: true },
@@ -256,7 +265,19 @@
   }
 
   function buildStaticCss() {
-    return CONFIG.hideStaticUi ? buildHideCss(STATIC_HIDE_SELECTORS) : '';
+    if (!CONFIG.hideStaticUi) return '';
+    // Keep the existing defaults, but let each cleanup be restored independently.
+    const enabled = STATIC_HIDE_SELECTORS.filter(selector => {
+      if (selector.includes('feed-filter-chip-bar')) return CONFIG.hideHomeCategories !== false;
+      if (selector.includes('notification')) return CONFIG.hideNotifications !== false;
+      if (selector.includes('voice-search')) return CONFIG.hideVoiceSearch !== false;
+      if (selector.includes('create-button') || selector.includes('[aria-label="Create"]')) return CONFIG.hideCreateButton !== false;
+      if (selector.includes('feed-nudge')) return CONFIG.hideFeedNudges !== false;
+      if (selector.includes('ytd-rich-section-renderer')) return CONFIG.hideFeedShelves !== false;
+      if (selector.includes('guide-section') || selector.includes('guide-collapsible') || selector.includes('ytd-guide-entry-renderer')) return CONFIG.hideSidebarSections !== false;
+      return CONFIG.hideGuideFooter !== false;
+    });
+    return enabled.length ? buildHideCss(enabled) : '';
   }
 
   function buildFeedGridCss() {
@@ -347,7 +368,7 @@
       buildStaticCss(),
       buildFeedGridCss(),
       buildFilteredCardCss(),
-      CONFIG.hideStaticUi ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
+      CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
     ].filter(css => css.trim()).join('\n');
   }
 
@@ -356,7 +377,7 @@
   function reconcileHistoryActions() {
     historyActionsFrame = 0;
     const found = new Set();
-    if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+    if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
       document.querySelectorAll(HISTORY_ACTIONS_SELECTOR).forEach(contents => {
         for (const row of contents.children) {
           if (!row.matches(HISTORY_ACTION_ROW_SELECTOR)) continue;
@@ -405,7 +426,9 @@
     const { card, channelId, videoId } = record;
     return card.isConnected && isChannelAgeFeedRoute() && card.closest(FEED_SURFACE_SELECTOR) &&
       !isInsideExcludedSurface(card) && channelAge.videoIdFromCard(card) === videoId &&
-      channelAge.channelFromCard(card)?.channelId === channelId;
+      (typeof channelAge.channelCandidatesFromCard === 'function'
+        ? channelAge.channelCandidatesFromCard(card).some(channel => channel.channelId === channelId)
+        : channelAge.channelFromCard(card)?.channelId === channelId);
   }
 
   function reconcileConfirmations(root = document) {
@@ -807,7 +830,7 @@
   const observer = new MutationObserver((mutations) => {
     let toggleDirty = false;
     for (const mutation of mutations) {
-      if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+      if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
         const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
         const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
         if (target?.closest?.('ytd-browse-feed-actions-renderer') ||

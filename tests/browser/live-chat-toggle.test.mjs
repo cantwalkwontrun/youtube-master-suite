@@ -664,7 +664,7 @@ test("the player-button preference can disable the control without hiding enable
 
 test("showing and hiding chat preserves its original iframe and does not save temporary choices", async t => {
   const page = await openFixture(t);
-  const saved = await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY);
+  const saved = await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY);
   await page.locator(BUTTON).click();
   await assertOpen(page);
   await page.frameLocator("#chatframe").locator("#message").fill("Unsent live-chat message");
@@ -676,7 +676,7 @@ test("showing and hiding chat preserves its original iframe and does not save te
     await assertOpen(page);
     await assertPreservedChat(page);
   }
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), saved);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), saved);
 });
 
 test("explicitly opened chat stays open beyond every existing delayed native-collapse attempt", { timeout: 20000 }, async t => {
@@ -1075,7 +1075,7 @@ test("late unrelated siblings remain hidden under selectively revealed chat ance
 for (const failure of ["disabled", "aria-disabled", "throws", "timeout"]) {
   test(`a native expand action that is ${failure} offers an explicit retry without opening chat`, async t => {
     const page = await openFixture(t, { collapsed: true });
-    const saved = await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY);
+    const saved = await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY);
     await page.locator(`${PANEL} #show-hide-button button`).evaluate((button, failure) => {
       if (failure === "disabled") button.disabled = true;
       if (failure === "aria-disabled") button.setAttribute("aria-disabled", "true");
@@ -1103,7 +1103,7 @@ for (const failure of ["disabled", "aria-disabled", "throws", "timeout"]) {
     });
     await page.locator(BUTTON).click();
     await assertOpen(page);
-    assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), saved);
+    assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), saved);
   });
 }
 
@@ -1174,7 +1174,7 @@ test("chat show, resize and hide preserve a genuinely advancing media clock", { 
       playbackClockFixture.video.addEventListener(type, () => playbackClockFixture.events.push(type));
     }
   });
-  const saved = await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY);
+  const saved = await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY);
   const sample = () => page.evaluate(() => {
     const state = playbackClockFixture, video = document.querySelector("#movie_player video");
     return { sameNode: video === state.video, sameSource: video.getAttribute("src") === state.source,
@@ -1194,7 +1194,7 @@ test("chat show, resize and hide preserve a genuinely advancing media clock", { 
     assert.ok(Math.abs((after.time - before.time) - (after.wall - before.wall) / 1000) < .75,
       "The media clock should advance with real time, not seek elsewhere");
     assert.deepEqual(await page.evaluate(() => playbackClockFixture.events), []);
-    assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), saved);
+    assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), saved);
   }
   await advanceThrough(async () => { await page.locator(BUTTON).click(); await assertOpen(page); });
   await advanceThrough(async () => { await page.setViewportSize({ width: 1100, height: 900 }); await settle(page); await assertOpen(page); });

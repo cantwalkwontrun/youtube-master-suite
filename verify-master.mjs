@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { verifyMasterMetadata } from "./verify-userscript-metadata.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -63,6 +64,8 @@ function run(command, args, options = {}) {
   return execFileSync(command, args, {
     cwd: suiteDirectory,
     encoding: "utf8",
+    // Release checks read the complete committed bundle, which exceeds 1 MiB.
+    maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   }).trim();
@@ -355,6 +358,7 @@ const workflowSource = readFileSync(
 );
 // Private GitHub raw URLs are not a reliable unauthenticated update channel.
 // Keep updates manual and validate the published script identity.
+verifyMasterMetadata(userscript);
 assert.equal(metadata(userscript, "updateURL"), "none");
 assert.equal(metadata(userscript, "downloadURL"), "none");
 assert.equal(metadata(userscript, "name"), "YouTube Master Suite");
@@ -1139,7 +1143,9 @@ for (const cornerRequirement of [
   'menu.setAttribute("role", "group")',
   'setCornerMenuOpen(control, true);',
   "persistCorner(currentCorner);",
-  'window.addEventListener("storage", (event) => {',
+  'const handleStoredCorner = (event) => {',
+  'if (typeof suite === "undefined") window.addEventListener("storage", handleStoredCorner);',
+  'else suite.storage.subscribe(handleStoredCorner);',
   "event.key !== CORNER_STORAGE_KEY",
   "!isValidCorner(event.newValue)",
   "currentCorner = event.newValue;",
@@ -1182,8 +1188,13 @@ assert(
 );
 assert.match(
   scrollMiniplayerSource,
-  /function readStoredCorner\(\) \{[\s\S]+?try \{[\s\S]+?localStorage\.getItem\(CORNER_STORAGE_KEY\)[\s\S]+?\} catch \{/,
-  "Scroll Miniplayer corner storage must fail safely",
+  /function readStoredCorner\(\) \{[\s\S]+?try \{[\s\S]+?const storage = typeof suite === "undefined" \? localStorage : suite\.storage;[\s\S]+?storage\.getItem\(CORNER_STORAGE_KEY\)[\s\S]+?\} catch \{/,
+  "Scroll Miniplayer corner reads must use private Suite storage with a safe standalone fallback",
+);
+assert.match(
+  scrollMiniplayerSource,
+  /function persistCorner\(corner\) \{[\s\S]+?try \{[\s\S]+?const storage = typeof suite === "undefined" \? localStorage : suite\.storage;[\s\S]+?storage\.setItem\(CORNER_STORAGE_KEY, corner\)[\s\S]+?\} catch \{/,
+  "Scroll Miniplayer corner writes must retain the standalone fallback without exposing Suite writes",
 );
 
 const pageCoherenceSource = canonicalSources.get("pageCoherence") || "";

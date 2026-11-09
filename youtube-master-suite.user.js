@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.60
+// @version      1.2.76
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -10,11 +10,15 @@
 // @match        https://www.youtube.com/*
 // @match        https://consent.youtube.com/*
 // @run-at       document-start
-// @grant        none
+// @sandbox      raw
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @noframes
 // ==/UserScript==
 
-(() => {
+(async () => {
   "use strict";
 
   const rejectYouTubeOptionalCookies = function rejectYouTubeOptionalCookies(window, document, options = {}) {
@@ -87,7 +91,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.60";
+  const MASTER_VERSION = "1.2.76";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -1145,10 +1149,1109 @@
     return true;
   }
 
-  const createSuiteSettings = function createSuiteSettings(getStorage, isDarkTheme) {
+  const createFeatureCatalogue = function createFeatureCatalogue() {
+ const definitions = [
+  {
+    "key": "originalAudio",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Prefer original audio",
+    "description": "Select the explicitly identified original audio track when the native player exposes it. A manual audio choice is respected for the current video.",
+    "default": false
+  },
+  {
+    "key": "disableAutoplay",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Disable autoplay",
+    "description": "Turn off native autoplay on each new video. This does not skip or remove queue entries.",
+    "default": false
+  },
+  {
+    "key": "disableAmbientMode",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Hide ambient lighting",
+    "description": "Hide the native ambient lighting effect. This does not claim to stop background processing.",
+    "default": false
+  },
+  {
+    "key": "disableStableVolume",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Disable Stable volume",
+    "description": "Turn off native volume normalisation when the player exposes its preference API.",
+    "default": false
+  },
+  {
+    "key": "disableNumberKeySeeking",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Disable number-key seeking",
+    "description": "Prevent 0–9 from seeking while the video player has focus. Typing in fields is unaffected.",
+    "default": false
+  },
+  {
+    "key": "snapshotButton",
+    "tab": "player",
+    "section": "Capture and export",
+    "label": "Show Take snapshot button",
+    "description": "Save the current video frame locally on request. Protected or cross-origin frames may be unavailable.",
+    "default": false
+  },
+  {
+    "key": "transcriptDownload",
+    "tab": "player",
+    "section": "Capture and export",
+    "label": "Show transcript download",
+    "description": "Download the transcript already displayed by YouTube. Open the transcript first; no transcription service is contacted.",
+    "default": false
+  },
+  {
+    "key": "hideNextButton",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Hide Next button",
+    "description": "Hide the native next-video control without changing the queue or playback.",
+    "default": false
+  },
+  {
+    "key": "hidePlayerWatermark",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Hide channel watermark",
+    "description": "Hide the channel subscription watermark over the video.",
+    "default": false
+  },
+  {
+    "key": "hideJumpAhead",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Hide Jump ahead button",
+    "description": "Hide YouTube’s Jump ahead control. SponsorBlock controls and skipping are separate.",
+    "default": false
+  },
+  {
+    "key": "hidePlayerAnnotations",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Hide legacy annotations",
+    "description": "Hide legacy in-video annotation overlays where present.",
+    "default": false
+  },
+  {
+    "key": "disablePlayerBlur",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Remove player background blur",
+    "description": "Remove native blurred background effects without changing the video image.",
+    "default": false
+  },
+  {
+    "key": "embedHideShare",
+    "tab": "player",
+    "section": "Embedded videos",
+    "label": "Hide embedded Share button",
+    "description": "Applies only to directly opened top-level www.youtube.com/embed/ pages. Embedded iframes and other hosts are not covered.",
+    "default": false
+  },
+  {
+    "key": "embedHidePauseOverlay",
+    "tab": "player",
+    "section": "Embedded videos",
+    "label": "Hide embedded pause overlay",
+    "description": "Applies only to directly opened top-level www.youtube.com/embed/ pages. Embedded iframes and other hosts are not covered.",
+    "default": false
+  },
+  {
+    "key": "homeRedirect",
+    "tab": "interface",
+    "section": "Navigation",
+    "label": "Open Subscriptions instead of Home",
+    "description": "Use the native Subscriptions link on signed-in Home pages. Existing watch playback is left alone.",
+    "default": false
+  },
+  {
+    "key": "logoToSubscriptions",
+    "tab": "interface",
+    "section": "Navigation",
+    "label": "YouTube logo opens Subscriptions",
+    "description": "Point the native logo link at Subscriptions while preserving normal link and middle-click behaviour.",
+    "default": false
+  },
+  {
+    "key": "homeList",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Display Home as a list",
+    "description": "Use a compact list instead of the Home grid.",
+    "default": false
+  },
+  {
+    "key": "subscriptionsList",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Display Subscriptions as a list",
+    "description": "Use a compact list for the Subscriptions feed.",
+    "default": false
+  },
+  {
+    "key": "hideSubscriptionsHeaders",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Hide Subscriptions Latest header",
+    "description": "Hide the native Latest header on the Subscriptions feed.",
+    "default": false
+  },
+  {
+    "key": "listChannelHeaders",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Show channel headers in lists",
+    "description": "Add creator headings to list cards using their existing verified native channel links.",
+    "default": false
+  },
+  {
+    "key": "fullFeedTitles",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Show full video titles",
+    "description": "Remove title line limits on feed cards without replacing DeArrow titles.",
+    "default": false
+  },
+  {
+    "key": "squareCorners",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Square video thumbnails",
+    "description": "Remove rounded corners from native video thumbnails.",
+    "default": false
+  },
+  {
+    "key": "disableThemedHover",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Disable themed hover effects",
+    "description": "Remove native coloured hover effects from supported video cards.",
+    "default": false
+  },
+  {
+    "key": "disableVideoPreviews",
+    "tab": "feed",
+    "section": "Recommendations",
+    "label": "Disable video previews",
+    "description": "Disable verified native inline-preview eligibility, with a visual fallback on unrecognised layouts. Enabling this turns off Keep hover previews with miniplayer.",
+    "default": false
+  },
+  {
+    "key": "hideSearchPrompts",
+    "tab": "feed",
+    "section": "Search",
+    "label": "Hide search suggestion prompts",
+    "description": "Hide native suggestion and refinement prompts in search results.",
+    "default": false
+  },
+  {
+    "key": "hideSearchAI",
+    "tab": "feed",
+    "section": "Search",
+    "label": "Hide AI search summaries",
+    "description": "Hide explicitly identified AI summaries in search. Ordinary video results are unaffected.",
+    "default": false
+  },
+  {
+    "key": "hideAIChapters",
+    "tab": "layout",
+    "section": "Watch page",
+    "label": "Hide AI-labelled chapter panels",
+    "description": "Hide explicitly AI-labelled chapter panels. Manual chapters, the seek bar and SponsorBlock markers remain available.",
+    "default": false
+  },
+  {
+    "key": "hideCommentGifs",
+    "tab": "comments",
+    "section": "Comment visibility",
+    "label": "Hide comment GIFs",
+    "description": "Hide native GIF attachments in comments without removing the comment text.",
+    "default": false
+  },
+  {
+    "key": "hideAllComments",
+    "tab": "comments",
+    "section": "Comment visibility",
+    "label": "Hide all comments",
+    "description": "Hide the comments section. Enabling this turns off scrollable fullscreen comments.",
+    "default": false
+  },
+  {
+    "key": "hideFeedPlaylists",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide playlists in feeds",
+    "description": "Hide explicitly identified playlist cards in supported feeds and search. Saved playlists, queues and Watch History are excluded.",
+    "default": false
+  },
+  {
+    "key": "hideFeedVods",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide previously streamed videos",
+    "description": "Hide cards explicitly labelled as completed live streams.",
+    "default": false
+  },
+  {
+    "key": "hideFeedCollaborations",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide collaboration videos",
+    "description": "Hide explicitly labelled collaboration cards. Ordinary multi-author text is not guessed.",
+    "default": false
+  },
+  {
+    "key": "hideFeedLowViews",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide low-view videos",
+    "description": "Filter cards with an explicit, readable native view count below the selected threshold. Unknown counts are kept.",
+    "default": false
+  },
+  {
+    "key": "hideFeedDubbed",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide labelled auto-dubbed videos",
+    "description": "Hide cards explicitly labelled auto-dubbed. Audio languages are not guessed from titles.",
+    "default": false
+  },
+  {
+    "key": "hideFeedMovies",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide Movies and TV cards",
+    "description": "Hide explicitly identified Movies and TV cards in recommendations and search.",
+    "default": false
+  },
+  {
+    "key": "hideHomePosts",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide Home community posts",
+    "description": "Hide community post cards on Home. Channel post pages are unaffected.",
+    "default": false
+  },
+  {
+    "key": "hideThumbnailBadges",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Hide native thumbnail badges",
+    "description": "Hide recognised native format and New badges. Durations, LIVE badges and extension markers are preserved.",
+    "default": false
+  },
+  {
+    "key": "hidePremiumUpsells",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Hide Premium promotions",
+    "description": "Hide native Premium upsell surfaces. This is cosmetic and does not block advertising.",
+    "default": false
+  },
+  {
+    "key": "hideOpenApp",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Hide Open app prompts",
+    "description": "Hide native prompts to open the YouTube app.",
+    "default": false
+  },
+  {
+    "key": "hideViewsIcon",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Hide view-count icon",
+    "description": "Hide the decorative view-count icon on supported native cards.",
+    "default": false
+  },
+  {
+    "key": "viewsSeparateLine",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "View counts on a separate line",
+    "description": "Place native view metadata on its own line in supported feed cards.",
+    "default": false
+  },
+  {
+    "key": "hideSidebarSubscriptions",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Hide sidebar subscription list",
+    "description": "Hide the native subscription-channel list in the sidebar while preserving the Subscriptions navigation link.",
+    "default": false
+  },
+  {
+    "key": "hideExplore",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Hide Explore link",
+    "description": "Hide the native Explore navigation entry.",
+    "default": false
+  },
+  {
+    "key": "hideSubscriptionsChannels",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Hide Subscriptions channel strip",
+    "description": "Hide the horizontal channel selector on the Subscriptions feed.",
+    "default": false
+  },
+  {
+    "key": "restoreSubscriptionsLink",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Restore Subscriptions link",
+    "description": "Show the existing native Subscriptions navigation entry where the current layout hides it. No fake entry is created.",
+    "default": false
+  },
+  {
+    "key": "channelDefaultVideos",
+    "tab": "layout",
+    "section": "Channel pages",
+    "label": "Open channel Videos tab",
+    "description": "Use the channel’s existing Videos tab when opening its main page.",
+    "default": false
+  },
+  {
+    "key": "pauseChannelTrailers",
+    "tab": "layout",
+    "section": "Channel pages",
+    "label": "Pause automatic channel trailers",
+    "description": "Pause an automatically started channel trailer once, before user interaction. Manual playback is respected.",
+    "default": false
+  },
+  {
+    "key": "hideChannelBanner",
+    "tab": "layout",
+    "section": "Channel pages",
+    "label": "Hide channel banner",
+    "description": "Hide the native channel banner without removing channel controls.",
+    "default": false
+  },
+  {
+    "key": "fullWidthChannel",
+    "tab": "layout",
+    "section": "Channel pages",
+    "label": "Full-width channel page",
+    "description": "Use the available width on supported channel pages.",
+    "default": false
+  },
+  {
+    "key": "fullWindowTheatre",
+    "tab": "layout",
+    "section": "Theatre view",
+    "label": "Full-window theatre view",
+    "description": "Expand the video when YouTube is already in theatre mode. This does not move the player or enable theatre mode itself.",
+    "default": false
+  },
+  {
+    "key": "theatreHideHeader",
+    "tab": "layout",
+    "section": "Theatre view",
+    "label": "Hide header in full-window theatre",
+    "description": "Hide the header only while full-window theatre view is active.",
+    "default": false
+  },
+  {
+    "key": "relatedBelowPlayer",
+    "tab": "layout",
+    "section": "Watch page",
+    "label": "Related videos below the player",
+    "description": "Stack the related rail below the player when no active queue, chat or engagement panel needs it. Enabling this turns off Hide related videos.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenTitle",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen title",
+    "description": "Hide the native title overlay in fullscreen.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenVoting",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen voting actions",
+    "description": "Hide native fullscreen voting actions. Return YouTube Dislike counts on the watch page are separate.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenMoreActions",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen More actions",
+    "description": "Hide the native More actions control in fullscreen.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenRelated",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen related overlay",
+    "description": "Hide native fullscreen related-video overlays.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenEndscreen",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen end-screen cards",
+    "description": "Hide end-screen cards in fullscreen. The general end-screen setting already hides them everywhere when enabled.",
+    "default": false
+  },
+  {
+    "key": "hideFullscreenControls",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide fullscreen playback toolbar",
+    "description": "Hide the playback toolbar only in fullscreen. Native keyboard controls remain available.",
+    "default": false
+  },
+  {
+    "key": "hideChatFullscreen",
+    "tab": "layout",
+    "section": "Fullscreen",
+    "label": "Hide native fullscreen chat",
+    "description": "Hide native fullscreen chat surfaces. The Suite’s floating chat setting remains separate.",
+    "default": false
+  },
+  {
+    "key": "shortsHideMetadata",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Hide Shorts metadata until hover",
+    "description": "Only applies when Redirect Shorts to watch pages is off.",
+    "default": false
+  },
+  {
+    "key": "shortsHideActions",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Hide Shorts action bar",
+    "description": "Hide the native action bar on Shorts pages. Native keyboard playback controls remain available.",
+    "default": false
+  },
+  {
+    "key": "shortsHideRelated",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Hide Shorts related-video link",
+    "description": "Hide the native related-video link on Shorts pages.",
+    "default": false
+  },
+  {
+    "key": "shortsHideMusic",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Hide Shorts music link",
+    "description": "Hide the native music link on Shorts pages.",
+    "default": false
+  },
+  {
+    "key": "shortsHideRemix",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Hide Shorts Remix button",
+    "description": "Hide the native Remix control on Shorts pages.",
+    "default": false
+  },
+  {
+    "key": "redirectShorts",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Redirect Shorts to watch pages",
+    "description": "Open Shorts with the normal watch player. Existing behaviour is preserved.",
+    "default": true
+  },
+  {
+    "key": "restoreMiniplayerButton",
+    "tab": "miniplayer",
+    "section": "Native miniplayer",
+    "label": "Restore native Miniplayer button",
+    "description": "Restore the native control when YouTube omits it.",
+    "default": true
+  },
+  {
+    "key": "hideNotifications",
+    "tab": "interface",
+    "section": "Header cleanup",
+    "label": "Hide Notifications button",
+    "description": "Hide the native header Notifications button.",
+    "default": true
+  },
+  {
+    "key": "hideVoiceSearch",
+    "tab": "interface",
+    "section": "Header cleanup",
+    "label": "Hide Voice search button",
+    "description": "Hide the native header Voice search button.",
+    "default": true
+  },
+  {
+    "key": "hideCreateButton",
+    "tab": "interface",
+    "section": "Header cleanup",
+    "label": "Hide Create button",
+    "description": "Hide the native Create or upload button.",
+    "default": true
+  },
+  {
+    "key": "hideSidebarSections",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Tidy extra sidebar sections",
+    "description": "Hide the secondary native sidebar sections currently removed by the Suite.",
+    "default": true
+  },
+  {
+    "key": "hideGuideFooter",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Hide sidebar footer",
+    "description": "Hide the native guide footer links.",
+    "default": true
+  },
+  {
+    "key": "hideFeedShelves",
+    "tab": "feed",
+    "section": "Feed cleanup",
+    "label": "Hide rich feed shelves",
+    "description": "Hide native rich-section shelves. Turn this off to retain shelves alongside individual card filters.",
+    "default": true
+  },
+  {
+    "key": "hideFeedNudges",
+    "tab": "feed",
+    "section": "Feed cleanup",
+    "label": "Hide feed nudges",
+    "description": "Hide native recommendation nudges and prompt shelves.",
+    "default": true
+  },
+  {
+    "key": "compactFeedSpacing",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Compact feed spacing",
+    "description": "Keep the Suite’s existing reduced grid spacing.",
+    "default": true
+  },
+  {
+    "key": "hideHomeCategories",
+    "tab": "feed",
+    "section": "Feed cleanup",
+    "label": "Hide feed category chips",
+    "description": "Hide native category chip bars on browse feeds.",
+    "default": true
+  },
+  {
+    "key": "hideMerchandise",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide merchandise and shopping",
+    "description": "Hide native shopping and merchandise surfaces.",
+    "default": true
+  },
+  {
+    "key": "hideVideoMetadata",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide extra video metadata",
+    "description": "Keep the Suite’s existing cleanup of extra watch-page metadata.",
+    "default": true
+  },
+  {
+    "key": "hideInfoPanels",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide information panels",
+    "description": "Hide native contextual information panels.",
+    "default": true
+  },
+  {
+    "key": "hideAskPanels",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide Ask panels",
+    "description": "Hide native Ask and AI-question panels.",
+    "default": true
+  },
+  {
+    "key": "collapseEmptySidebar",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Collapse empty sidebar",
+    "description": "Reclaim an empty secondary rail while keeping active queues and chat.",
+    "default": true
+  },
+  {
+    "key": "snapshotFormat",
+    "tab": "player",
+    "section": "Capture and export",
+    "label": "Snapshot format",
+    "description": "PNG preserves image detail. JPEG produces smaller files.",
+    "default": "png",
+    "options": [
+      [
+        "png",
+        "PNG"
+      ],
+      [
+        "jpeg",
+        "JPEG"
+      ]
+    ]
+  },
+  {
+    "key": "snapshotQuality",
+    "tab": "player",
+    "section": "Capture and export",
+    "label": "JPEG snapshot quality",
+    "description": "Only applies to JPEG snapshots.",
+    "default": "90",
+    "options": [
+      [
+        "70",
+        "70%"
+      ],
+      [
+        "80",
+        "80%"
+      ],
+      [
+        "90",
+        "90%"
+      ],
+      [
+        "100",
+        "100%"
+      ]
+    ]
+  },
+  {
+    "key": "playerBackground",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Player background",
+    "description": "Change the player background without altering the video image.",
+    "default": "default",
+    "options": [
+      [
+        "default",
+        "YouTube default"
+      ],
+      [
+        "black",
+        "Black"
+      ],
+      [
+        "transparent",
+        "Transparent"
+      ]
+    ]
+  },
+  {
+    "key": "playerControlsBackground",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Playback controls background",
+    "description": "Choose the native background effect behind the playback controls.",
+    "default": "default",
+    "options": [
+      [
+        "default",
+        "YouTube default"
+      ],
+      [
+        "blurred",
+        "Blurred"
+      ],
+      [
+        "transparent",
+        "Transparent"
+      ]
+    ]
+  },
+  {
+    "key": "feedColumns",
+    "tab": "feed",
+    "section": "Feed layout",
+    "label": "Video cards per row",
+    "description": "Choose grid density on supported desktop feeds. List view takes precedence.",
+    "default": "auto",
+    "options": [
+      [
+        "auto",
+        "YouTube default"
+      ],
+      [
+        "2",
+        "2"
+      ],
+      [
+        "3",
+        "3"
+      ],
+      [
+        "4",
+        "4"
+      ],
+      [
+        "5",
+        "5"
+      ],
+      [
+        "6",
+        "6"
+      ]
+    ]
+  },
+  {
+    "key": "lowViewThreshold",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Low-view threshold",
+    "description": "Hide readable counts below this value when the low-view filter is enabled.",
+    "default": "1000",
+    "options": [
+      [
+        "100",
+        "100 views"
+      ],
+      [
+        "1000",
+        "1,000 views"
+      ],
+      [
+        "10000",
+        "10,000 views"
+      ]
+    ]
+  },
+  {
+    "key": "interfaceTheme",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Page theme",
+    "description": "Apply an optional page palette without changing account cookies. Dark Reader takes precedence when detected.",
+    "default": "default",
+    "options": [
+      [
+        "default",
+        "YouTube default"
+      ],
+      [
+        "dark",
+        "Dark"
+      ],
+      [
+        "light",
+        "Light"
+      ]
+    ]
+  },
+  {
+    "key": "searchThumbnailSize",
+    "tab": "feed",
+    "section": "Search",
+    "label": "Search thumbnail size",
+    "description": "Choose thumbnail width on supported desktop search results.",
+    "default": "default",
+    "options": [
+      [
+        "default",
+        "YouTube default"
+      ],
+      [
+        "small",
+        "Small"
+      ],
+      [
+        "medium",
+        "Medium"
+      ],
+      [
+        "large",
+        "Large"
+      ]
+    ]
+  },
+  {
+    "key": "shortsColumns",
+    "tab": "feed",
+    "section": "Native Shorts",
+    "label": "Shorts cards per row",
+    "description": "Choose the density of native Shorts shelves where supported.",
+    "default": "auto",
+    "options": [
+      [
+        "auto",
+        "YouTube default"
+      ],
+      [
+        "3",
+        "3"
+      ],
+      [
+        "4",
+        "4"
+      ],
+      [
+        "5",
+        "5"
+      ],
+      [
+        "6",
+        "6"
+      ]
+    ]
+  },
+  {
+    "key": "hideShareButton",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide Share action",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideThanksButton",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide Thanks action",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideJoinButton",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide Join action",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideInlineSaveButton",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide inline Save action",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": false
+  },
+  {
+    "key": "hideClipButton",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide Clip action",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": false
+  },
+  {
+    "key": "hideStatementBanners",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide statement banners",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideBrandVideoShelf",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide branded video shelves",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideHashtags",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide watch-page hashtags",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "collapseDescriptionBlankRows",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Compact description spacing",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideStructuredDescription",
+    "tab": "layout",
+    "section": "Watch page cleanup",
+    "label": "Hide structured description sections",
+    "description": "Show or hide this watch-page surface after saving and reloading.",
+    "default": true
+  },
+  {
+    "key": "hideHistoryAuxActions",
+    "tab": "interface",
+    "section": "Sidebar",
+    "label": "Hide History auxiliary actions",
+    "description": "Hide feedback and recommendation-explanation actions in the native History sidebar. Watch History entries are unchanged.",
+    "default": true
+  },
+  {
+    "key": "classicProgressColour",
+    "tab": "player",
+    "section": "Player appearance",
+    "label": "Classic red progress colour",
+    "description": "Use a solid red native playback progress bar and dot. SponsorBlock segments and your custom playback-marker image are separate.",
+    "default": false
+  },
+  {
+    "key": "useStandardMastheadLogo",
+    "tab": "interface",
+    "section": "Header cleanup",
+    "label": "Use standard YouTube logo",
+    "description": "Keep the normal logo instead of special event artwork.",
+    "default": true
+  },
+  {
+    "key": "hidePayToWatchCards",
+    "tab": "feed",
+    "section": "Feed cleanup",
+    "label": "Hide paid video cards",
+    "description": "Hide native rent, buy and pay-to-watch cards in supported feeds.",
+    "default": true
+  },
+  {
+    "key": "showAutoplayUpNextCard",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Show autoplay Up next card",
+    "description": "Retain the native next-video card separately from end-screen recommendation grids.",
+    "default": true
+  },
+  {
+    "key": "enableCleanVideoUrlCopy",
+    "tab": "interface",
+    "section": "Navigation",
+    "label": "Clean copied video URLs",
+    "description": "Remove tracking parameters from recognised native Copy video URL actions. Timestamp copying remains available.",
+    "default": true
+  },
+  {
+    "key": "requireRightMouseButtonForWheelVolume",
+    "tab": "player",
+    "section": "Playback",
+    "label": "Require right mouse button for wheel volume",
+    "description": "Keep normal page scrolling unless the right mouse button is held. Turning this off makes wheel gestures over the player adjust volume directly.",
+    "default": true
+  },
+  {
+    "key": "showTemporaryRevealControl",
+    "tab": "feed",
+    "section": "Feed cleanup",
+    "label": "Show hidden-card reveal control",
+    "description": "Keep the Suite’s temporary reveal control for filtered feed cards.",
+    "default": true
+  },
+  {
+    "key": "compactNativeQueue",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Fit native queue to contents",
+    "description": "Short queues fit their rows and keep the native corner alignment; longer queues scroll. YouTube’s usual height is temporarily restored while dragging or resizing.",
+    "default": true
+  }
+];
+ for (const item of definitions) { if (item.options) { item.options.forEach(Object.freeze); Object.freeze(item.options); } Object.freeze(item); }
+ return Object.freeze({ definitions: Object.freeze(definitions), defaults: Object.freeze(Object.fromEntries(definitions.map(item => [item.key, item.default]))), choices: Object.freeze(Object.fromEntries(definitions.filter(item => item.options).map(item => [item.key, Object.freeze(item.options.map(option => option[0]))]))) });
+};
+  const createMenuLayout = function createMenuLayout() {
+  const actionIds = Object.freeze(['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share',
+    'notInterested', 'channelAge', 'dontRecommend', 'report']);
+  const labels = Object.freeze({ playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
+    savePlaylist: 'Save to playlist', download: 'Download', share: 'Share', notInterested: 'Not interested',
+    channelAge: 'Filter channel uploads', dontRecommend: 'Don’t recommend channel', report: 'Report' });
+  const limits = Object.freeze({ maxGroups: 8, maxDepth: 3, maxNameLength: 40 });
+  const groupId = value => value === 'channelTools' || /^submenu-[a-z0-9-]{1,24}$/.test(value);
+  const plain = value => value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+  function fields(value, expected) {
+    if (!plain(value) || Reflect.ownKeys(value).length !== expected.length) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    return expected.every(name => Object.hasOwn(descriptors, name) && Object.hasOwn(descriptors[name], 'value') && descriptors[name].enumerable);
+  }
+  function clone(value) {
+    return value === null ? null : { version: 1, nodes: value.nodes.map(node => actionIds.includes(node.id)
+      ? { id: node.id, parent: node.parent, visible: node.visible }
+      : { id: node.id, name: node.name, parent: node.parent }) };
+  }
+  function validate(value) {
+    try {
+      if (!fields(value, ['version', 'nodes']) || value.version !== 1 || !Array.isArray(value.nodes) ||
+          Object.getPrototypeOf(value.nodes) !== Array.prototype || value.nodes.length < actionIds.length ||
+          value.nodes.length > actionIds.length + limits.maxGroups ||
+          Reflect.ownKeys(value.nodes).length !== value.nodes.length + 1) return null;
+      const nodes = new Map();
+      let groupCount = 0;
+      for (let index = 0; index < value.nodes.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value.nodes, index);
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
+        const node = descriptor.value;
+        if (!plain(node)) return null;
+        const id = Object.getOwnPropertyDescriptor(node, 'id');
+        const parent = Object.getOwnPropertyDescriptor(node, 'parent');
+        if (!id || !Object.hasOwn(id, 'value') || typeof id.value !== 'string' || nodes.has(id.value) ||
+            !parent || !Object.hasOwn(parent, 'value') || typeof parent.value !== 'string') return null;
+        if (actionIds.includes(node.id)) {
+          if (!fields(node, ['id', 'parent', 'visible']) || typeof node.visible !== 'boolean') return null;
+        } else {
+          if (!fields(node, ['id', 'name', 'parent']) || !groupId(node.id) || typeof node.name !== 'string' ||
+              node.name !== node.name.trim() || !node.name.length || node.name.length > limits.maxNameLength ||
+              /[\u0000-\u001f\u007f-\u009f<>\u2028\u2029]/.test(node.name) || ++groupCount > limits.maxGroups) return null;
+        }
+        nodes.set(node.id, node);
+      }
+      if (actionIds.some(id => !nodes.has(id))) return null;
+      for (const node of nodes.values()) {
+        const visited = new Set([node.id]);
+        let parent = node.parent, depth = actionIds.includes(node.id) ? 0 : 1;
+        while (parent !== 'root') {
+          const owner = nodes.get(parent);
+          if (!owner || actionIds.includes(parent) || visited.has(parent) || ++depth > limits.maxDepth) return null;
+          visited.add(parent); parent = owner.parent;
+        }
+      }
+      return clone(value);
+    } catch { return null; }
+  }
+  function fromPreferences(preferences = {}) {
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) preferences = {};
+    const custom = validate(preferences.menuLayout);
+    if (custom) return custom;
+    const grouped = preferences.menuGroupChannelTools !== false;
+    const defaultOrder = [...actionIds, 'channelTools'];
+    const requested = Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder : [];
+    const order = [...new Set([...requested.filter(id => defaultOrder.includes(id)), ...defaultOrder])];
+    const visibility = { download: preferences.menuShowDownload === true, channelAge: preferences.menuShowAgeLimit !== false,
+      notInterested: preferences.menuShowNotInterested !== false, dontRecommend: preferences.menuShowDontRecommend !== false,
+      report: preferences.menuShowReport !== false };
+    return { version: 1, nodes: order.flatMap(id => id === 'channelTools'
+      ? grouped ? [{ id, name: 'Channel tools', parent: 'root' }] : []
+      : [{ id, parent: grouped && ['channelAge', 'dontRecommend', 'report'].includes(id) ? 'channelTools' : 'root',
+        visible: Object.hasOwn(visibility, id) ? visibility[id] : true }]) };
+  }
+  return Object.freeze({ actionIds, labels, limits, validate, fromPreferences, clone });
+};
+  const menuLayout = createMenuLayout();
+  const createSuiteSettings = function createSuiteSettings(getStorage, isDarkTheme, catalogue = createFeatureCatalogue(), menuLayouts = createMenuLayout()) {
   const key = "yt-master-suite.settings.v1";
   const cornerKey = "yt-master-suite.scroll-miniplayer.corner.v1";
   const defaults = Object.freeze({
+    ...catalogue.defaults,
     colourMode: "default", palette: "teal-coral", viewerColour: "#82A3E6", ownerColour: "#FF9F1C",
     compactComments: true, hideCommentControls: true,
     hideShorts: true, hideWatchedVideos: true, hideLiveVideos: false, hideUpcomingStreams: true,
@@ -1158,24 +2261,27 @@
     keepHoverPreviews: false, timeDisplayMode: "native",
     wheelVolume: true, wheelStep: "5", hideRelated: true, hideChat: true, hideInfoCards: true,
     hideEndScreens: true, fullscreenComments: true, disableTitleHashtagLinks: false, miniplayerEnabled: true,
-    corner: "top-right", queueInfo: true,
+    corner: "top-right", queueInfo: true, miniplayerSizeMode: "auto", miniplayerWidth: 720,
     headerSettingsIcon: "colour", playerSettingsIcon: "monochrome",
     showRydTooltipBar: false,
     showDeArrowTitleButton: false,
     showDeArrowQueueButton: true,
     menuShowDownload: false, menuGroupChannelTools: true, menuShowAgeLimit: true,
     menuShowNotInterested: true, menuShowDontRecommend: true, menuShowReport: true,
+    menuLayout: null,
     menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "share",
       "notInterested", "channelAge", "dontRecommend", "report", "channelTools"]),
   });
   const choices = Object.freeze({
+    ...catalogue.choices,
     colourMode: ["default", "preset", "custom", "off"],
     palette: ["teal-coral", "lavender-gold", "cyan-rose"],
-    watchedThreshold: ["80", "90", "95", "100"], wheelStep: ["1", "2", "5", "10"],
+    watchedThreshold: ["5", "10", "25", "50", "75", "80", "90", "95", "100"], wheelStep: ["1", "2", "5", "10"],
     preferredVideoQuality: ["off", "highest", "tiny", "small", "medium", "large", "hd720", "hd1080", "hd1440", "hd2160"],
     timelinePreviewSize: ["auto", "small", "medium", "large", "native"],
     timeDisplayMode: ["native", "elapsed", "remaining"],
     corner: ["top-right", "bottom-right", "bottom-left", "top-left"],
+    miniplayerSizeMode: ["auto", "custom"],
     headerSettingsIcon: ["off", "colour", "monochrome"], playerSettingsIcon: ["off", "colour", "monochrome"],
   });
   const palettes = Object.freeze({
@@ -1204,6 +2310,8 @@
       const value = input[name];
       if (typeof fallback === "boolean") {
         if (typeof value === "boolean") result[name] = value;
+      } else if (name === "miniplayerWidth") {
+        if (Number.isInteger(value) && value >= 320 && value <= 1200) result[name] = value;
       } else if (name === "menuItemOrder") {
         if (Array.isArray(value) && value.length <= defaults.menuItemOrder.length) {
           // Adopt the revised default without overwriting explicitly rearranged menus.
@@ -1211,10 +2319,16 @@
           const order = [...new Set(value.filter(item => typeof item === "string" && defaults.menuItemOrder.includes(item)))];
           result[name] = [...order, ...defaults.menuItemOrder.filter(item => !order.includes(item))];
         }
+      } else if (name === "menuLayout") {
+        result[name] = value === null ? null : menuLayouts.validate(value);
       } else if (name === "viewerColour" || name === "ownerColour") {
         result[name] = normaliseHex(value) || fallback;
       } else if (choices[name]?.includes(value)) result[name] = value;
     }
+    // Resolve opposing presentation choices deterministically, including imports.
+    if (result.relatedBelowPlayer) result.hideRelated = false;
+    if (result.disableVideoPreviews) result.keepHoverPreviews = false;
+    if (result.hideAllComments) result.fullscreenComments = false;
     // Recover a corrupted or manually edited record without hiding all access.
     if (result.headerSettingsIcon === "off" && result.playerSettingsIcon === "off") result.headerSettingsIcon = defaults.headerSettingsIcon;
     return result;
@@ -1236,6 +2350,11 @@
   }
   const initialValues = read();
   Object.freeze(initialValues.menuItemOrder);
+  if (initialValues.menuLayout) {
+    initialValues.menuLayout.nodes.forEach(Object.freeze);
+    Object.freeze(initialValues.menuLayout.nodes);
+    Object.freeze(initialValues.menuLayout);
+  }
   const initial = Object.freeze(initialValues);
   // Reads deliberately fail open, but an editor must never turn an unknown or
   // damaged saved record into a valid-looking new one by silently discarding it.
@@ -1252,9 +2371,13 @@
         const fallback = defaults[name];
         if (typeof fallback === "boolean") {
           if (typeof value !== "boolean") return false;
+        } else if (name === "miniplayerWidth") {
+          if (!Number.isInteger(value) || value < 320 || value > 1200) return false;
         } else if (name === "menuItemOrder") {
           if (!Array.isArray(value) || value.length > defaults.menuItemOrder.length ||
               new Set(value).size !== value.length || value.some(item => !defaults.menuItemOrder.includes(item))) return false;
+        } else if (name === "menuLayout") {
+          if (value !== null && !menuLayouts.validate(value)) return false;
         } else if (name === "viewerColour" || name === "ownerColour") {
           if (!normaliseHex(value)) return false;
         } else if (!choices[name]?.includes(value)) return false;
@@ -1263,11 +2386,15 @@
     } catch { return false; }
   }
   function save(input) {
+    if (input && Object.hasOwn(input, 'menuLayout') && input.menuLayout !== null && !menuLayouts.validate(input.menuLayout)) {
+      return { ok: false, error: "The video menu layout is invalid. Check submenu names, placement and nesting before saving." };
+    }
     if (input?.headerSettingsIcon === "off" && input?.playerSettingsIcon === "off") {
       return { ok: false, error: "Keep at least one settings button enabled." };
     }
     const values = validate(input);
     const desired = JSON.stringify({ version: 1, values });
+    if (desired.length > 8192) return { ok: false, error: "Saved settings would exceed the supported size. Shorten submenu names or remove unused submenus." };
     let storage, previous;
     try {
       storage = getStorage(); previous = storage.getItem(key);
@@ -1310,11 +2437,21 @@
       };
     }
     if (id === "feedUiCleaner") return {
+      ...Object.fromEntries(["hideHomeCategories", "hideNotifications", "hideVoiceSearch", "hideCreateButton", "hideSidebarSections", "hideGuideFooter", "hideFeedShelves", "hideFeedNudges", "hideHistoryAuxActions"].map(name => [name, values[name]])),
+      tightenFeedGrid: values.compactFeedSpacing,
+      showTemporaryRevealControl: values.showTemporaryRevealControl,
       filterProfiles: Object.fromEntries(Object.entries(config.filterProfiles).map(([route, profile]) => [route, {
         ...profile, mixes: values.hideMixes, membersOnly: values.hideMembersOnly, podcasts: values.hidePodcasts,
       }])),
     };
     if (id === "playerPreferencesLite") return {
+      convertShortsToWatch: values.redirectShorts, hideMerchShelf: values.hideMerchandise,
+      disableVideoPreviews: values.disableVideoPreviews,
+      useStandardMastheadLogo: values.useStandardMastheadLogo, hidePayToWatchCards: values.hidePayToWatchCards,
+      showAutoplayUpNextCard: values.showAutoplayUpNextCard, enableCleanVideoUrlCopy: values.enableCleanVideoUrlCopy,
+      requireRightMouseButtonForWheelVolume: values.requireRightMouseButtonForWheelVolume,
+      hideMetadataTeaserCarousel: values.hideVideoMetadata, hideInfoPanel: values.hideInfoPanels, hideAskButton: values.hideAskPanels,
+      ...Object.fromEntries(["hideShareButton", "hideThanksButton", "hideJoinButton", "hideInlineSaveButton", "hideStatementBanners", "hideBrandVideoShelf", "hideHashtags", "collapseDescriptionBlankRows", "hideStructuredDescription"].map(name => [name, values[name]])),
       hideShorts: values.hideShorts, hideWatchedVideos: values.hideWatchedVideos,
       hideLiveVideos: values.hideLiveVideos, hideUpcomingStreams: values.hideUpcomingStreams,
       watchedVideoThresholdPercent: Number(values.watchedThreshold),
@@ -1331,17 +2468,25 @@
       showRydTooltipBar: values.showRydTooltipBar,
       showDeArrowTitleButton: values.showDeArrowTitleButton,
       feedFilterProfiles: Object.fromEntries(Object.entries(config.feedFilterProfiles).map(([route, profile]) => [route, {
-        ...profile, watchedVideos: route === "history" ? false : values.hideWatchedVideos,
+        ...profile, ...(Object.hasOwn(profile, 'payToWatchCards') ? { payToWatchCards: values.hidePayToWatchCards } : {}),
+        watchedVideos: route === "history" ? false : values.hideWatchedVideos,
       }])),
     };
-    if (id === "scrollMiniplayer") return { enabled: values.miniplayerEnabled, showCompactQueueInfo: values.queueInfo };
+    if (id === "scrollMiniplayer") return {
+      enabled: values.miniplayerEnabled, showCompactQueueInfo: values.queueInfo,
+      sizeMode: values.miniplayerSizeMode === "custom" ? "fixed" : "dynamic", customWidth: values.miniplayerWidth,
+    };
     if (id === "watchLayoutCleaner") return {
+      collapseEmptySidebar: values.collapseEmptySidebar,
       relatedVideosHideBreakpointPx: values.hideRelated ? config.relatedVideosHideBreakpointPx : 0,
       showDeArrowQueueButton: values.showDeArrowQueueButton,
     };
+    if (id === "miniplayerButtonRestorer") return { enabled: values.restoreMiniplayerButton };
     return {};
   }
-  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder });
+  const isValidMenuLayout = value => value === null || menuLayouts.validate(value) !== null;
+  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
+    isValidMenuLayout, features: catalogue.definitions });
 };
   const createChannelAgeService = function createChannelAgeService(getStorage, now = () => Date.now()) {
   const key = "yt-master-suite.channel-age.v1";
@@ -1350,6 +2495,8 @@
   const units = ["days", "weeks", "months", "years"];
   let current = [];
   let enabledRules = new Map();
+  const resolvedHandles = new Map();
+  let resolvedCards = new WeakMap();
 
   function normaliseChannelId(input) {
     if (typeof input !== "string") return null;
@@ -1488,10 +2635,14 @@
       try {
         if (typeof node?.componentProps?.data === "function") componentData = node.componentProps.data();
       } catch { /* A detached current component retains the existing DOM/legacy fallback. */ }
-      for (const value of [node?.data, node?.__data?.data, controller?.data, controller?.__data?.data, componentData]) {
+      for (const read of [() => node?.data, () => node?.__data?.data, () => controller?.data, () => controller?.__data?.data, () => componentData]) {
+        let value;
+        try { value = read(); } catch { continue; }
         if (!value || typeof value !== "object") continue;
         found.push(value);
-        for (const candidate of [value.videoRenderer, value.compactVideoRenderer, value.gridVideoRenderer, value.content?.videoRenderer, value.content?.richItemRenderer?.content?.videoRenderer, value.lockupViewModel]) {
+        for (const readCandidate of [() => value.videoRenderer, () => value.compactVideoRenderer, () => value.gridVideoRenderer, () => value.content?.videoRenderer, () => value.content?.richItemRenderer?.content?.videoRenderer, () => value.lockupViewModel]) {
+          let candidate;
+          try { candidate = readCandidate(); } catch { continue; }
           if (candidate && typeof candidate === "object") found.push(candidate);
         }
       }
@@ -1505,22 +2656,67 @@
     return Array.isArray(rows) ? rows.slice(0, 4).flatMap(row => Array.isArray(row?.metadataParts) ? row.metadataParts.slice(0, 5) : []) : [];
   }
 
-  function channelFromRecords(card, data) {
+  function metadataRows(record) {
+    const rows = record?.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows
+      || record?.metadata?.contentMetadataViewModel?.metadataRows;
+    return Array.isArray(rows) ? rows.slice(0, 4) : [];
+  }
+
+  function collaboratorItems(record) {
+    const stack = record.metadata?.lockupMetadataViewModel?.image?.avatarStackViewModel;
+    const items = stack?.rendererContext?.commandContext?.onTap?.innertubeCommand?.showDialogCommand
+      ?.panelLoadingStrategy?.inlineContent?.dialogViewModel?.customContent?.listViewModel?.listItems;
+    if (!Array.isArray(stack?.avatars) || stack.avatars.length < 2 || stack.avatars.length > 10 ||
+        !Array.isArray(items) || items.length < 2 || items.length > 10) return [];
+    const creators = items.map(item => item?.listItemViewModel);
+    return creators.every(creator => normaliseChannelId(creator?.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId))
+      ? creators : [];
+  }
+
+  const bylineSelector = [
+    "#channel-name a[href]", "#byline a[href]", "ytd-channel-name a[href]",
+    ".yt-content-metadata-view-model__metadata-text a[href]",
+    ".yt-content-metadata-view-model__metadata-row a[href]",
+    ".ytContentMetadataViewModelMetadataText a[href]",
+  ].join(",");
+
+  function handleFromUrl(value) {
+    if (typeof value !== 'string' || value.length > 1024) return null;
+    try {
+      const url = new URL(value, 'https://www.youtube.com');
+      if (url.origin !== 'https://www.youtube.com' || url.username || url.password || url.search || url.hash) return null;
+      const match = /^\/@([^/]+)\/?$/.exec(url.pathname);
+      if (!match) return null;
+      const handle = decodeURIComponent(match[1]);
+      if (!handle || handle.length > 100 || /[\s\u0000-\u001f\u007f<>?&#%/\\@]/u.test(handle)) return null;
+      return { handle: `@${handle}`, url: `https://www.youtube.com/@${encodeURIComponent(handle)}` };
+    } catch { return null; }
+  }
+
+  function channelCandidatesFromRecords(card, data) {
     const candidates = new Map();
-    function add(id, name) {
+    const groups = [], domGroups = new Map();
+    const token = command => normaliseChannelId(command?.browseEndpoint?.browseId) ||
+      handleFromUrl(command?.browseEndpoint?.canonicalBaseUrl || command?.commandMetadata?.webCommandMetadata?.url || command?.urlEndpoint?.url)?.url;
+    function group(values) {
+      const unique = [...new Set(values.filter(Boolean))];
+      if (unique.length > 1) groups.push(unique);
+    }
+    function add(id, name, priority = 1) {
       const channelId = normaliseChannelId(id);
       if (!channelId) return;
-      candidates.set(channelId, candidates.get(channelId) || label(name));
+      const named = label(name), existing = candidates.get(channelId);
+      if (!existing || (named && (!existing.name || priority > existing.priority))) candidates.set(channelId, { channelId, name: named, priority });
     }
-    const bylineSelector = [
-      "#channel-name a[href]", "#byline a[href]", "ytd-channel-name a[href]",
-      ".yt-content-metadata-view-model__metadata-text a[href]",
-      ".yt-content-metadata-view-model__metadata-row a[href]",
-      ".ytContentMetadataViewModelMetadataText a[href]",
-    ].join(",");
     for (const anchor of Array.from(card.querySelectorAll(bylineSelector)).slice(0, 20)) {
       const href = anchor.getAttribute("href") || "";
-      add(href.startsWith("/channel/") ? `https://www.youtube.com${href}` : href, anchor.textContent);
+      add(href.startsWith("/channel/") ? `https://www.youtube.com${href}` : href, anchor.textContent, 3);
+      const value = normaliseChannelId(href.startsWith('/channel/') ? `https://www.youtube.com${href}` : href) || handleFromUrl(href)?.url;
+      const container = anchor.closest?.('#channel-name, #byline, ytd-channel-name, .yt-content-metadata-view-model__metadata-row, .ytContentMetadataViewModelMetadataRow') || anchor.parentElement;
+      if (value && container && container !== card) {
+        const values = domGroups.get(container) || [];
+        values.push(value); domGroups.set(container, values);
+      }
     }
     for (const record of data) {
       // Current History lockups keep the owner endpoint on the avatar, while
@@ -1528,25 +2724,145 @@
       const avatar = record.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel;
       add(avatar?.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId,
         text(metadataParts(record)[0]?.text));
+      // Current collaboration cards put both permanent creator endpoints in
+      // their avatar stack's inline channel-choice dialog, not in its images.
+      const collaborators = collaboratorItems(record);
+      group(collaborators.map(creator => token(creator.rendererContext.commandContext.onTap.innertubeCommand)));
+      for (const creator of collaborators) add(creator.rendererContext.commandContext.onTap.innertubeCommand.browseEndpoint.browseId, text(creator.title), 5);
       for (const byline of [record.ownerText, record.shortBylineText, record.longBylineText]) {
+        group((Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []).map(run => token(run?.navigationEndpoint)));
         for (const run of Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []) {
-          add(run?.navigationEndpoint?.browseEndpoint?.browseId, run?.text);
+          add(run?.navigationEndpoint?.browseEndpoint?.browseId, run?.text, 4);
         }
       }
+      for (const row of metadataRows(record)) group((Array.isArray(row?.metadataParts) ? row.metadataParts.slice(0, 5) : [])
+        .flatMap(part => Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : [])
+        .map(run => token(run?.onTap?.innertubeCommand || run?.onTap)));
       for (const part of metadataParts(record)) {
         for (const run of Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : []) {
           const command = run?.onTap?.innertubeCommand || run?.onTap;
-          add(command?.browseEndpoint?.browseId, text(part.text));
+          const content = text(part.text);
+          const hasRange = Number.isInteger(run?.startIndex) && Number.isInteger(run?.length) &&
+            run.startIndex >= 0 && run.length > 0 && run.startIndex + run.length <= content.length;
+          add(command?.browseEndpoint?.browseId, hasRange ? content.slice(run.startIndex, run.startIndex + run.length) : content, hasRange ? 4 : 2);
         }
       }
     }
-    if (candidates.size !== 1) return null;
-    const [channelId, name] = candidates.entries().next().value;
-    return { channelId, name: name || channelId };
+    for (const values of domGroups.values()) group(values);
+    return { channels: [...candidates.values()].map(({ channelId, name }) => ({ channelId, name: name || channelId })), groups };
+  }
+
+  function channelFromRecords(card, data) {
+    const identity = identityFromRecords(card, data);
+    return identity.status === 'unique' ? identity.channels[0] : null;
   }
 
   function channelFromCard(card) {
     return card?.querySelectorAll ? channelFromRecords(card, records(card)) : null;
+  }
+
+  function channelCandidatesFromCard(card) {
+    const identity = channelIdentityFromCard(card);
+    return identity.status === 'conflict' ? [] : identity.channels;
+  }
+
+  function handlesFromRecords(card, data) {
+    if (!card?.querySelectorAll) return [];
+    const candidates = new Map(), identified = new Set();
+    function add(value, name, id) {
+      const candidate = handleFromUrl(value);
+      if (!candidate) return;
+      if (normaliseChannelId(id)) { identified.add(candidate.url); return; }
+      const existing = candidates.get(candidate.url);
+      if (!existing || (!existing.name && label(name))) candidates.set(candidate.url, { ...candidate, name: label(name) });
+    }
+    function endpoint(command, name) {
+      if (!command || typeof command !== 'object') return;
+      const id = command.browseEndpoint?.browseId;
+      add(command.browseEndpoint?.canonicalBaseUrl, name, id);
+      add(command.commandMetadata?.webCommandMetadata?.url, name, id);
+      add(command.urlEndpoint?.url, name, id);
+    }
+    for (const anchor of Array.from(card.querySelectorAll(bylineSelector)).slice(0, 20)) add(anchor.getAttribute('href'), anchor.textContent);
+    for (const record of data) {
+      const avatar = record.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel;
+      endpoint(avatar?.rendererContext?.commandContext?.onTap?.innertubeCommand, text(metadataParts(record)[0]?.text));
+      for (const creator of collaboratorItems(record)) endpoint(creator.rendererContext.commandContext.onTap.innertubeCommand,text(creator.title));
+      for (const byline of [record.ownerText, record.shortBylineText, record.longBylineText]) {
+        for (const run of Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []) endpoint(run?.navigationEndpoint, run?.text);
+      }
+      for (const part of metadataParts(record)) {
+        const content = text(part.text);
+        for (const run of Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : []) {
+          const hasRange = Number.isInteger(run?.startIndex) && Number.isInteger(run?.length) &&
+            run.startIndex >= 0 && run.length > 0 && run.startIndex + run.length <= content.length;
+          endpoint(run?.onTap?.innertubeCommand || run?.onTap, hasRange ? content.slice(run.startIndex, run.startIndex + run.length) : content);
+        }
+      }
+    }
+    return [...candidates.values()].filter(candidate => !identified.has(candidate.url)).slice(0, 10)
+      .map(candidate => ({ ...candidate, name: candidate.name || candidate.handle }));
+  }
+
+  function freshResolution(url) {
+    const entry = resolvedHandles.get(url);
+    if (!entry) return null;
+    const timestamp = Number(now());
+    if (!Number.isFinite(timestamp) || entry.expires <= timestamp) { resolvedHandles.delete(url); return null; }
+    return entry.channel;
+  }
+
+  function identityFromRecords(card, data) {
+    const found = channelCandidatesFromRecords(card, data), rawHandles = handlesFromRecords(card, data);
+    const channels = new Map(found.channels.map(channel => [channel.channelId, channel]));
+    const handles = [];
+    for (const candidate of rawHandles) {
+      const channel = freshResolution(candidate.url);
+      if (channel) channels.set(channel.channelId, { channelId: channel.channelId, name: candidate.name || channel.name });
+      else handles.push(candidate);
+    }
+    const values = [...channels.values()];
+    let status = values.length === 0 ? 'missing' : values.length === 1 ? 'unique' : 'conflict';
+    if (values.length > 0 && values.length <= 10 && found.groups.some(group => {
+      const ids = new Set(group.map(value => normaliseChannelId(value) || freshResolution(value)?.channelId).filter(Boolean));
+      const unresolvedCreator = handles.some(handle => group.includes(handle.url));
+      return values.every(channel => ids.has(channel.channelId)) && (ids.size > 1 || unresolvedCreator);
+    })) status = 'multiple';
+    if (values.length > 10) return { status:'conflict', channels:[], handles:[] };
+    return { status, channels:values, handles };
+  }
+
+  function channelIdentityFromCard(card) {
+    return card?.querySelectorAll ? identityFromRecords(card, records(card)) : { status:'missing',channels:[],handles:[] };
+  }
+
+  function handleCandidatesFromCard(card) {
+    return channelIdentityFromCard(card).handles;
+  }
+
+  function rememberResolvedChannel(card, candidate, channel, expectedVideoId) {
+    const url = handleFromUrl(candidate?.url), id = normaliseChannelId(channel?.channelId);
+    const videoId = videoIdFromCard(card);
+    if (!url || !id || !videoId || (expectedVideoId !== undefined && expectedVideoId !== videoId) ||
+        channel?.url !== url.url || channel?.handle !== url.handle) return { ok:false,error:'The selected channel or video changed. Reopen its menu and try again.' };
+    const available = handlesFromRecords(card, records(card));
+    if (!available.some(handle => handle.url === url.url && handle.handle === url.handle)) return { ok:false,error:'The selected creator is no longer present on this video.' };
+    const timestamp = Number(now());
+    if (!Number.isFinite(timestamp)) return { ok:false,error:'Channel lookup could not be retained. Please try again.' };
+    const value = { channelId:id,name:label(channel.name) || available.find(handle => handle.url === url.url).name,handle:url.handle,url:url.url };
+    const expires = timestamp + 600000;
+    resolvedCards.set(card, { videoId,url:url.url,channel:value,expires });
+    resolvedHandles.delete(url.url);
+    resolvedHandles.set(url.url, { channel:value,expires });
+    while (resolvedHandles.size > 32) resolvedHandles.delete(resolvedHandles.keys().next().value);
+    return { ok:true,channel:{ ...value } };
+  }
+
+  function isResolvedChannel(card, url, channelId, expectedVideoId) {
+    const binding = resolvedCards.get(card), candidate = handleFromUrl(url), timestamp = Number(now());
+    if (!binding || !candidate || binding.url !== candidate.url || binding.channel.channelId !== channelId ||
+        !Number.isFinite(timestamp) || binding.expires <= timestamp || binding.videoId !== expectedVideoId || videoIdFromCard(card) !== expectedVideoId) return false;
+    return handlesFromRecords(card, records(card)).some(handle => handle.url === candidate.url);
   }
 
   function videoIdFromCard(card) {
@@ -1662,14 +2978,15 @@
     if (!enabledRules.size || !card?.querySelectorAll) return null;
     // Renderers can be recycled between calls; share this snapshot only here.
     const data = records(card);
-    const owner = channelFromRecords(card, data);
-    const rule = owner && enabledRules.get(owner.channelId);
-    if (!rule) return null;
+    const identity = identityFromRecords(card, data);
+    if (!['unique', 'multiple'].includes(identity.status)) return null;
+    const rules = identity.channels.map(channel => enabledRules.get(channel.channelId)).filter(Boolean);
+    if (!rules.length) return null;
     // Suite-owned blocks are not YouTube recommendation-feedback history.
     // Deliberately hide all uploads, including undated/live cards, but only
     // on the feed surfaces selected by the caller.
-    if (rule.blocked) return "Channel hidden";
-    return isOlderThanRule(card, rule, data) ? "Channel age" : null;
+    if (rules.some(rule => rule.blocked)) return "Channel hidden";
+    return rules.some(rule => isOlderThanRule(card, rule, data)) ? "Channel age" : null;
   }
 
   function isCardTooOld(card) {
@@ -1677,18 +2994,494 @@
   }
 
   read();
-  return { key, normaliseChannelId, validateRules, read, save, getRules, hasEnabledRules, channelFromCard, videoIdFromCard, compareAgeLimits, cardFilterReason, isCardTooOld };
+  return { key, normaliseChannelId, validateRules, read, save, getRules, hasEnabledRules, channelFromCard, channelCandidatesFromCard, handleCandidatesFromCard, channelIdentityFromCard, rememberResolvedChannel, rememberLookup:rememberResolvedChannel, isResolvedChannel, videoIdFromCard, compareAgeLimits, cardFilterReason, isCardTooOld };
 };
+  let storage;
+  try {
+    const storageApis = (function scopeStorageApis({ info, getValue, setValue, addValueChangeListener, removeValueChangeListener }) {
+  const fail = () => { throw new Error('Tampermonkey browsing context is unavailable or incompatible. Existing settings were left unchanged.'); };
+  let incognito, containerId = '';
+  try {
+    if (!info || typeof info !== 'object' || Array.isArray(info)) fail();
+    incognito = info.isIncognito;
+    if (typeof incognito !== 'boolean') fail();
+    const container = info.container;
+    if (container !== undefined) {
+      if (!container || typeof container !== 'object' || Array.isArray(container)) fail();
+      containerId = container.id;
+      if (typeof containerId !== 'string' || !containerId.length || containerId.length > 128 ||
+          /[\u0000-\u0020\u007f]/.test(containerId)) fail();
+    }
+    if (containerId === 'firefox-private' && !incognito) fail();
+    if (containerId === 'firefox-default' || (incognito && containerId === 'firefox-private')) containerId = '';
+    containerId = encodeURIComponent(containerId);
+  } catch { fail(); }
+  if ([getValue, setValue, addValueChangeListener, removeValueChangeListener].some(api => typeof api !== 'function')) fail();
+  const prefix = !incognito && !containerId ? '' :
+    `yt-master-suite.context.v1:${incognito ? 'private' : 'normal'}:${containerId ? `container:${containerId}` : 'default'}:`;
+  function scopedKey(key) {
+    if (typeof key !== 'string' || !key.length || key.startsWith('yt-master-suite.context.v1:')) fail();
+    return prefix + key;
+  }
+  return Object.freeze({
+    getValue(key, fallback) { return getValue(scopedKey(key), fallback); },
+    setValue(key, value) { return setValue(scopedKey(key), value); },
+    addValueChangeListener(key, callback) {
+      if (typeof callback !== 'function') fail();
+      const backendKey = scopedKey(key);
+      return addValueChangeListener(backendKey, (changedKey, oldValue, newValue, remote) => {
+        if (changedKey === backendKey) callback(key, oldValue, newValue, remote);
+      });
+    },
+    removeValueChangeListener(id) { return removeValueChangeListener(id); },
+  });
+})({
+      info: typeof GM_info === 'object' ? GM_info : null,
+      getValue: typeof GM_getValue === 'function' ? GM_getValue : null,
+      setValue: typeof GM_setValue === 'function' ? GM_setValue : null,
+      addValueChangeListener: typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null,
+      removeValueChangeListener: typeof GM_removeValueChangeListener === 'function' ? GM_removeValueChangeListener : null,
+    });
+    storage = await (async function initialiseIsolatedStorage({ createAdapter, adapterOptions = {}, locks,
+  getLegacyStorage = adapterOptions.getLegacyStorage, timeoutMs = 10000,
+  setTimeout: scheduleTimeout = globalThis.setTimeout,
+  clearTimeout: cancelTimeout = globalThis.clearTimeout }) {
+  const migrationKey = 'yt-master-suite.storage-migration.v1';
+  const guardKey = 'yt-master-suite.storage-migration-started.v1';
+  const fail = () => { throw new Error('Tampermonkey storage migration could not complete. Existing site settings were left unchanged.'); };
+  const { getValue, setValue, addValueChangeListener, removeValueChangeListener } = adapterOptions;
+  if ([createAdapter, getValue, setValue, addValueChangeListener, removeValueChangeListener,
+    getLegacyStorage].some(value => typeof value !== 'function')) fail();
+  function synchronous(value) {
+    if (value && typeof value.then === 'function') {
+      value.catch?.(() => {});
+      fail();
+    }
+    return value;
+  }
+  const readSnapshot = () => synchronous(getValue(migrationKey, undefined));
+  const openAdapter = () => synchronous(createAdapter({ ...adapterOptions, getLegacyStorage }));
+  // A committed private baseline needs neither page storage nor a new lock.
+  if (readSnapshot() !== undefined) return openAdapter();
+  if (!locks || typeof locks.request !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) fail();
+
+  const controller = new AbortController();
+  const timer = scheduleTimeout(() => controller.abort(), timeoutMs);
+  function waitForSnapshot() {
+    return new Promise((resolve, reject) => {
+      let listenerId, settled = false;
+      const cleanup = () => {
+        controller.signal.removeEventListener('abort', abort);
+        if (listenerId !== undefined) {
+          const id = listenerId; listenerId = undefined;
+          try { removeValueChangeListener(id); } catch { /* Preserve the startup result. */ }
+        }
+      };
+      const finish = error => {
+        if (settled) return;
+        settled = true; cleanup();
+        if (error) reject(error); else resolve();
+      };
+      const abort = () => {
+        try { fail(); } catch (error) { finish(error); }
+      };
+      const check = () => {
+        if (settled) return;
+        try { if (readSnapshot() !== undefined) finish(); } catch (error) { finish(error); }
+      };
+      controller.signal.addEventListener('abort', abort, { once: true });
+      try {
+        // Register first, then read: a delivery during registration must not be lost.
+        listenerId = synchronous(addValueChangeListener(migrationKey, check));
+        if (typeof listenerId !== 'number' && typeof listenerId !== 'string') fail();
+        if (settled) cleanup();
+        else if (controller.signal.aborted) abort();
+        else check();
+      } catch (error) { finish(error); }
+    });
+  }
+  try {
+    const outcome = await locks.request(migrationKey, { mode: 'exclusive', signal: controller.signal }, async () => {
+      try {
+        if (controller.signal.aborted) fail();
+        if (readSnapshot() !== undefined) return { ok: true, value: openAdapter() };
+        const legacy = getLegacyStorage();
+        if (!legacy || typeof legacy.getItem !== 'function' || typeof legacy.setItem !== 'function') fail();
+        if (legacy.getItem(guardKey) === null) {
+          // The fixed flag contains no saved data. Never clear it after an ambiguous
+          // write: GM readback sees this instance's cache, not a durable write ACK.
+          legacy.setItem(guardKey, '1');
+          if (legacy.getItem(guardKey) !== '1') fail();
+          return { ok: true, value: openAdapter() };
+        }
+        // A previous writer may have committed while our GM cache was still stale.
+        // The lock alone cannot make that cache fresh; wait without migrating again.
+        await waitForSnapshot();
+        return { ok: true, value: openAdapter() };
+      } catch (error) {
+        // Firefox can report a rejected lock callback as an uncaught page error
+        // even when the request is caught. Propagate only after releasing the lock.
+        return { ok: false, error };
+      }
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  } finally { cancelTimeout(timer); }
+})({
+      createAdapter: function createIsolatedStorage({ getValue, setValue, addValueChangeListener,
+  removeValueChangeListener, getLegacyStorage, enqueue = callback => queueMicrotask(callback) }) {
+  const keys = Object.freeze([
+    'yt-master-suite.settings.v1',
+    'yt-master-suite.scroll-miniplayer.corner.v1',
+    'yt-master-suite.channel-age.v1',
+    'yt-master-suite.playhead-image.v1',
+    'yt-master-suite.update-source.v1',
+  ]);
+  const migrationKey = 'yt-master-suite.storage-migration.v1';
+  const allowed = new Set(keys), maxRecordLength = 262144, maxSnapshotLength = 1048576;
+  const subscribers = new Set(), listenerIds = [], changed = new Set();
+  let disposed = false, scheduled = false;
+  const fail = () => { throw new Error('Tampermonkey storage is unavailable or incompatible. Existing site settings were left unchanged.'); };
+  const synchronous = value => {
+    if (value && typeof value.then === 'function') {
+      value.catch?.(() => {});
+      fail();
+    }
+    return value;
+  };
+  function raw(value) {
+    if (value !== null && (typeof value !== 'string' || value.length > maxRecordLength)) fail();
+    return value;
+  }
+  function read(name, fallback) { return synchronous(getValue(name, fallback)); }
+  function write(name, value) { synchronous(setValue(name, value)); }
+  function parseSnapshot(value) {
+    if (typeof value !== 'string' || value.length > maxSnapshotLength) fail();
+    let record;
+    try { record = JSON.parse(value); } catch { fail(); }
+    if (!record || Array.isArray(record) || record.version !== 1 ||
+        Object.keys(record).length !== 2 || !Object.hasOwn(record, 'values') ||
+        !record.values || Array.isArray(record.values) || typeof record.values !== 'object' ||
+        Object.keys(record.values).length !== keys.length ||
+        keys.some(key => !Object.hasOwn(record.values, key))) fail();
+    for (const key of keys) raw(record.values[key]);
+    return Object.freeze(record.values);
+  }
+  if ([getValue, setValue, addValueChangeListener, removeValueChangeListener, getLegacyStorage]
+    .some(value => typeof value !== 'function')) fail();
+
+  let snapshot = read(migrationKey, undefined);
+  if (snapshot === undefined) {
+    // A single baseline commit prevents a partially copied set becoming active.
+    // Never normalise these strings: older, malformed and future records remain
+    // recoverable and the existing services retain their own validation rules.
+    const legacy = getLegacyStorage();
+    const values = Object.fromEntries(keys.map(key => [key, raw(legacy.getItem(key))]));
+    if (keys.some(key => legacy.getItem(key) !== values[key])) fail();
+    snapshot = read(migrationKey, undefined);
+    if (snapshot === undefined) {
+      const proposed = JSON.stringify({ version: 1, values });
+      if (proposed.length > maxSnapshotLength) fail();
+      write(migrationKey, proposed);
+      snapshot = read(migrationKey, undefined);
+      if (snapshot !== proposed) fail();
+    }
+  }
+  const baseline = parseSnapshot(snapshot);
+  // Detect incompatible protected records before settings.initial is frozen.
+  for (const key of keys) {
+    const value = read(key, undefined);
+    if (value !== undefined) raw(value);
+  }
+  function checkKey(key) {
+    if (disposed || !allowed.has(key)) fail();
+  }
+  function getItem(key) {
+    checkKey(key);
+    const value = read(key, undefined);
+    return value === undefined ? baseline[key] : raw(value);
+  }
+  function setItem(key, value) {
+    checkKey(key);
+    if (typeof value !== 'string') fail();
+    raw(value);
+    write(key, value);
+    if (read(key, undefined) !== value) fail();
+  }
+  function removeItem(key) {
+    checkKey(key);
+    // A null tombstone prevents deletion from resurrecting the migration copy.
+    write(key, null);
+    if (read(key, undefined) !== null) fail();
+  }
+  function notify(key, oldValue, newValue, remote) {
+    if (disposed || remote !== true || !allowed.has(key)) return;
+    changed.add(key);
+    if (scheduled) return;
+    scheduled = true;
+    enqueue(() => {
+      scheduled = false;
+      const pending = [...changed]; changed.clear();
+      if (disposed) return;
+      for (const key of pending) {
+        let value;
+        try { value = getItem(key); } catch { continue; }
+        const event = Object.freeze({ key, newValue: value });
+        for (const subscriber of [...subscribers]) {
+          try { subscriber(event); } catch { /* One consumer cannot stop the others. */ }
+        }
+      }
+    });
+  }
+  try {
+    for (const key of keys) {
+      const id = synchronous(addValueChangeListener(key, notify));
+      if (typeof id !== 'number' && typeof id !== 'string') fail();
+      listenerIds.push(id);
+    }
+  } catch {
+    for (const id of listenerIds) {
+      try { removeValueChangeListener(id); } catch { /* Preserve the startup error. */ }
+    }
+    fail();
+  }
+  return Object.freeze({
+    getItem, setItem, removeItem,
+    subscribe(callback) {
+      if (disposed || typeof callback !== 'function') fail();
+      subscribers.add(callback);
+      return () => subscribers.delete(callback);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true; subscribers.clear(); changed.clear();
+      for (const id of listenerIds) {
+        try { removeValueChangeListener(id); } catch { /* No page state is exposed. */ }
+      }
+    },
+  });
+},
+      adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
+      locks: navigator.locks,
+    });
+  } catch {
+    // Never initialise with defaults or silently revert to page persistence.
+    // A generic notice contains no saved values, keys, URLs or account details.
+    const showStorageFailure = () => {
+      if (!document.body || document.getElementById('ytms-storage-error')) return;
+      const notice = document.createElement('div');
+      notice.id = 'ytms-storage-error'; notice.setAttribute('role', 'alert');
+      notice.textContent = 'YouTube Master Suite could not access Tampermonkey storage. Existing site settings were left unchanged. Check the script permissions or reinstall the saved rollback version.';
+      notice.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;padding:12px;background:#321b1b;color:#fff;font:14px sans-serif;border:1px solid #b55;border-radius:6px';
+      document.body.append(notice);
+    };
+    if (document.body) showStorageFailure();
+    else document.addEventListener('DOMContentLoaded', showStorageFailure, { once: true });
+    return;
+  }
   const suite = {
     version: MASTER_VERSION,
+    storage,
     SharedMutationObserver,
     addWindowListener,
     registerModule,
     reportModuleError,
     removeStyle,
     setStyle,
-    settings: createSuiteSettings(() => window.localStorage, () => document.documentElement.hasAttribute("dark")),
-    channelAge: createChannelAgeService(() => window.localStorage),
+    settings: createSuiteSettings(() => storage, () => Boolean(document.documentElement?.hasAttribute("dark")), createFeatureCatalogue(), menuLayout),
+    menuLayout,
+    createMenuEditor: function createMenuEditor(document, layouts, options) {
+  const el = (tag, text, className) => {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  const button = (text, label) => {
+    const node = el('button', text); node.type = 'button';
+    if (label) node.setAttribute('aria-label', label);
+    return node;
+  };
+  const section = el('section', undefined, 'menu-order menu-layout-editor');
+  const heading = el('h3', 'Video context menu editor'); heading.id = 'ytms-menu-editor-heading'; heading.tabIndex = -1;
+  const note = el('p', 'Create named submenus, move actions between menus, and change their order or visibility. Save and reload to apply. Other YouTube and extension actions remain available.', 'section-note');
+  note.textContent += ` Up to ${layouts.limits.maxGroups} submenus and ${layouts.limits.maxDepth} nested levels.`;
+  note.id = 'ytms-menu-order-description';
+  const toolbar = el('div', undefined, 'menu-editor-toolbar');
+  const menuLabel = el('label', 'Editing menu'); menuLabel.htmlFor = 'ytms-menu-location';
+  const location = el('select'); location.id = menuLabel.htmlFor;
+  const add = button('Add submenu'); add.id = 'ytms-add-submenu';
+  const reset = button('Reset menu layout'); reset.id = 'ytms-reset-menu-layout';
+  toolbar.append(menuLabel, location, add, reset);
+  const groupFields = el('div', undefined, 'menu-editor-group');
+  const nameLabel = el('label', 'Submenu name'); nameLabel.htmlFor = 'ytms-submenu-name';
+  const name = el('input'); name.id = nameLabel.htmlFor; name.type = 'text'; name.maxLength = layouts.limits.maxNameLength;
+  name.autocomplete = 'off';
+  const remove = button('Delete submenu'); remove.id = 'ytms-delete-submenu';
+  const groupHelp = el('p', 'Deleting a submenu moves its contents into its parent menu.', 'section-note');
+  groupFields.append(nameLabel, name, remove, groupHelp);
+  const status = el('p', '', 'section-note'); status.id = 'ytms-menu-editor-status'; status.setAttribute('role', 'status'); status.hidden = true;
+  name.setAttribute('aria-describedby', status.id);
+  const list = el('ol'); list.id = 'ytms-menu-order'; list.setAttribute('aria-label', 'Video context menu order');
+  list.setAttribute('aria-describedby', note.id);
+  const preview = el('details', undefined, 'menu-editor-preview');
+  preview.append(el('summary', 'Menu preview'));
+  const previewList = el('ul'); previewList.setAttribute('aria-label', 'Menu preview'); preview.append(previewList);
+  section.append(heading, note, toolbar, groupFields, status, list, preview);
+  let current = 'root', invalid = false;
+  const effective = () => layouts.fromPreferences(options.getPreferences());
+  const isGroup = node => !layouts.actionIds.includes(node.id);
+  function label(node) { return isGroup(node) ? node.name : layouts.labels[node.id]; }
+  function path(id, layout) {
+    const result = []; let node = layout.nodes.find(item => item.id === id);
+    while (node) { result.unshift(node.name); node = layout.nodes.find(item => item.id === node.parent); }
+    return result.length ? result.join(' / ') : 'Main menu';
+  }
+  function announce(message, error = false) {
+    status.textContent = message; status.hidden = !message;
+    status.classList.toggle('error', error);
+  }
+  function commit(next, focusId, direction) {
+    if (invalid) { name.focus(); return; }
+    const checked = layouts.validate(next);
+    if (!checked) { announce('This change would exceed the nesting limit or create an invalid menu.', true); return; }
+    options.setLayout(checked); options.onChange(); render(focusId, direction);
+  }
+  function targets(layout, node) {
+    return ['root', ...layout.nodes.filter(isGroup).map(item => item.id)].filter(parent => {
+      if (parent === node.id) return false;
+      const next = layouts.clone(layout); next.nodes.find(item => item.id === node.id).parent = parent;
+      return Boolean(layouts.validate(next));
+    });
+  }
+  function drawPreview(layout) {
+    previewList.replaceChildren();
+    function children(parent, target) {
+      for (const node of layout.nodes.filter(item => item.parent === parent)) {
+        const item = el('li', label(node) + (!isGroup(node) && !node.visible ? ' (hidden)' : ''));
+        if (isGroup(node)) { const nested = el('ul'); children(node.id, nested); item.append(nested); }
+        target.append(item);
+      }
+    }
+    children('root', previewList);
+  }
+  function render(focusId, direction) {
+    const layout = effective();
+    if (current !== 'root' && !layout.nodes.some(node => node.id === current && isGroup(node))) current = 'root';
+    location.replaceChildren();
+    for (const id of ['root', ...layout.nodes.filter(isGroup).map(node => node.id)]) {
+      const option = el('option', path(id, layout)); option.value = id; location.append(option);
+    }
+    location.value = current;
+    const selected = layout.nodes.find(node => node.id === current);
+    groupFields.hidden = !selected;
+    name.value = selected?.name || ''; name.setAttribute('aria-invalid', 'false');
+    const count = layout.nodes.filter(isGroup).length;
+    const trial = layouts.clone(layout); let available = 1;
+    while (trial.nodes.some(node => node.id === `submenu-${available}`)) available++;
+    trial.nodes.push({ id:`submenu-${available}`, name:'New submenu', parent:current });
+    add.disabled = count >= layouts.limits.maxGroups || !layouts.validate(trial);
+    add.title = `Up to ${layouts.limits.maxGroups} submenus and ${layouts.limits.maxDepth} nested submenu levels.`;
+    list.replaceChildren();
+    const siblings = layout.nodes.filter(node => node.parent === current);
+    for (const [index, node] of siblings.entries()) {
+      const item = el('li'); item.dataset.menuItem = node.id;
+      const title = el('span', label(node), 'menu-editor-item-label');
+      if (isGroup(node)) {
+        const open = button(node.name + ' ›', `Edit ${node.name} submenu`);
+        open.addEventListener('click', () => { if (invalid) return name.focus(); current = node.id; render(); name.focus(); });
+        title.replaceChildren(open);
+      } else {
+        const visible = el('input'); visible.type = 'checkbox'; visible.checked = node.visible;
+        visible.setAttribute('aria-label', `Show ${label(node)}`);
+        const legacyIds = { download:'menuShowDownload', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
+        visible.id = 'ytms-' + (legacyIds[node.id] || 'menu-action-' + node.id);
+        visible.addEventListener('change', () => {
+          const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked; commit(next);
+        });
+        const visibleLabel = el('label'); visibleLabel.append(visible, el('span', label(node))); title.replaceChildren(visibleLabel);
+      }
+      item.append(title);
+      const parent = el('select'); parent.setAttribute('aria-label', `Menu for ${label(node)}`);
+      for (const target of targets(layout, node)) { const option = el('option', path(target, layout)); option.value = target; parent.append(option); }
+      parent.value = node.parent;
+      parent.addEventListener('change', () => {
+        const next = effective(); next.nodes.find(entry => entry.id === node.id).parent = parent.value; commit(next);
+      });
+      item.append(parent);
+      for (const [word, symbol, offset] of [['up','↑',-1],['down','↓',1]]) {
+        const move = button(symbol, `Move ${label(node)} ${word}`); move.className = 'menu-order-move'; move.dataset.direction = word;
+        move.disabled = index + offset < 0 || index + offset >= siblings.length;
+        move.addEventListener('click', () => {
+          const next = effective(), first = next.nodes.findIndex(entry => entry.id === node.id),
+            second = next.nodes.findIndex(entry => entry.id === siblings[index + offset].id);
+          [next.nodes[first], next.nodes[second]] = [next.nodes[second], next.nodes[first]]; commit(next, node.id, word);
+        });
+        item.append(move);
+      }
+      list.append(item);
+      if (focusId === node.id) {
+        const preferred = item.querySelector(`[data-direction="${direction}"]`);
+        (preferred?.disabled ? item.querySelector('button:not(:disabled)') : preferred)?.focus();
+      }
+    }
+    if (!siblings.length) list.append(el('li', 'This submenu is empty. Move an action here using its Menu selector.', 'section-note'));
+    drawPreview(layout);
+  }
+  location.addEventListener('change', () => {
+    if (invalid) { location.value = current; name.focus(); return; }
+    current = location.value; render();
+  });
+  name.addEventListener('input', () => {
+    const next = effective(), node = next.nodes.find(item => item.id === current);
+    if (!node) return;
+    node.name = name.value.trim();
+    const checked = layouts.validate(next);
+    invalid = !checked; name.setAttribute('aria-invalid', String(invalid));
+    announce(invalid ? `Enter a submenu name of 1–${layouts.limits.maxNameLength} characters without control characters.` : '', invalid);
+    if (checked) { options.setLayout(checked); drawPreview(checked); }
+    options.onChange();
+  });
+  name.addEventListener('change', () => {
+    if (invalid) return;
+    const layout = effective();
+    name.value = layout.nodes.find(node => node.id === current)?.name || '';
+    // Blur runs during pointer activation. Update labels in place so the
+    // action being clicked is not detached before its click is dispatched.
+    for (const select of section.querySelectorAll('select')) for (const option of select.options) {
+      option.textContent = path(option.value, layout);
+    }
+  });
+  add.addEventListener('click', () => {
+    if (invalid) return name.focus();
+    const next = effective(); let index = 1;
+    while (next.nodes.some(node => node.id === `submenu-${index}`)) index++;
+    const id = `submenu-${index}`; next.nodes.push({ id, name:'New submenu', parent:current });
+    if (!layouts.validate(next)) { announce('The submenu or nesting limit has been reached.', true); return; }
+    options.setLayout(next); current = id; options.onChange(); render(); name.focus(); name.select();
+  });
+  remove.addEventListener('click', () => {
+    if (invalid) return name.focus();
+    const next = effective(), selected = next.nodes.find(node => node.id === current);
+    if (!selected) return;
+    const children = next.nodes.filter(node => node.parent === current);
+    const remaining = next.nodes.filter(node => node.id !== current && node.parent !== current);
+    const index = next.nodes.filter(node => node.id !== current && node.parent !== current && next.nodes.indexOf(node) < next.nodes.indexOf(selected)).length;
+    children.forEach(node => { node.parent = selected.parent; }); remaining.splice(index, 0, ...children); next.nodes = remaining;
+    current = selected.parent; commit(next); announce('Submenu deleted. Its contents were moved to the parent menu. Save to apply.');
+  });
+  reset.addEventListener('click', () => { invalid = false; current = 'root'; options.onReset(); render(); announce('Default menu layout restored in this draft. Save to apply.'); });
+  return Object.freeze({ element:section, heading, description:note, isValid:() => !invalid,
+    focusAction(id) {
+      if (invalid) return name;
+      const node = effective().nodes.find(item => item.id === id && !isGroup(item));
+      if (!node) return heading;
+      current = node.parent; render();
+      return [...list.children].find(item => item.dataset.menuItem === id)?.querySelector('input, button, select') || heading;
+    },
+    refresh() { invalid = false; announce(''); render(); } });
+},
+    channelAge: createChannelAgeService(() => storage),
     createChannelAgeDialog: function createChannelAgeDialog(document, service, onSaved, options = {}) {
   const embedded = Boolean(options.host);
   function element(tag, attributes = {}, ...children) {
@@ -2100,6 +3893,21 @@
   const rowSelector = 'ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
   const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
   const order = [...new Set([...(Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder.filter(id => defaultOrder.includes(id)) : []), ...defaultOrder])];
+  const legacyVisible = id => id === 'download' ? preferences.menuShowDownload === true :
+    id === 'channelAge' ? preferences.menuShowAgeLimit !== false :
+    id === 'notInterested' ? preferences.menuShowNotInterested !== false :
+    id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
+    id === 'report' ? preferences.menuShowReport !== false : true;
+  let layout;
+  try { layout = suite.menuLayout?.fromPreferences(preferences); } catch { /* A missing helper retains the legacy layout. */ }
+  if (!layout) layout = { version:1, nodes:order.map(id => id === 'channelTools'
+    ? { id, name:'Channel tools', parent:'root' }
+    : { id, parent:preferences.menuGroupChannelTools !== false && ['channelAge','dontRecommend','report'].includes(id) ? 'channelTools' : 'root', visible:legacyVisible(id) }) };
+  const layoutNodes = layout.nodes;
+  const layoutById = new Map(layoutNodes.map(node => [node.id,node]));
+  const rank = id => layoutNodes.findIndex(node => node.id === id);
+  const creatorPage = '@creators';
+  const nextPath = 'M9 5l7 7-7 7-1.4-1.4 5.6-5.6-5.6-5.6L9 5z';
   const controller = element => element?.polymerController || element?.getPolymerController?.() || element;
   let trigger = null;
   let active = null;
@@ -2110,6 +3918,8 @@
   let style = null;
   let disposed = false;
   let triggerReason = 'missing-trigger';
+  const pendingIcons = new Set();
+  let pendingIconObserver = null;
   const compatibilityStates = {
     idle: 'not-checked', disposed: 'not-checked', ready: 'recognised',
     'missing-trigger': 'not-applicable',
@@ -2258,6 +4068,7 @@
       .ytms-video-menu-action svg { width: 24px; height: 24px; flex: 0 0 24px; fill: currentColor; }
       .ytms-video-menu-action small { display: block; white-space: normal; max-width: 240px; font-size: 12px; line-height: 16px; margin-top: 3px; }
       .ytms-video-menu-action[hidden] { display: none !important; }
+      .ytms-video-menu-message { padding:8px 16px;max-width:300px;font:400 12px/18px Roboto,Arial,sans-serif;overflow-wrap:anywhere; }
       [data-ytms-video-menu="1"]:focus { outline: none; }
       /* Native mouseover classes can outlive row movement; retain real hover and keyboard focus. */
       [data-ytms-video-menu="1"] .ytListItemViewModelHovered:not(:hover):not(:focus-within) { background-color: transparent !important; }
@@ -2283,6 +4094,50 @@
     return button;
   }
 
+  function clearPendingIcons() {
+    pendingIconObserver?.disconnect(); pendingIconObserver = null;
+    for (const item of pendingIcons) item.svg.remove();
+    pendingIcons.clear();
+  }
+
+  function prunePendingIcons() {
+    for (const item of pendingIcons) {
+      let valid = false;
+      try {
+        const current = active;
+        const data = current?.popup.matches('yt-sheet-view-model') ? current.popup.componentProps?.data?.() : controller(current?.popup)?.data;
+        const items = current?.popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
+        valid = current && current.popup.contains(item.row) && item.svg.isConnected &&
+          items?.includes(item.model) && identify(item.model,current) === 'notInterested' &&
+          item.row.contains(item.svg) && ![...item.slot.children].some(child => child !== item.svg);
+      } catch { /* A changing native model releases our temporary icon. */ }
+      if (!valid) { item.svg.remove(); pendingIcons.delete(item); }
+    }
+    if (!pendingIcons.size) { pendingIconObserver?.disconnect(); pendingIconObserver = null; }
+  }
+
+  function pendingNativeIcon(row, id, model) {
+    // The native async SVG renderer clears this known slot on completion.
+    // Cover only the exact recognised Not interested action's empty slot;
+    // BlockTube/unknown actions and already supplied native glyphs stay native.
+    if (id !== 'notInterested') return;
+    const slot = row.querySelector('.ytListItemViewModelLeading .yt-icon-shape, yt-icon .yt-icon-shape');
+    if (!slot || slot.childElementCount) return;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
+    svg.setAttribute('data-ytms-menu-icon-fallback','notInterested');
+    svg.style.cssText = 'display:block;width:24px;height:24px;fill:currentColor;pointer-events:none';
+    const path = document.createElementNS(svg.namespaceURI,'path');
+    path.setAttribute('d','M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 1.8a7.2 7.2 0 0 1 5.72 11.58L7.62 6.28A7.17 7.17 0 0 1 12 4.8zm-5.72 2.82 10.1 10.1A7.2 7.2 0 0 1 6.28 7.62z');
+    svg.append(path); slot.append(svg);
+    pendingIcons.add({svg,slot,row,model});
+    if (!pendingIconObserver) pendingIconObserver = new MutationObserver(prunePendingIcons);
+    pendingIconObserver.observe(row,{childList:true,subtree:true,attributes:true,attributeFilter:['data-target-id']});
+    if (row.parentElement) pendingIconObserver.observe(row.parentElement,{childList:true});
+    const popup = row.closest('ytd-menu-popup-renderer,yt-sheet-view-model');
+    if (popup) pendingIconObserver.observe(popup,{childList:true});
+  }
+
   function focusable(row) {
     // Current sheets can put tabindex on a presentation wrapper as well as on
     // their real button. Focus the action, not its non-activating wrapper.
@@ -2295,9 +4150,10 @@
   }
 
   function navigableRows(current) {
-    return [...current.parent.children].filter(row => row === current.back ? current.tools :
-      row === current.group ? !current.group.hidden :
-        current.entries.some(entry => entry.row === row && entry.enabled && (current.tools ? entry.grouped : !entry.grouped)))
+    return [...current.parent.children].filter(row => row === current.back ? current.stack.length > 0 :
+      current.entries.some(entry => entry.row === row && entry.enabled && entry.parent === current.page) ||
+      [...current.groups.values()].some(group => group.row === row && group.enabled && group.parent === current.page) ||
+      (current.page === creatorPage && current.creatorRows.includes(row)))
       .map(row => ({ row, target: focusable(row) })).filter(entry => entry.target);
   }
 
@@ -2309,8 +4165,9 @@
   }
 
   function focusPage(current) {
-    const target = current.keyboard ? (current.tools ? current.back : current.group) : current.popup;
-    focusTarget(current, target === current.popup ? target : focusable(target));
+    const firstGroup = [...current.groups.values()].find(group => group.enabled && group.parent === current.page)?.row;
+    const target = current.keyboard ? (current.stack.length ? current.back : firstGroup || navigableRows(current)[0]?.row) : current.popup;
+    focusTarget(current, !target || target === current.popup ? current.popup : focusable(target));
   }
 
   function focused(event) {
@@ -2367,27 +4224,74 @@
   }
 
   function restoreRow(row, saved) {
+    if (!saved.owned) return;
+    saved.owned = false;
+    // An external native/extension update supersedes our temporary hide.
+    if (row.style.getPropertyValue('display') !== 'none' || row.style.getPropertyPriority('display') !== 'important') return;
     if (saved.value) row.style.setProperty('display', saved.value, saved.priority);
     else row.style.removeProperty('display');
   }
 
-  function setPage(tools, focus = true) {
+  function appendInOrder(parent, nodes) {
+    // Native icon/rendering hosts keep their existing connection when their
+    // order is already correct. Insert only new or genuinely misplaced rows.
+    let next = null;
+    for (let index = nodes.length - 1; index >= 0; index--) {
+      const node = nodes[index];
+      if (node.parentNode !== parent || node.nextSibling !== next) parent.insertBefore(node, next);
+      next = node;
+    }
+  }
+
+  function hideRow(entry) {
+    const value = entry.row.style.getPropertyValue('display');
+    const priority = entry.row.style.getPropertyPriority('display');
+    if (value !== 'none' || priority !== 'important') {
+      entry.display.value = value; entry.display.priority = priority; entry.display.owned = true;
+      entry.row.style.setProperty('display','none','important');
+    }
+  }
+
+  function cancelLookup(current) {
+    current.lookupController?.abort(); current.lookupController = null;
+    for (const row of current.creatorRows) { row.disabled = false; row.removeAttribute('aria-busy'); }
+  }
+
+  function setPage(page, focus = true) {
     const current = active;
     if (!current || !current.popup.isConnected) return;
-    current.tools = tools;
+    cancelLookup(current);
+    current.page = page === false ? 'root' : page === true ? 'channelTools' : page;
+    current.tools = current.page === 'channelTools';
     for (const entry of current.entries) {
-      const show = entry.enabled && (tools ? entry.grouped : !entry.grouped);
-      if (show) restoreRow(entry.row, entry.display);
-      else entry.row.style.setProperty('display', 'none', 'important');
+      if (entry.enabled && entry.parent === current.page) restoreRow(entry.row,entry.display);
+      else hideRow(entry);
     }
-    current.back.hidden = !tools;
-    current.group.hidden = tools || !current.entries.some(entry => entry.enabled && entry.grouped);
-    current.group.setAttribute('aria-expanded', String(tools));
+    for (const group of current.groups.values()) {
+      group.row.hidden = !group.enabled || group.parent !== current.page;
+      group.row.setAttribute('aria-expanded',String(current.page === group.id || current.stack.includes(group.id)));
+    }
+    for (const row of current.creatorRows) row.hidden = current.page !== creatorPage;
+    if (current.lookupStatus) current.lookupStatus.hidden = current.page !== creatorPage;
+    current.back.hidden = current.stack.length === 0;
     refit();
     if (focus) focusPage(current);
   }
 
+  function enterPage(page) {
+    const current = active;
+    if (!current) return;
+    current.stack.push(current.page); setPage(page);
+  }
+
+  function goBack() {
+    const current = active;
+    if (!current) return;
+    setPage(current.stack.pop() || 'root');
+  }
+
   function reset() {
+    clearPendingIcons();
     if (waiting) {
       waiting.observer.disconnect();
       clearTimeout(waiting.timer);
@@ -2403,17 +4307,114 @@
     const current = active;
     active = null;
     if (current.ownsTabIndex && current.popup.getAttribute('tabindex') === '-1') current.popup.removeAttribute('tabindex');
-    current.back.remove();
-    current.group.remove();
-    current.age?.remove();
+    cancelLookup(current);
+    for (const row of current.ownedRows) row.remove();
     for (const entry of current.entries) {
       if (!entry.custom) restoreRow(entry.row, entry.display);
     }
     // Only restore a still-owned, fully stamped list. Do not resurrect detached native rows.
     if (current.original.every(row => row.parentElement === current.parent)) {
-      current.parent.append(...current.original);
+      appendInOrder(current.parent, current.original);
     }
     if (current.popup.getAttribute('data-ytms-video-menu') === '1') current.popup.removeAttribute('data-ytms-video-menu');
+  }
+
+  function channelIdentity(card) {
+    try {
+      const service = suite.channelAge;
+      const identity = service?.channelIdentityFromCard?.(card);
+      if (identity && ['unique','multiple','missing','conflict'].includes(identity.status)) {
+        return { status:identity.status,
+          channels:identity.status === 'conflict' ? [] : (Array.isArray(identity.channels) ? identity.channels.slice(0,10) : []),
+          handles:identity.status === 'conflict' ? [] : (Array.isArray(identity.handles) ? identity.handles.slice(0,10) : []) };
+      }
+      const channel = service?.channelFromCard(card);
+      return { status:channel?.channelId ? 'unique' : 'missing',channels:channel?.channelId ? [channel] : [],handles:[] };
+    } catch { return {status:'missing',channels:[],handles:[]}; }
+  }
+
+  function validCurrent(current) {
+    if (disposed || active !== current || !current.card.isConnected || !visiblePopup(current.popup) ||
+        videoIdFromCard(current.card) !== current.videoId) return false;
+    try {
+      const data = current.popup.matches('yt-sheet-view-model') ? current.popup.componentProps?.data?.() : controller(current.popup)?.data;
+      const items = current.popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
+      return data === current.model && items === current.items;
+    } catch { return false; }
+  }
+
+  function openSelectedChannel(current, channelId) {
+    if (!validCurrent(current)) return;
+    const identity = channelIdentity(current.card);
+    const channel = identity.status !== 'conflict' && identity.channels.find(channel => channel.channelId === channelId);
+    if (!channel) return;
+    const context = {card:current.card,videoId:current.videoId,selectedChannelId:channel.channelId};
+    try { current.popup.closest('tp-yt-iron-dropdown')?.close?.(); } catch { /* Settings can open after native closure. */ }
+    reset(); trigger = null; triggerReason = 'missing-trigger';
+    suite.openChannelAgeSettings?.(channel,context);
+  }
+
+  function creatorOptions(current) {
+    if (!validCurrent(current)) return false;
+    const identity = channelIdentity(current.card);
+    if (identity.status === 'conflict') return false;
+    for (const row of current.creatorRows) { current.ownedRows.delete(row); row.remove(); }
+    current.creatorRows = [];
+    if (current.lookupStatus) { current.ownedRows.delete(current.lookupStatus); current.lookupStatus.remove(); }
+    const add = (action,label,note) => {
+      const row = customAction(action,label,nextPath);
+      if (note) { const small = document.createElement('small'); small.textContent = note; row.lastElementChild.append(small); }
+      current.creatorRows.push(row); current.ownedRows.add(row); current.parent.append(row);
+      return row;
+    };
+    identity.channels.forEach((channel,index) => {
+      const row = add('creator-'+index,'Filter uploads from '+(channel.name || channel.channelId),
+        identity.channels.filter(other => other.name === channel.name).length > 1 ? channel.channelId : '');
+      row.dataset.ytmsChannelId = channel.channelId;
+    });
+    // Known unique identities keep their direct action. A proven collaboration
+    // can explicitly resolve each remaining unrecognised creator handle.
+    if (!identity.channels.length || identity.status === 'multiple') {
+      identity.handles.forEach((candidate,index) => {
+        const row = add('lookup-'+index,'Look up '+candidate.handle,candidate.name && candidate.name !== candidate.handle ? candidate.name : '');
+        row.dataset.ytmsHandleUrl = candidate.url;
+      });
+    }
+    const status = document.createElement('div'); status.className = 'ytms-video-menu-message';
+    status.setAttribute('role','status'); current.lookupStatus = status; current.ownedRows.add(status); current.parent.append(status);
+    if (!current.creatorRows.length) status.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
+    return true;
+  }
+
+  async function lookupCreator(current, candidate) {
+    if (!validCurrent(current)) return;
+    const before = channelIdentity(current.card);
+    if (before.status === 'conflict' || !before.handles.some(handle => handle.url === candidate.url && handle.handle === candidate.handle)) return;
+    cancelLookup(current);
+    const request = new AbortController(); current.lookupController = request;
+    for (const row of current.creatorRows) if (row.dataset.ytmsHandleUrl) { row.disabled = true; row.setAttribute('aria-busy','true'); }
+    current.lookupStatus.textContent = 'Looking up '+candidate.handle+'…'; refit();
+    try {
+      if (typeof suite.channelLookup?.lookup !== 'function') throw new Error('Channel lookup is unavailable. Use Channels settings to add the ID manually.');
+      const result = await suite.channelLookup.lookup(candidate,{signal:request.signal});
+      if (request.signal.aborted || active !== current || current.lookupController !== request ||
+          current.page !== creatorPage || !validCurrent(current)) return;
+      if (!result?.ok) throw new Error(result?.error || 'The channel ID could not be found.');
+      const fresh = channelIdentity(current.card);
+      if (fresh.status === 'conflict' || !fresh.handles.some(handle => handle.url === candidate.url && handle.handle === candidate.handle)) {
+        throw new Error('The creator changed. Reopen the video menu and try again.');
+      }
+      if (!suite.channelLookup.isVerified?.(candidate,result.channel)) throw new Error('The channel lookup could not be verified.');
+      const remembered = suite.channelAge?.rememberResolvedChannel?.(current.card,candidate,result.channel,current.videoId);
+      if (!remembered?.ok) throw new Error(remembered?.error || 'The creator changed. Reopen the video menu and try again.');
+      openSelectedChannel(current,result.channel.channelId);
+    } catch (error) {
+      if (!request.signal.aborted && active === current && current.lookupController === request && validCurrent(current)) {
+        current.lookupStatus.textContent = typeof error?.message === 'string' ? error.message.slice(0,300) : 'The channel ID could not be found.';
+      }
+    } finally {
+      if (active === current && current.lookupController === request) { cancelLookup(current); refit(); }
+    }
   }
 
   function decorate(popup, selection) {
@@ -2447,44 +4448,64 @@
     const ids = items.map(item => identify(item, selection));
     // Ambiguous duplicate recognised actions and mismatched native lists remain untouched.
     if (ids.some((id, index) => id && ids.indexOf(id) !== index)) return diagnostic('duplicate-actions');
-    let channel = null;
-    try { channel = suite.channelAge?.channelFromCard(selection.card) || null; } catch { /* A missing stable ID leaves manual settings available. */ }
+    const identity = channelIdentity(selection.card);
+    const channel = identity.channels.length === 1 && identity.status === 'unique' ? identity.channels[0] : null;
     ensureStyle();
-    const grouped = preferences.menuGroupChannelTools !== false;
-    const isEnabled = id => id === 'download' ? preferences.menuShowDownload === true :
-      id === 'notInterested' ? preferences.menuShowNotInterested !== false :
-      id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
-      id === 'report' ? preferences.menuShowReport !== false : true;
-    const entries = rows.map((row, index) => ({ row, id: ids[index], enabled: isEnabled(ids[index]),
-      grouped: grouped && ['dontRecommend', 'report'].includes(ids[index]),
-      display: { value: row.style.getPropertyValue('display'), priority: row.style.getPropertyPriority('display') } }));
+    const entries = rows.map((row,index) => {
+      const node = layoutById.get(ids[index]);
+      return { row,id:ids[index],enabled:node ? node.visible : true,parent:node?.parent || 'root',
+        display:{ value:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display') } };
+    });
+    entries.forEach((entry,index) => pendingNativeIcon(entry.row,entry.id,items[index]));
+    const ownedRows = new Set(), groups = new Map();
     let age = null;
-    if (preferences.menuShowAgeLimit !== false) {
-      age = customAction('channelAge', 'Filter channel uploads', 'M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm12 8v10H5V10h14zM5 6h14v2H5V6zm6 6v5h5v-2h-3v-3h-2z');
-      if (!channel?.channelId) {
-        age.setAttribute('aria-disabled', 'true');
-        const note = document.createElement('small');
-        note.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
-        age.lastElementChild.append(note);
+    const ageNode = layoutById.get('channelAge');
+    if (ageNode?.visible) {
+      age = customAction('channelAge','Filter channel uploads','M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm12 8v10H5V10h14zM5 6h14v2H5V6zm6 6v5h5v-2h-3v-3h-2z');
+      const note = document.createElement('small');
+      if (identity.status === 'conflict') {
+        age.setAttribute('aria-disabled','true'); note.textContent = 'Channel information disagrees; reopen the video menu or use Channels settings.';
+      } else if (identity.status === 'multiple') {
+        age.setAttribute('aria-haspopup','menu'); note.textContent = 'Choose which creator’s channel to filter.';
+      } else if (!channel && identity.handles.length) {
+        age.lastElementChild.firstChild.textContent = 'Look up channel ID';
+        note.textContent = 'Find the permanent ID from the creator’s public YouTube channel page.';
+      } else if (!channel) {
+        age.setAttribute('aria-disabled','true'); note.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
       }
-      entries.push({ row: age, id: 'channelAge', enabled: true, grouped, custom: true, display: { value: '', priority: '' } });
+      if (note.textContent) age.lastElementChild.append(note);
+      ownedRows.add(age);
+      entries.push({row:age,id:'channelAge',enabled:true,parent:ageNode.parent,custom:true,display:{value:'',priority:''}});
     }
-    const group = customAction('channelTools', 'Channel tools', 'M9 5l7 7-7 7-1.4-1.4 5.6-5.6-5.6-5.6L9 5z');
-    group.setAttribute('aria-haspopup', 'menu');
-    const back = customAction('back', 'Back', 'M15 5l-7 7 7 7 1.4-1.4-5.6-5.6 5.6-5.6L15 5z');
-    // Keep unknown rows in their original slots; reorder only recognised action slots.
-    const sorted = entries.filter(entry => entry.id).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    for (const node of layoutNodes.filter(node => !Object.hasOwn(node,'visible'))) {
+      const row = customAction(node.id,node.name,nextPath);
+      row.setAttribute('aria-haspopup','menu'); ownedRows.add(row);
+      groups.set(node.id,{...node,row,enabled:false});
+    }
+    const groupEnabled = (id,seen = new Set()) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return entries.some(entry => entry.enabled && entry.parent === id) ||
+        [...groups.values()].some(group => group.parent === id && groupEnabled(group.id,new Set(seen)));
+    };
+    for (const group of groups.values()) group.enabled = groupEnabled(group.id);
+    const back = customAction('back','Back','M15 5l-7 7 7 7 1.4-1.4-5.6-5.6 5.6-5.6L15 5z');
+    ownedRows.add(back);
+    // Unknown rows keep their original native slots. Only recognised native
+    // rows are reordered; owned menu entries are inserted at their chosen rank.
+    const sorted = entries.filter(entry => !entry.custom && entry.id).sort((a,b) => rank(a.id)-rank(b.id));
     let index = 0;
-    const arranged = entries.map(entry => entry.id ? sorted[index++] : entry);
-    const groupRank = order.indexOf('channelTools');
-    const beforeGroup = arranged.findIndex(entry => entry.id && order.indexOf(entry.id) > groupRank);
-    const nodes = arranged.map(entry => entry.row);
-    nodes.splice(beforeGroup < 0 ? nodes.length : beforeGroup, 0, group);
-    active = { popup, parent, original: rows, entries, age, group, back, channel, card: selection.card, videoId: selection.videoId,
-      trigger: selection.button, tools: false, keyboard: selection.keyboard, interacted: false, redirectingFocus: false,
-      ownsTabIndex: !popup.hasAttribute('tabindex') };
-    if (active.ownsTabIndex) popup.setAttribute('tabindex', '-1');
-    parent.append(back, ...nodes);
+    const arranged = entries.filter(entry => !entry.custom).map(entry => entry.id ? sorted[index++] : entry);
+    for (const item of [...entries.filter(entry => entry.custom),...groups.values()].sort((a,b) => rank(a.id)-rank(b.id))) {
+      const before = arranged.findIndex(entry => entry.id && rank(entry.id)>rank(item.id));
+      arranged.splice(before<0 ? arranged.length : before,0,item);
+    }
+    active = { popup,parent,original:rows,entries,age,groups,back,channel,identity,ownedRows,
+      creatorRows:[],lookupStatus:null,lookupController:null,card:selection.card,videoId:selection.videoId,
+      model:data,items,trigger:selection.button,page:'root',stack:[],tools:false,
+      keyboard:selection.keyboard,interacted:false,redirectingFocus:false,ownsTabIndex:!popup.hasAttribute('tabindex') };
+    if (active.ownsTabIndex) popup.setAttribute('tabindex','-1');
+    appendInOrder(parent,[back,...arranged.map(entry => entry.row)]);
     popup.setAttribute('data-ytms-video-menu', '1');
     setPage(false, false);
     const focusedElement = document.activeElement;
@@ -2540,6 +4561,9 @@
         if (decorate(popup, selection) && waiting === request) {
           request.observer.disconnect();
           clearTimeout(request.timer);
+          if (firstFrame) cancelAnimationFrame(firstFrame);
+          if (secondFrame) cancelAnimationFrame(secondFrame);
+          firstFrame = secondFrame = 0;
           waiting = null;
         }
       } catch { reset(); compatibility('unsupported'); }
@@ -2562,10 +4586,12 @@
       }
     }, 1500) };
     waiting = request;
-    // Play next first rebinds the native model; the second frame sees its stamped rows.
+    // A microtask from the capture listener can run before the same trusted
+    // event reaches YouTube's target handler. Wait for that event to finish,
+    // then reconcile in one frame before paint; retain all binding checks.
     firstFrame = requestAnimationFrame(() => {
       firstFrame = 0;
-      secondFrame = requestAnimationFrame(attempt);
+      attempt();
     });
   }
 
@@ -2592,15 +4618,27 @@
     if (!event.isTrusted) return;
     current.keyboard = event.detail === 0;
     current.interacted = true;
-    if (action === 'channelTools') setPage(true);
-    else if (action === 'back') setPage(false);
-    else if (action === 'channelAge' && current.channel?.channelId) {
-      let channel;
-      try { channel = suite.channelAge?.channelFromCard(current.card); } catch { return; }
-      if (!current.card.isConnected || videoIdFromCard(current.card) !== current.videoId || channel?.channelId !== current.channel.channelId) return;
-      try { current.popup.closest('tp-yt-iron-dropdown')?.close?.(); } catch { /* Settings can still open if the native dropdown has already closed. */ }
-      reset(); trigger = null; triggerReason = 'missing-trigger';
-      suite.openChannelAgeSettings?.(channel, { card: current.card, videoId: current.videoId });
+    if (action === 'back') goBack();
+    else if (current.groups.has(action)) {
+      const group = current.groups.get(action);
+      if (group.enabled && group.parent === current.page && validCurrent(current)) enterPage(action);
+    } else if (action === 'channelAge') {
+      if (!validCurrent(current) || event.target.closest('[aria-disabled="true"]')) return;
+      const identity = channelIdentity(current.card);
+      if (identity.status === 'conflict') return;
+      if (identity.status === 'unique' && identity.channels.length === 1) {
+        openSelectedChannel(current,identity.channels[0].channelId);
+      } else if (creatorOptions(current)) {
+        enterPage(creatorPage);
+        if (!identity.channels.length && identity.handles.length === 1) void lookupCreator(current,identity.handles[0]);
+      }
+    } else if (current.page === creatorPage && action?.startsWith('creator-')) {
+      const id = event.target.closest('[data-ytms-channel-id]')?.dataset.ytmsChannelId;
+      if (id) openSelectedChannel(current,id);
+    } else if (current.page === creatorPage && action?.startsWith('lookup-')) {
+      const url = event.target.closest('[data-ytms-handle-url]')?.dataset.ytmsHandleUrl;
+      const candidate = channelIdentity(current.card).handles.find(handle => handle.url === url);
+      if (candidate) void lookupCreator(current,candidate);
     }
   }
 
@@ -2609,10 +4647,12 @@
     if (!current || !current.popup.contains(event.target) || !event.isTrusted) return;
     current.keyboard = true;
     current.interacted = true;
-    if ((event.key === 'ArrowRight' && event.target.closest?.('[data-ytms-menu-action="channelTools"]')) ||
-        ((event.key === 'ArrowLeft' || event.key === 'Escape') && current.tools)) {
-      event.preventDefault(); event.stopImmediatePropagation();
-      setPage(!current.tools); return;
+    const ownedAction = event.target.closest?.('[data-ytms-menu-action]')?.dataset.ytmsMenuAction;
+    if (event.key === 'ArrowRight' && current.groups.get(ownedAction)?.enabled) {
+      event.preventDefault(); event.stopImmediatePropagation(); enterPage(ownedAction); return;
+    }
+    if ((event.key === 'ArrowLeft' || event.key === 'Escape') && current.stack.length) {
+      event.preventDefault(); event.stopImmediatePropagation(); goBack(); return;
     }
     if (event.key === 'Escape') { reset(); trigger = null; triggerReason = 'missing-trigger'; return; }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
@@ -2674,12 +4714,15 @@
     diagnostic('disposed');
   };
 },
-    installPlayerPresentation: function installPlayerPresentation({ document, window, keepHoverPreviews = false, timeDisplayMode = 'native' }) {
-  if (!keepHoverPreviews && !['elapsed', 'remaining'].includes(timeDisplayMode)) return () => {};
+    installPlayerPresentation: function installPlayerPresentation({ document, window, keepHoverPreviews = false, disableVideoPreviews = false, timeDisplayMode = 'native' }) {
+  if (!keepHoverPreviews && !disableVideoPreviews && !['elapsed', 'remaining'].includes(timeDisplayMode)) return () => {};
   const patches = new Map();
   const attemptedTimes = new WeakMap();
-  let suspended = false, frame = 0, disposed = false, previewDirty = false, navigationPending = false;
+  let suspended = false, pageSuspended = false, frame = 0, disposed = false, previewDirty = false, navigationPending = false;
   const home = () => ['/', '/feed/recommended'].includes(window.location.pathname);
+  const browseOrSearch = () => home() || window.location.pathname === '/results' ||
+    window.location.pathname.startsWith('/feed/') || /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)(?:\/|$)/.test(window.location.pathname);
+  const previewRoute = () => disableVideoPreviews ? browseOrSearch() : keepHoverPreviews && home();
   function visible(element) {
     if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false;
     const style = window.getComputedStyle(element);
@@ -2716,14 +4759,17 @@
     patches.clear();
   }
   function syncPreviews() {
-    if (!keepHoverPreviews || !home() || suspended || document.hidden) { restorePreviews(); return; }
+    if (!previewRoute() || suspended || document.hidden) { restorePreviews(); return; }
     const apps = [...document.querySelectorAll('ytd-app')].filter(visible);
     if (apps.length !== 1) { restorePreviews(); return; }
     const appController = apps[0].polymerController || apps[0];
-    // Honour YouTube's explicit Inline playback preference. Never falsify the
-    // global miniplayer state or turn an opted-out user's previews back on.
+    // An existing native opt-out already prevents previews. Do not wrap it or
+    // falsify the global miniplayer state for either presentation preference.
     if (appController.isInlinePreviewDisabled !== false) { restorePreviews(); return; }
-    const hosts = [apps[0], ...apps[0].querySelectorAll('ytd-browse ytd-rich-grid-renderer')].filter(visible);
+    const selector = disableVideoPreviews
+      ? 'ytd-browse ytd-rich-grid-renderer, ytd-search, ytd-search ytd-rich-grid-renderer'
+      : 'ytd-browse ytd-rich-grid-renderer';
+    const hosts = [apps[0], ...apps[0].querySelectorAll(selector)].filter(visible);
     const controllers = new Set(hosts.map(host => host.polymerController || host));
     for (const [controller, record] of patches) {
       if (!controllers.has(controller)) {
@@ -2764,10 +4810,13 @@
       } catch { continue; }
       const record = { host, controller, original, descriptor, app, wrapper: null };
       record.wrapper = function (...args) {
-        // Override only the miniplayer-related input to this pure presentation
-        // computation. All other native eligibility and failure checks remain.
-        if (this === controller && !disposed && !suspended && home() && !document.hidden && host.isConnected &&
-            appController.isInlinePreviewDisabled === false && args[0] === true) args[0] = false;
+        // Disabling is a native eligibility decision, not a hidden playing
+        // preview. The enable preference changes only its miniplayer input.
+        if (this === controller && !disposed && !suspended && previewRoute() && !document.hidden && host.isConnected &&
+            appController.isInlinePreviewDisabled === false) {
+          if (disableVideoPreviews) return false;
+          if (args[0] === true) args[0] = false;
+        }
         return original.apply(this, args);
       };
       try {
@@ -2779,13 +4828,23 @@
       } catch { /* Unknown or protected native components remain untouched. */ }
     }
   }
+  function timeVideoId(player) {
+    try {
+      const id = player.getVideoData?.()?.video_id;
+      if (/^[a-zA-Z0-9_-]{11}$/.test(id || '')) return id;
+    } catch { /* A changing native player can expose its identity later. */ }
+    if (window.location.pathname !== '/watch') return '';
+    const id = new window.URLSearchParams(window.location.search).get('v');
+    return /^[a-zA-Z0-9_-]{11}$/.test(id || '') ? id : '';
+  }
   function syncTime() {
     if (!['elapsed', 'remaining'].includes(timeDisplayMode) || suspended || document.hidden) return;
     const players = [...document.querySelectorAll('#movie_player')].filter(player => visible(player) &&
       !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
     if (players.length !== 1) return;
     const player = players[0];
-    if (player.matches('.ad-showing, .ad-interrupting') || !player.querySelector('video')) return;
+    const video = player.querySelector('video');
+    if (player.matches('.ad-showing, .ad-interrupting') || !video) return;
     const displays = [...player.querySelectorAll('.ytp-time-display')].filter(visible);
     if (displays.length !== 1 || displays[0].classList.contains('ytp-live')) return;
     const wrappers = displays[0].querySelectorAll('.ytp-time-wrapper.ytp-time-wrapper-delhi');
@@ -2797,11 +4856,14 @@
         !/^\d{1,6}:\d{2}(?::\d{2})?$/.test(duration || '') || !/[1-9]/.test(duration)) return;
     const remaining = /^[-−]/.test(current);
     if (remaining === (timeDisplayMode === 'remaining')) { attemptedTimes.delete(wrapper); return; }
-    // One request per mismatched native state. A blocked/no-op click must not
-    // cause a click loop on every timeupdate or keep polling while paused.
+    // One request per mismatched state and video. YouTube can reuse this timer
+    // for another video after a blocked click. Missing identity and incidental
+    // navigation must not restart attempts on every timeupdate or while paused.
     const signature = `${timeDisplayMode}:${remaining}`;
-    if (attemptedTimes.get(wrapper) === signature) return;
-    attemptedTimes.set(wrapper, signature);
+    const videoId = timeVideoId(player), attempt = attemptedTimes.get(wrapper);
+    if (attempt?.signature === signature && attempt.video === video &&
+        (!videoId || attempt.videoId === videoId)) return;
+    attemptedTimes.set(wrapper, { signature, video, videoId });
     wrapper.click();
   }
   function sync() {
@@ -2819,16 +4881,22 @@
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; restorePreviews();
   }
-  function resume() { if (!navigationPending) { suspended = false; schedule(); } }
+  function resume() { if (!disposed && !pageSuspended && !navigationPending) { suspended = false; schedule(); } }
   function navigateStart() { navigationPending = true; suspend(); }
   function navigateFinish() { navigationPending = false; resume(); }
+  function pageHide() { pageSuspended = true; suspend(); }
+  function pageShow() {
+    const restoring = pageSuspended; pageSuspended = false;
+    if (restoring) navigationPending = false;
+    resume();
+  }
   function pointer(event) {
     if (suspended || disposed) return;
     const target = event.target?.closest ? event.target : event.target?.parentElement;
     // pointerover precedes native mouseenter; no synthetic hover or click is
-    // generated, and newly stamped/recycled Home cards need no polling.
-    if (keepHoverPreviews && home() && target?.closest('ytd-browse ytd-rich-grid-renderer')) {
-      const card = target.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model') || target;
+    // generated, and newly stamped/recycled cards need no polling.
+    if (previewRoute() && target?.closest(disableVideoPreviews ? 'ytd-browse, ytd-search' : 'ytd-browse ytd-rich-grid-renderer')) {
+      const card = target.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, yt-lockup-view-model') || target;
       if (!card.contains(event.relatedTarget)) syncPreviews();
     }
     if (timeDisplayMode !== 'native' && target?.closest('#movie_player .ytp-time-display')) syncTime();
@@ -2842,8 +4910,8 @@
   function listen(target, type, handler) { target.addEventListener(type, handler, true); listeners.push([target, type, handler]); }
   listen(document, 'pointerover', pointer);
   if (timeDisplayMode !== 'native') for (const type of ['timeupdate', 'loadedmetadata', 'durationchange']) listen(document, type, media);
-  for (const type of ['yt-navigate-start', 'pagehide']) listen(window, type, navigateStart);
-  for (const type of ['yt-navigate-finish', 'pageshow']) listen(window, type, navigateFinish);
+  listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
+  listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
   listen(window, 'yt-page-data-updated', resume);
   listen(document, 'visibilitychange', visibility);
   schedule();
@@ -2852,7 +4920,7 @@
     for (const [target, type, handler] of listeners) target.removeEventListener(type, handler, true);
   };
 },
-    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog .settings-search { display: flex; align-items: center; gap: 8px; padding: 6px 24px 8px; flex-shrink: 0; }\n#ytms-settings-dialog #ytms-settings-search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--text); }\n#ytms-settings-dialog .settings-search-clear { padding: 7px 10px; border-radius: 16px; color: var(--text); white-space: nowrap; }\n#ytms-settings-dialog .settings-search-clear:hover { background: var(--hover); }\n#ytms-settings-dialog #ytms-settings-search-status, #ytms-settings-dialog .settings-search-empty { color: var(--muted); font-size: 12px; margin: 12px 0; }\n#ytms-settings-dialog .settings-search-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; width: 100%; padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }\n#ytms-settings-dialog .settings-search-result:hover { background: var(--hover); }\n#ytms-settings-dialog .settings-search-title { font-weight: 600; overflow-wrap: anywhere; }\n#ytms-settings-dialog .settings-search-section, #ytms-settings-dialog .settings-search-description { color: var(--muted); font-size: 12px; }\n#ytms-settings-dialog .settings-search-description { grid-column: 1 / -1; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); margin: 16px 0 0; }\n#ytms-settings-dialog .support-tools > section { padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 0; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 14px 0 0; }\n#ytms-section-extensions > .section-note { margin-top: 6px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(0, 0, 0, 0.9) !important; color: #eee !important; font: 500 12px/1.2 Roboto, Arial, sans-serif !important; text-shadow: none !important; pointer-events: none !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAACg0lEQVRo3u2ZP2gTURzHP5eLSgNV1GqkClksomiHViFKaEENLl0USweHomARpAhxaIfSqWCXLlKHIlTQyWwuThUHSwsFm2qgHjhpQa2iLkWCRn8OOaEeueZy//IO8oUbDu73e9/P77137707aKqx0mo9IHAJyAEngJ0+tv0TMIB7wH0NpErbV4EjNvG/gXwt82MCEsL1QCzFFMg6iHu/lflOgXJIACIwYGn/mpO42BYdcBvQQxzO190ExWyqn8RSkRB0zDcA4AawI2SAmC9BAttNgEioGvUAcCDKAMOOo6enob9fHQCBM8Apx9EdHZDPw+IipNNK9MAtV1nSaVhYqMCkUo0BEDgIXHS/KdEqw2l1FSYnobU19B64CWzznDGRgJERMAwYGgJdDx5AoMXtSmir9naYmYGlJejtDbwHrgBtgbTQ1QUTE5BMBgowHEj2tTUYHISeHlhfD6SJuMBZoNPXrBsbMDVVmcylUqBzIG5OXn9ULsPsLIyPB1bxagDnfMk0Nwe5HBSLoa8DuzxlMAzo64NsNnTz/xYw96eoTEZE1/06kX1ycyKLe6Kfn1dyNxopxYA/UQd4F3WAR4p4EbcAd4DnCgB8sNx/dhDzNq5BSeCCeZC/DBxyaSDl8TvSY8v9U2AU6LZ5/gdw16++bxH45WENeCHhf8b5D+C0B/MvBXY3eh046TJuGchq8L3RAN0uYgqm+W8qvP+KdQ6bZYE9qry8E3VO4IIy5k2ATJ3m96q2mXM6/leA8xp8VWovIvDQQeVX/K58mBO4oKx5E+Bjjcq3obIEntiYf6W8eRPgsMAXi/nXAvsic6gQOLppKL2RCP3h2QxxXOCZwH6aaio6+gvdnzYIGXJx8wAAAABJRU5ErkJggg=="},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAALqklEQVR42t2beYxddRXHP+f37ltmOnsXoZQWClYpUBGtFlAokGIIJIAVQUHABaUQASUqCDaKCqiIGm1QliA0CCIKJgZZBAREQIu1uNAqDEgXWlptO/u85X79455XLpOWzvJmpvBLbjJz311+5/s75/s72zVqOJTJZIjjHFITsA+wLzADmA5MBSYDbUATkB1wewnoADYDm4C1wGrgBeB5oB2zLYRQtEqlUqs524gEDiGDVI/0VmAeMBeYA+wN1LmQIfUeDTgGziV9VK+PgTLQ52A8A/wZ+BNmKzHrtjiujBkACiEijicBRwDHAO8HpgF5F1Y+4aKv6EvAGuBlYKOvcBfQ46sOEAETgAagxTVld2AP16BmIOfXmYNS9Of+AXgAeIQQNlgcl2sOgLLZQKnUAhwJLASOAib6hAT0A68Ay/1YAazEbB1mRaBMFMU0N8s2btTrvmvyZGPrVqNSCUgZpDzSVGCWa9fBwLuAKQ5KcMA3Aw8DvwJ+Rza72UqleEQAKIQscTwLOA042VcjC1SATuAvwIPA7zH7ByH0UF9fts5OAai+3ujrC0iR3xchTQAaffLpUQQ6MatqRgmzCoVCxXp6kuc1NxtdXRFxXI+0n2vh0W56jUDGwVgN3AksJYSVFselIQEgszzSXGARcJyTFkA38CdH+V7M1tDQULTOTrmwiYDSXsD+wNuAmU6CU1xrCgN4gQH23g/8D9jggrQDK4FngXZC6CafL1lvr9TUZHR1ZYnjacAHgBOBQ9yU8EW6D1iC2ZMm9e/MvrOC9wnuEnQLYkFZ8ILgKsE7ZZZXW5tVSVDQLDhccKngN4LVgh5Bye/XCI/qHHoFawW/FSwWzBe0KoRM1XRklhfMEVwheN7nIJflLsF8hZDbvvCwm+A6QZffVBL8VXCuYIqy2eBbXRC0CU4Q3OAv6quRsEMBpc8X5ibBQsFEZTKZKmcJJgk+LVgmKKaAuEkJub5G+D0EjwoqjvZfBZ+UWbOamszNoiCYK/i+oD310F3hKDoYPxTMk1kBQC0tJrNGwemCp122WPCUEj4DmeUES/2HLsFlMmtVS4upudlk1uAI3+u/x7uQ4NvTjB7BA4JTZNakpibTxIkms2bBxSkZ7pRZAcFRKZv9ojKZyIFpEHzM0erfhYV+Pa1YJjhDTuLKZCLBhf5br+BYBD92RJbLrMlN4mDBY7uYmg/3KAmeVOKpVhf2Cf/tZgTLHYArVFdnMqtPXfBmOv4iswY1NprgKy7zP4O7ngL+Y729QmoFZvPmG7OQprqTts59jt1C6oL8gKDkzTbkHiypQKw/uHdn2wAw63Z0ahRvGiTb864AQJ//PcFl7g3uLhrQqJYWc1+6t2avPeAA+Na3YM6cBIzxG2XMuvzvRpe5I3gUBdBGT4+5mmyu2Wt32w0WLYLbb4eLL4Zp08YLgC1ARXV1BrQ6AJuDh7EAk6hUqqHlxpq+OpOB/faDxYvhttvgtNOgqWmsAdgElCmVggdmAK8EZ0QBU4njDCHEfq72o1CAww6DH/0IbrgBjjwSstmxAmAdZhXiOOPJFoC1wTM28uxLlny+4udGZ5hBSwssXAhLl8LVV8Ps2WPBDy+SzVY8NzHNiX51AF50u5+M1OrJh+dSW8bojBBgjz3g3HPh5z+Hiy6CqVNH620x0G79/TFSg2tADLwQPONa9AzNTL9hlXPB6I8oSnaKyy+HW2+FD38YGhpqvwMkSRVcxoLL3B4wW+8EkU15gP/ypOXYjbo6OOIIuPZauP56OPzwWvoPfSkA9nNZOzB7KWDW7+mmABykKMoQwhYHYWyHGbS1JVqwdGniP8yaVQt+aMdso3K5ALzDc4crE0cony95clPAwVQqOaKo6Ln38RkhwPTpcP75cMcdcMEF8Ja3jOSJywihSKmU9YyygOXkcqWqj3iSh75blRQ1EJyayqkN/1iwQOrr04hGd7d0//3SSSdJ9fVDnUNZcJbLtLtgk8t1atpJ3lOwOf2DYIafG38AJCmOpU2bpKVLpUMPlUIY7Bw6BG91mU7whe5QUrojuO294iWnCJivKMo4OT69y8RyZjBxInz0owk/nHPOYLnhGcxWe1L3SJfxWUJY9yoAdXVF4CG3jaOoVOppbCwC99Y0MhxxPCfo7IQVK+Bvf0v+33kEeB/19f2Uy3Ve0QJ4iFyuf+CVh3ierE9JxQXBbFeX8TeBvj7p8celM86QWloG+/4uwTtdlnme++zTq0C8pho0QbDCU0XXKIqCFxruHVcAymVp1Spp8WJp+vShvv8RmRWUywUvlsSCVdXc52sBSC76pl/0b5m1OHKfGNFuMFwA4lh6+WXpuuukgw6SzIbD/ueptbVaG/jHtsX1Is/2DObdrjZFwYf83BTBi2MGQBxLHR3Sr38tHXuslM8PV/vWVitAguM8td8jOHTHjJFUfx70B9ytEHJeZrpq2AWRoQDQ3y899ZR09tlSa+tICyTfVxRlvN55u59/XGZ1O6PNs1zlO1IE8nbBf0cNgHJZeu456fLLpb33rkUKfIuSXoIqkW92k1ik1lbbGQATBf92FJcoijJeUfnJsLTg9QCIY2nDBunGG6W5c4fi3Oxs9W9WCFlFURBc7edeFOzcn3YyvNQLpRuV1PgRHDgsLdgRAF1d0j33SMcfLxUKtSyAbFHi7yOYKVjvsnxjh+S3HS3Y00kkFvxAUZRRFGUE3xuyFgwEoFiUli2TzjtPmjRpNIqjP1YIka/+t/3c+qrrOzgAEuL7uiO3SXCAA7OX4KVhAVCpSO3t0pVXSvvsM5xtbTDHupTfP8sFjwXfURQNLbngPQMvvMam8nkTnD8kv+Doo6U1a6Sbb5bmzZMymdGq/ZUFX1I2GxRClCr6rqlGuEMDIBH2c/7gbsECB6bJmykGN7HJk6VjjhlOGDvU4wkldU68ZafD5/7lQdv+drSgxWvsEvxRSb8egkMF/9uFKr9blUR6uNf3sJ9fIZg00oLace5BlQWXKIqCstmM4LKaJExqo/rfUCaTce660OfVK1hYbfEZSTtszpuhYifE9zgwjR4ojXfLzEMpzTwoRXy3yixfq7LqdMEqf+FjShqeEbzNu8TGS/j/CA70uTQLfufCt+vVFH8NAGhoMM8bdvvW+F2FkNWECeYmsnUchO8QfFCFgrmnekWqn/AjXgStYTImCSqucQB6BKerUKjywfmeaBgr4fsFX1AURaqvN8HJHsVWBEt22AxZA1Noc5ureleHpFrtvj1GpFgS/GBbL2ASwq/ZFu0lneaj2mYxO2X3f1fyUUQ1o3SDq+FoCV/xnsbGlGe6PMUHc0Y/L5nY/QIPjGJ3inZP7Qy3+URHQ/jbUs7OlBTpbREcX3O73yEISaDx8VRD9T1KOsGrztMtNdaE8gDh2wS/SvHRZ4bs648YhIR5L3LyqwjuTG2PDYIlNWq0LLlpNaeEv9Pf2S+4VCFkGY/h5Pc1n0hFcHc16SCzOm9r7xmB8L2CK2RWn0rW/NLfVRRcWTNnZwQg5AVfTYHwQLUT27fOMwWvDEP4/wrOllkuFZ3ek1r5q3ea3xtjEC7x1Y49gHqHJkww988P8xb8eJBJjb8L5iubDWpqMsH+Hu3FrhVfrW6Du07VKlntRc7I8lzCcVVy8hX86U4cpn7BrYI91dZmTrbH+LYbCzoFF4yao1MDYsy4y7w2lZ/70jYbTjTlTN+z4wGrvlrwqW0OTsIhF6Yq1OsFp4w52w8ZhELB/MuSp12wohPXTDU0mPsR+7g2bPY44meCWcrnzbu5Z/i2V/RnPCM4xDs83hhDMNXVuSrEc4JTqurrJrOnYEbqXE5wokeeVfB+oeSrszfecDX+rGBDalu7RbBv9QMnd6wygr0FN6a2zU2Cz1fN5w07fBc42IOo6qd069y5OdeJ81o/V/1E7lHBexVFgTfL8Fzd55wgKyn/Pv33esEXZdY8Zo0nYwpCLhcoFmeQfIq7AM/hkzRr3g/cTjb7/GC++a3V+D8QDEckCg68HgAAAABJRU5ErkJggg=="},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAKjElEQVR4nNWbeWwc1RnAf292vb6TPby24zjO5SQU5yBNSAkJxEdzFAiF0vRCIWrUFlEKVaW2iEqtmgKlVWmklkoNtKKogDikFhRCQgKxnQsQEOIcjg8ScGJ8sN5d78aOj92def2DGDmJ7XlvvU7bn2TJO/N93/vmm5n3vvfNe0JKyUTj89UWg7lCCHGNlCxEMAOYfOEvC4gCUSRRDNGIRb0Q8kQsJvefO1cVmkjfxEQFwO+vmWdh3SmkuEXC4iTNmMBhhHjdwHquq6uqOZU+QooDIATCk1d9i5D8CFgNiJQZB4nkgDTkk91Bx4tSlidSYTRlAcjLq6mSyN8DS1JicGxaEOLRcFA8Nd5AjDsAXu+bJUIYf0Vw07gMJcdxpLw7FKp6O1kDSQdACITXu3czQmwFJiXrQAqwBHKb02n+vLNzzXld5aQCkJ9fm2NK6ykkG7SVJ456gfH1YLC8UUdJOwDugurZDpOXgQVaileGHgGbgsHKl1UVtALg89WUIaw3QExJyr0rg4ngnlBX5d9UhJUD4PPVXoewdgKe8XiXluHAMyWDTHca6VkO4gMmA70mkY4B+s/Fx2N6OBIpfxoKVW21E1QKgN9fs8SSspokOjtnuoNZS93MWuqhZKGbyQXpCGPk9CD66SCtxyI0HQzSUhfFjFu6zQ1HCtgcDFY+PZaQbQD8/r1zLSkOAPk6rXuKMll6WxFXV/hJz3bqqAJwvjvO4e3t1L3WwUBv0kN9HClvDYWqXh9NYMwATJpUm5fmst4DZqi2mJvnYuXG6ZRV5mM4xp8I9p+Lc/CZsxzd1YllJTVkR81EYnEksubjkU6OGgAhthhe38qdINaqtCIMweKbC7lx03RcWfp33I72xh52/KGJSMdAMurvhUOhlVJuiF16YtQA5OVV/07CAyrWM3PTuPlnc5m1dFz9oy3xAZNdfzpF476uZNQfDgUrf3npwRED4PXWrBCG3A8YdlY9UzPZ8FAZ7sKMZJzSRkp454VWDj57Bs0UJiYwFl2aKF12gVOn7sjCkE+PdO5S8mdmc+djC6/YxQMIAcu/PY0195VijDKajIJLIh+/9OBlFzkQy35IQKmdNXdhBhsenk/W5DQdJ1LGonWFrPtxKUIrBvLLPl/NRX3aRQFwu/fMFFLea2fG6TK449dXk+3571z8EPNXF7Bq80wtHSHkg8N/XxQAh8P5iIR0OyOrvjsDX0mWVsMTxbI7plJWpZ6iSFjl9dasGPr9eQDy8t78AoJv2Rnwz8jmi+v/t6YCa+6djXuKej9kGPKHn/8/7PB9KJSwbtg0fdRUVpX+gUGaWtp5t/40b9U1cbS5hdbOIFaStYm0DAfr7p+j3B9IuM3vP5QL4ATweGrdhoONdoqeokxmL/Mm5SRAa2eIfe/X09LeNeLFZmWks3BOCSsXX0VWpu2beBEliyYz70a/ao6QJWXsduCfBoDhtDYAOXZaC9cWaPa6n2GaFq/uP8zT22v4qC0w6p3uGxjkneMf8ufnX+d481ntdlZ+p0R5aJRYt8LQK2Bxm4rSvBvytJ1KmBbP7TrAkYaPlROXWDzOyzXvUvt+vVZb3mmZlC5XfUJFuRBbDCM/vzYHQaWt8eLMpBKeXYeO0NKWVOrK/sMNHG74SEtnwZpCVVGf279qoWGa1vWA7ZUVz5+s5QjA6dZPOdIw4iRMmd2HjhLp7VOWn7nETWauWn4ipPklQwq1rzYFs7OVnRhC9xEeiYRpUvuuuh3DEJRco3azBMZcQ0iuURHO00x8wtHztAXCWjqjcfKjVmIx9XLZtAWKT6slrzKEYJ6KbE6e3rB0qrVTS34sEqbF6baAsrx/uuLNEsw0JCh1mzmaeX93tEdL3o5wpFdZ1jM1U1V0kgG4VSSdLtvZ8UX0DV5WfBkXvX39yrIZOcoVqVwDsO3dHGmGdvrrSkvtTDEj3aUs63QZOJxK/mYZwKCdlJWwkJoFydys1BZJcrPV7UkJlqnkb68B2L6sUkIiplejL5minzWOxcypBcqyiUFTNeuMKAUAoDes905PK/SRmaE3cozGlDwPnknqeUhfVPE7gpQRQyLaVGS72/XK0Q7DYPnCOVo6o1F+bZmW/LmAoq+GaDaEtJTW3QROqw9DQyybX4p3sn4GOZy506cwp0Q5vwcg3KY2YgjJMQNDfKgifPZ4VMsJAFeakw2rl5PmTO5Dic+Ty+2Vy7T1OprUbpYlOGZgcUxF+JP6HmL9prYzBT43G9ffQLZmgaO4wMemW8pJd+kPp20nz6mIxa2466DhcBhvAbaJdmLQpPlgUNsZgOJ8H5tvr+SqGUW2si6nk/KlZdy1fhU5WfqdaHfHAKFWpdnj/khkZbczECjv9eVVHwFsn7W6XZ3MX60+HA3Hk5vNN9ZeT3sgTP3pT/i4PcC58/0MxuLkZmbg8+Qyd3oRZbOKtcthwzn1tuK6SilfhQs1QYncKxC2AWhv7OHs0Sgli/RrA0MU5Xspyk++rjgWUsLR3faTMAGDzjTzebhQEpOG4yXVRmr/0aKdFV4pWj6IEG61HwEs5IudnWsCcCEA3YHyOqBJpZHO5h6O7EzdVDdVSAkHnjmjJGvAX4b9P2RBPKfa2L6nWgidVS9TXQka9nXR2Wyf1ErYHgxWvTf0+/MAxFzObYBSBhEfMHnlkUYGz6dkue64OR+OU/2EUvHUFHKUb4M9HTd0IXlWtdFQax//3tKgPUlKNWZCsuOxRvqi9iUzidgWClWdHH7soiqHYYg/Asq3tfVElH9tOZlUgpQKpITdj5/iTJ1SltriEK4HLz14UQC6uiqaJGzTceLMkQjPP3Ccni7bskJKMeMWO7c2c+KNT1XEJZK7u7pWXNZJXLZExu0+6HE4Yx8CPh2HMnPTWHt/KXNXaKklRaRjgNe2NtNWr5TyIpGPhoNVvxjp3IhrhHz+6u8jeTIZ52Zf66Hie7PwTlMuTCoz0Jvgg+3tvPPSJzp9z55wKHSTlBtGfE9HXSXmzdv7ikB8NRlHhSEovc7LkvVFFC+YpLuW5zI6mnpo2NfFsT0BYn1aI09zPCavH2vf0agByJ1ywO+Kx+sA+xnMGGS505h1rZdpZZMoKM3BU5RBWoZjRNlE3KI/mqC7rZ/g2T46Gns4eyKaZP8iO8yEuWK0BZJDjLlS9MIa4VoUPp3rkJHjJCPHiTPdIDFoEes3ifWZJMa3Nng4YWnJinC4ynaqb7tW2Out/oow2M6FidP/AZ2WKdZ1d1ccVRG2/doRDlfuEohvAkmtUb2SSDhlOuUK1YsHzf0CQljbJfiT9nACEbAjkXDdFYms7NbS09kx4vHUzjAc1t+BKl0HJ5ABKcSvuoMVj0mJ9jxde8/QZ5sj9/5ASPFbFD+sTiB7HYZ5TyCwWqmwOxJJb5vz+w/lSjlwnxTiJ0hS+xnIDinrhBC/CYUqX0nmrg9n3BsnCwv3ZCcSzq9J2AhUAiMP8uPHRLLbMMQTwWDFq+O98CFSunc4P7+20LKs1RIqEKIcKfUW8l7OeYQ4gCV3OxzGC4FAecpLURO2exzA631zshBGGYaYD1YxkqlIChDCw2drkl1AGsheMCJgRQXilJSiGayGcNj9vpRLUraVbCT+AxbCE6Dct2fvAAAAAElFTkSuQmCC"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
+    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog .miniplayer-size-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"range\"] { width: 120px; min-width: 0; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"number\"] { width: 80px; padding: 6px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }\n#ytms-settings-dialog .extra-settings h3 { margin: 0 0 8px; font-size: 16px; }\n#ytms-settings-dialog .extra-settings label { display: block; margin: 10px 0 6px; font-size: 13px; }\n#ytms-settings-dialog .extra-settings input[type=\"url\"], #ytms-settings-dialog .extra-settings input[type=\"file\"] { display: block; width: 100%; max-width: 100%; color: var(--text); background: var(--field); padding: 8px; border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }\n#ytms-settings-dialog .extra-settings-controls label { margin: 0; }\n#ytms-settings-dialog .extra-settings-controls input[type=\"range\"] { width: 140px; max-width: 100%; }\n#ytms-settings-dialog #ytms-marker-preview { object-fit: contain; }\n#ytms-settings-dialog .extra-settings .extension-link { display: inline-block; text-decoration: none; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog .settings-search { display: flex; align-items: center; gap: 8px; padding: 6px 24px 8px; flex-shrink: 0; }\n#ytms-settings-dialog #ytms-settings-search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--text); }\n#ytms-settings-dialog .settings-search-clear { padding: 7px 10px; border-radius: 16px; color: var(--text); white-space: nowrap; }\n#ytms-settings-dialog .settings-search-clear:hover { background: var(--hover); }\n#ytms-settings-dialog #ytms-settings-search-status, #ytms-settings-dialog .settings-search-empty { color: var(--muted); font-size: 12px; margin: 12px 0; }\n#ytms-settings-dialog .settings-search-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; width: 100%; padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }\n#ytms-settings-dialog .settings-search-result:hover { background: var(--hover); }\n#ytms-settings-dialog .settings-search-title { font-weight: 600; overflow-wrap: anywhere; }\n#ytms-settings-dialog .settings-search-section, #ytms-settings-dialog .settings-search-description { color: var(--muted); font-size: 12px; }\n#ytms-settings-dialog .settings-search-description { grid-column: 1 / -1; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); margin: 16px 0 0; }\n#ytms-settings-dialog .support-tools > section { padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 0; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 14px 0 0; }\n#ytms-section-extensions > .section-note { margin-top: 6px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(28, 28, 28, 0.9) !important; color: inherit !important; font-family: inherit !important; font-size: 118% !important; font-weight: 500 !important; line-height: 15px !important; text-shadow: none !important; pointer-events: none !important; }\n.ytp-big-mode #ytms-player-settings-tooltip { line-height: 22px !important; }\n/* Follow the current native player surface and its theme overrides. */\n.ytp-delhi-modern #ytms-player-settings-tooltip { border-radius: 8px !important; background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important; -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; text-shadow: 0 0 2px #000 !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog .feature-group { margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog .feature-group > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog .feature-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .feature-group .row:has(input:disabled, select:disabled) label { opacity: .65; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog .menu-editor-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }\n#ytms-settings-dialog .menu-editor-toolbar > select { flex: 1; min-width: 150px; max-width: 100%; }\n#ytms-settings-dialog .menu-editor-group { display: grid; grid-template-columns: auto minmax(100px, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 12px; }\n#ytms-settings-dialog .menu-editor-group[hidden] { display: none; }\n#ytms-settings-dialog .menu-editor-group > .section-note { grid-column: 1 / -1; margin: 0; }\n#ytms-settings-dialog .menu-editor-group > input { width: 100%; min-width: 0; }\n#ytms-settings-dialog #ytms-menu-order .menu-editor-item-label { flex: 1 1 160px; }\n#ytms-settings-dialog .menu-editor-item-label > label { display: flex; align-items: center; gap: 8px; }\n#ytms-settings-dialog .menu-editor-item-label input[type=\"checkbox\"] { width: 18px; height: 18px; flex-shrink: 0; }\n#ytms-settings-dialog .menu-editor-item-label > button { max-width: 100%; text-align: start; overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-menu-order li > select { max-width: 190px; min-width: 100px; }\n#ytms-settings-dialog .menu-editor-preview { margin-top: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-settings-dialog .menu-editor-preview li { overflow-wrap: anywhere; margin-block: 4px; }\n#ytms-settings-dialog .menu-layout-editor .error { color: var(--error, #f88); }\n@media (max-width: 600px) {\n  #ytms-settings-dialog #ytms-menu-order li { flex-wrap: wrap; }\n  #ytms-settings-dialog #ytms-menu-order li > select { flex: 1; max-width: none; }\n  #ytms-settings-dialog .menu-editor-group { grid-template-columns: minmax(0, 1fr) auto; }\n  #ytms-settings-dialog .menu-editor-group > label { grid-column: 1 / -1; }\n}\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAACg0lEQVRo3u2ZP2gTURzHP5eLSgNV1GqkClksomiHViFKaEENLl0USweHomARpAhxaIfSqWCXLlKHIlTQyWwuThUHSwsFm2qgHjhpQa2iLkWCRn8OOaEeueZy//IO8oUbDu73e9/P77137707aKqx0mo9IHAJyAEngJ0+tv0TMIB7wH0NpErbV4EjNvG/gXwt82MCEsL1QCzFFMg6iHu/lflOgXJIACIwYGn/mpO42BYdcBvQQxzO190ExWyqn8RSkRB0zDcA4AawI2SAmC9BAttNgEioGvUAcCDKAMOOo6enob9fHQCBM8Apx9EdHZDPw+IipNNK9MAtV1nSaVhYqMCkUo0BEDgIXHS/KdEqw2l1FSYnobU19B64CWzznDGRgJERMAwYGgJdDx5AoMXtSmir9naYmYGlJejtDbwHrgBtgbTQ1QUTE5BMBgowHEj2tTUYHISeHlhfD6SJuMBZoNPXrBsbMDVVmcylUqBzIG5OXn9ULsPsLIyPB1bxagDnfMk0Nwe5HBSLoa8DuzxlMAzo64NsNnTz/xYw96eoTEZE1/06kX1ycyKLe6Kfn1dyNxopxYA/UQd4F3WAR4p4EbcAd4DnCgB8sNx/dhDzNq5BSeCCeZC/DBxyaSDl8TvSY8v9U2AU6LZ5/gdw16++bxH45WENeCHhf8b5D+C0B/MvBXY3eh046TJuGchq8L3RAN0uYgqm+W8qvP+KdQ6bZYE9qry8E3VO4IIy5k2ATJ3m96q2mXM6/leA8xp8VWovIvDQQeVX/K58mBO4oKx5E+Bjjcq3obIEntiYf6W8eRPgsMAXi/nXAvsic6gQOLppKL2RCP3h2QxxXOCZwH6aaio6+gvdnzYIGXJx8wAAAABJRU5ErkJggg=="},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAALqklEQVR42t2beYxddRXHP+f37ltmOnsXoZQWClYpUBGtFlAokGIIJIAVQUHABaUQASUqCDaKCqiIGm1QliA0CCIKJgZZBAREQIu1uNAqDEgXWlptO/u85X79455XLpOWzvJmpvBLbjJz311+5/s75/s72zVqOJTJZIjjHFITsA+wLzADmA5MBSYDbUATkB1wewnoADYDm4C1wGrgBeB5oB2zLYRQtEqlUqs524gEDiGDVI/0VmAeMBeYA+wN1LmQIfUeDTgGziV9VK+PgTLQ52A8A/wZ+BNmKzHrtjiujBkACiEijicBRwDHAO8HpgF5F1Y+4aKv6EvAGuBlYKOvcBfQ46sOEAETgAagxTVld2AP16BmIOfXmYNS9Of+AXgAeIQQNlgcl2sOgLLZQKnUAhwJLASOAib6hAT0A68Ay/1YAazEbB1mRaBMFMU0N8s2btTrvmvyZGPrVqNSCUgZpDzSVGCWa9fBwLuAKQ5KcMA3Aw8DvwJ+Rza72UqleEQAKIQscTwLOA042VcjC1SATuAvwIPA7zH7ByH0UF9fts5OAai+3ujrC0iR3xchTQAaffLpUQQ6MatqRgmzCoVCxXp6kuc1NxtdXRFxXI+0n2vh0W56jUDGwVgN3AksJYSVFselIQEgszzSXGARcJyTFkA38CdH+V7M1tDQULTOTrmwiYDSXsD+wNuAmU6CU1xrCgN4gQH23g/8D9jggrQDK4FngXZC6CafL1lvr9TUZHR1ZYnjacAHgBOBQ9yU8EW6D1iC2ZMm9e/MvrOC9wnuEnQLYkFZ8ILgKsE7ZZZXW5tVSVDQLDhccKngN4LVgh5Bye/XCI/qHHoFawW/FSwWzBe0KoRM1XRklhfMEVwheN7nIJflLsF8hZDbvvCwm+A6QZffVBL8VXCuYIqy2eBbXRC0CU4Q3OAv6quRsEMBpc8X5ibBQsFEZTKZKmcJJgk+LVgmKKaAuEkJub5G+D0EjwoqjvZfBZ+UWbOamszNoiCYK/i+oD310F3hKDoYPxTMk1kBQC0tJrNGwemCp122WPCUEj4DmeUES/2HLsFlMmtVS4upudlk1uAI3+u/x7uQ4NvTjB7BA4JTZNakpibTxIkms2bBxSkZ7pRZAcFRKZv9ojKZyIFpEHzM0erfhYV+Pa1YJjhDTuLKZCLBhf5br+BYBD92RJbLrMlN4mDBY7uYmg/3KAmeVOKpVhf2Cf/tZgTLHYArVFdnMqtPXfBmOv4iswY1NprgKy7zP4O7ngL+Y729QmoFZvPmG7OQprqTts59jt1C6oL8gKDkzTbkHiypQKw/uHdn2wAw63Z0ahRvGiTb864AQJ//PcFl7g3uLhrQqJYWc1+6t2avPeAA+Na3YM6cBIzxG2XMuvzvRpe5I3gUBdBGT4+5mmyu2Wt32w0WLYLbb4eLL4Zp08YLgC1ARXV1BrQ6AJuDh7EAk6hUqqHlxpq+OpOB/faDxYvhttvgtNOgqWmsAdgElCmVggdmAK8EZ0QBU4njDCHEfq72o1CAww6DH/0IbrgBjjwSstmxAmAdZhXiOOPJFoC1wTM28uxLlny+4udGZ5hBSwssXAhLl8LVV8Ps2WPBDy+SzVY8NzHNiX51AF50u5+M1OrJh+dSW8bojBBgjz3g3HPh5z+Hiy6CqVNH620x0G79/TFSg2tADLwQPONa9AzNTL9hlXPB6I8oSnaKyy+HW2+FD38YGhpqvwMkSRVcxoLL3B4wW+8EkU15gP/ypOXYjbo6OOIIuPZauP56OPzwWvoPfSkA9nNZOzB7KWDW7+mmABykKMoQwhYHYWyHGbS1JVqwdGniP8yaVQt+aMdso3K5ALzDc4crE0cony95clPAwVQqOaKo6Ln38RkhwPTpcP75cMcdcMEF8Ja3jOSJywihSKmU9YyygOXkcqWqj3iSh75blRQ1EJyayqkN/1iwQOrr04hGd7d0//3SSSdJ9fVDnUNZcJbLtLtgk8t1atpJ3lOwOf2DYIafG38AJCmOpU2bpKVLpUMPlUIY7Bw6BG91mU7whe5QUrojuO294iWnCJivKMo4OT69y8RyZjBxInz0owk/nHPOYLnhGcxWe1L3SJfxWUJY9yoAdXVF4CG3jaOoVOppbCwC99Y0MhxxPCfo7IQVK+Bvf0v+33kEeB/19f2Uy3Ve0QJ4iFyuf+CVh3ierE9JxQXBbFeX8TeBvj7p8celM86QWloG+/4uwTtdlnme++zTq0C8pho0QbDCU0XXKIqCFxruHVcAymVp1Spp8WJp+vShvv8RmRWUywUvlsSCVdXc52sBSC76pl/0b5m1OHKfGNFuMFwA4lh6+WXpuuukgw6SzIbD/ueptbVaG/jHtsX1Is/2DObdrjZFwYf83BTBi2MGQBxLHR3Sr38tHXuslM8PV/vWVitAguM8td8jOHTHjJFUfx70B9ytEHJeZrpq2AWRoQDQ3y899ZR09tlSa+tICyTfVxRlvN55u59/XGZ1O6PNs1zlO1IE8nbBf0cNgHJZeu456fLLpb33rkUKfIuSXoIqkW92k1ik1lbbGQATBf92FJcoijJeUfnJsLTg9QCIY2nDBunGG6W5c4fi3Oxs9W9WCFlFURBc7edeFOzcn3YyvNQLpRuV1PgRHDgsLdgRAF1d0j33SMcfLxUKtSyAbFHi7yOYKVjvsnxjh+S3HS3Y00kkFvxAUZRRFGUE3xuyFgwEoFiUli2TzjtPmjRpNIqjP1YIka/+t/3c+qrrOzgAEuL7uiO3SXCAA7OX4KVhAVCpSO3t0pVXSvvsM5xtbTDHupTfP8sFjwXfURQNLbngPQMvvMam8nkTnD8kv+Doo6U1a6Sbb5bmzZMymdGq/ZUFX1I2GxRClCr6rqlGuEMDIBH2c/7gbsECB6bJmykGN7HJk6VjjhlOGDvU4wkldU68ZafD5/7lQdv+drSgxWvsEvxRSb8egkMF/9uFKr9blUR6uNf3sJ9fIZg00oLace5BlQWXKIqCstmM4LKaJExqo/rfUCaTce660OfVK1hYbfEZSTtszpuhYifE9zgwjR4ojXfLzEMpzTwoRXy3yixfq7LqdMEqf+FjShqeEbzNu8TGS/j/CA70uTQLfufCt+vVFH8NAGhoMM8bdvvW+F2FkNWECeYmsnUchO8QfFCFgrmnekWqn/AjXgStYTImCSqucQB6BKerUKjywfmeaBgr4fsFX1AURaqvN8HJHsVWBEt22AxZA1Noc5ureleHpFrtvj1GpFgS/GBbL2ASwq/ZFu0lneaj2mYxO2X3f1fyUUQ1o3SDq+FoCV/xnsbGlGe6PMUHc0Y/L5nY/QIPjGJ3inZP7Qy3+URHQ/jbUs7OlBTpbREcX3O73yEISaDx8VRD9T1KOsGrztMtNdaE8gDh2wS/SvHRZ4bs648YhIR5L3LyqwjuTG2PDYIlNWq0LLlpNaeEv9Pf2S+4VCFkGY/h5Pc1n0hFcHc16SCzOm9r7xmB8L2CK2RWn0rW/NLfVRRcWTNnZwQg5AVfTYHwQLUT27fOMwWvDEP4/wrOllkuFZ3ek1r5q3ea3xtjEC7x1Y49gHqHJkww988P8xb8eJBJjb8L5iubDWpqMsH+Hu3FrhVfrW6Du07VKlntRc7I8lzCcVVy8hX86U4cpn7BrYI91dZmTrbH+LYbCzoFF4yao1MDYsy4y7w2lZ/70jYbTjTlTN+z4wGrvlrwqW0OTsIhF6Yq1OsFp4w52w8ZhELB/MuSp12wohPXTDU0mPsR+7g2bPY44meCWcrnzbu5Z/i2V/RnPCM4xDs83hhDMNXVuSrEc4JTqurrJrOnYEbqXE5wokeeVfB+oeSrszfecDX+rGBDalu7RbBv9QMnd6wygr0FN6a2zU2Cz1fN5w07fBc42IOo6qd069y5OdeJ81o/V/1E7lHBexVFgTfL8Fzd55wgKyn/Pv33esEXZdY8Zo0nYwpCLhcoFmeQfIq7AM/hkzRr3g/cTjb7/GC++a3V+D8QDEckCg68HgAAAABJRU5ErkJggg=="},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAKjElEQVR4nNWbeWwc1RnAf292vb6TPby24zjO5SQU5yBNSAkJxEdzFAiF0vRCIWrUFlEKVaW2iEqtmgKlVWmklkoNtKKogDikFhRCQgKxnQsQEOIcjg8ScGJ8sN5d78aOj92def2DGDmJ7XlvvU7bn2TJO/N93/vmm5n3vvfNe0JKyUTj89UWg7lCCHGNlCxEMAOYfOEvC4gCUSRRDNGIRb0Q8kQsJvefO1cVmkjfxEQFwO+vmWdh3SmkuEXC4iTNmMBhhHjdwHquq6uqOZU+QooDIATCk1d9i5D8CFgNiJQZB4nkgDTkk91Bx4tSlidSYTRlAcjLq6mSyN8DS1JicGxaEOLRcFA8Nd5AjDsAXu+bJUIYf0Vw07gMJcdxpLw7FKp6O1kDSQdACITXu3czQmwFJiXrQAqwBHKb02n+vLNzzXld5aQCkJ9fm2NK6ykkG7SVJ456gfH1YLC8UUdJOwDugurZDpOXgQVaileGHgGbgsHKl1UVtALg89WUIaw3QExJyr0rg4ngnlBX5d9UhJUD4PPVXoewdgKe8XiXluHAMyWDTHca6VkO4gMmA70mkY4B+s/Fx2N6OBIpfxoKVW21E1QKgN9fs8SSspokOjtnuoNZS93MWuqhZKGbyQXpCGPk9CD66SCtxyI0HQzSUhfFjFu6zQ1HCtgcDFY+PZaQbQD8/r1zLSkOAPk6rXuKMll6WxFXV/hJz3bqqAJwvjvO4e3t1L3WwUBv0kN9HClvDYWqXh9NYMwATJpUm5fmst4DZqi2mJvnYuXG6ZRV5mM4xp8I9p+Lc/CZsxzd1YllJTVkR81EYnEksubjkU6OGgAhthhe38qdINaqtCIMweKbC7lx03RcWfp33I72xh52/KGJSMdAMurvhUOhlVJuiF16YtQA5OVV/07CAyrWM3PTuPlnc5m1dFz9oy3xAZNdfzpF476uZNQfDgUrf3npwRED4PXWrBCG3A8YdlY9UzPZ8FAZ7sKMZJzSRkp454VWDj57Bs0UJiYwFl2aKF12gVOn7sjCkE+PdO5S8mdmc+djC6/YxQMIAcu/PY0195VijDKajIJLIh+/9OBlFzkQy35IQKmdNXdhBhsenk/W5DQdJ1LGonWFrPtxKUIrBvLLPl/NRX3aRQFwu/fMFFLea2fG6TK449dXk+3571z8EPNXF7Bq80wtHSHkg8N/XxQAh8P5iIR0OyOrvjsDX0mWVsMTxbI7plJWpZ6iSFjl9dasGPr9eQDy8t78AoJv2Rnwz8jmi+v/t6YCa+6djXuKej9kGPKHn/8/7PB9KJSwbtg0fdRUVpX+gUGaWtp5t/40b9U1cbS5hdbOIFaStYm0DAfr7p+j3B9IuM3vP5QL4ATweGrdhoONdoqeokxmL/Mm5SRAa2eIfe/X09LeNeLFZmWks3BOCSsXX0VWpu2beBEliyYz70a/ao6QJWXsduCfBoDhtDYAOXZaC9cWaPa6n2GaFq/uP8zT22v4qC0w6p3uGxjkneMf8ufnX+d481ntdlZ+p0R5aJRYt8LQK2Bxm4rSvBvytJ1KmBbP7TrAkYaPlROXWDzOyzXvUvt+vVZb3mmZlC5XfUJFuRBbDCM/vzYHQaWt8eLMpBKeXYeO0NKWVOrK/sMNHG74SEtnwZpCVVGf279qoWGa1vWA7ZUVz5+s5QjA6dZPOdIw4iRMmd2HjhLp7VOWn7nETWauWn4ipPklQwq1rzYFs7OVnRhC9xEeiYRpUvuuuh3DEJRco3azBMZcQ0iuURHO00x8wtHztAXCWjqjcfKjVmIx9XLZtAWKT6slrzKEYJ6KbE6e3rB0qrVTS34sEqbF6baAsrx/uuLNEsw0JCh1mzmaeX93tEdL3o5wpFdZ1jM1U1V0kgG4VSSdLtvZ8UX0DV5WfBkXvX39yrIZOcoVqVwDsO3dHGmGdvrrSkvtTDEj3aUs63QZOJxK/mYZwKCdlJWwkJoFydys1BZJcrPV7UkJlqnkb68B2L6sUkIiplejL5minzWOxcypBcqyiUFTNeuMKAUAoDes905PK/SRmaE3cozGlDwPnknqeUhfVPE7gpQRQyLaVGS72/XK0Q7DYPnCOVo6o1F+bZmW/LmAoq+GaDaEtJTW3QROqw9DQyybX4p3sn4GOZy506cwp0Q5vwcg3KY2YgjJMQNDfKgifPZ4VMsJAFeakw2rl5PmTO5Dic+Ty+2Vy7T1OprUbpYlOGZgcUxF+JP6HmL9prYzBT43G9ffQLZmgaO4wMemW8pJd+kPp20nz6mIxa2466DhcBhvAbaJdmLQpPlgUNsZgOJ8H5tvr+SqGUW2si6nk/KlZdy1fhU5WfqdaHfHAKFWpdnj/khkZbczECjv9eVVHwFsn7W6XZ3MX60+HA3Hk5vNN9ZeT3sgTP3pT/i4PcC58/0MxuLkZmbg8+Qyd3oRZbOKtcthwzn1tuK6SilfhQs1QYncKxC2AWhv7OHs0Sgli/RrA0MU5Xspyk++rjgWUsLR3faTMAGDzjTzebhQEpOG4yXVRmr/0aKdFV4pWj6IEG61HwEs5IudnWsCcCEA3YHyOqBJpZHO5h6O7EzdVDdVSAkHnjmjJGvAX4b9P2RBPKfa2L6nWgidVS9TXQka9nXR2Wyf1ErYHgxWvTf0+/MAxFzObYBSBhEfMHnlkUYGz6dkue64OR+OU/2EUvHUFHKUb4M9HTd0IXlWtdFQax//3tKgPUlKNWZCsuOxRvqi9iUzidgWClWdHH7soiqHYYg/Asq3tfVElH9tOZlUgpQKpITdj5/iTJ1SltriEK4HLz14UQC6uiqaJGzTceLMkQjPP3Ccni7bskJKMeMWO7c2c+KNT1XEJZK7u7pWXNZJXLZExu0+6HE4Yx8CPh2HMnPTWHt/KXNXaKklRaRjgNe2NtNWr5TyIpGPhoNVvxjp3IhrhHz+6u8jeTIZ52Zf66Hie7PwTlMuTCoz0Jvgg+3tvPPSJzp9z55wKHSTlBtGfE9HXSXmzdv7ikB8NRlHhSEovc7LkvVFFC+YpLuW5zI6mnpo2NfFsT0BYn1aI09zPCavH2vf0agByJ1ywO+Kx+sA+xnMGGS505h1rZdpZZMoKM3BU5RBWoZjRNlE3KI/mqC7rZ/g2T46Gns4eyKaZP8iO8yEuWK0BZJDjLlS9MIa4VoUPp3rkJHjJCPHiTPdIDFoEes3ifWZJMa3Nng4YWnJinC4ynaqb7tW2Out/oow2M6FidP/AZ2WKdZ1d1ccVRG2/doRDlfuEohvAkmtUb2SSDhlOuUK1YsHzf0CQljbJfiT9nACEbAjkXDdFYms7NbS09kx4vHUzjAc1t+BKl0HJ5ABKcSvuoMVj0mJ9jxde8/QZ5sj9/5ASPFbFD+sTiB7HYZ5TyCwWqmwOxJJb5vz+w/lSjlwnxTiJ0hS+xnIDinrhBC/CYUqX0nmrg9n3BsnCwv3ZCcSzq9J2AhUAiMP8uPHRLLbMMQTwWDFq+O98CFSunc4P7+20LKs1RIqEKIcKfUW8l7OeYQ4gCV3OxzGC4FAecpLURO2exzA631zshBGGYaYD1YxkqlIChDCw2drkl1AGsheMCJgRQXilJSiGayGcNj9vpRLUraVbCT+AxbCE6Dct2fvAAAAAElFTkSuQmCC"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
     createSettingsDialog: function createSettingsDialog(document) {
   function element(tag, attributes = {}, ...children) {
     const node = document.createElement(tag);
@@ -3012,7 +5080,21 @@
       setBackupStatus('Backup download requested. It contains saved settings and channel filters only.');
     } catch { clearDownload(); setBackupStatus('The backup could not be downloaded. Browser file access may be restricted.', true); }
   });
-  const describeValue = value => Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? 'On' : 'Off') : String(value);
+  function describeValue(value, name) {
+    if (name === 'menuLayout') {
+      if (value === null) return 'Use saved menu order and visibility';
+      const layout = suite.menuLayout?.validate(value);
+      if (!layout) return 'Unrecognised menu layout';
+      const labels = suite.menuLayout.labels;
+      function children(parent) {
+        return layout.nodes.filter(node => node.parent === parent).map(node =>
+          Object.hasOwn(labels, node.id) ? labels[node.id] + (node.visible ? '' : ' (hidden)') :
+            node.name + ': [' + children(node.id) + ']').join('; ');
+      }
+      return children('root');
+    }
+    return Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? 'On' : 'Off') : String(value);
+  }
   const settingName = value => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, letter => letter.toUpperCase());
   function showPreview(result) {
     token = result.preview; preview.replaceChildren(); preview.hidden = false;
@@ -3023,7 +5105,7 @@
     if (settingChanges.length) {
       const details = node('details'); details.append(node('summary', 'Review setting changes'));
       const list = node('ul');
-      for (const change of settingChanges) list.append(node('li', `${settingName(change.name)}: ${describeValue(change.before)} → ${describeValue(change.after)}`));
+      for (const change of settingChanges) list.append(node('li', `${settingName(change.name)}: ${describeValue(change.before, change.name)} → ${describeValue(change.after, change.name)}`));
       details.append(list); preview.append(details);
     }
     const acknowledgement = node('label', '', { class: 'support-confirm' });
@@ -3098,7 +5180,409 @@
     close() { disposed = true; clearPreview(); clearDownload(); },
   });
 },
+    createSettingsExtraControls: function createSettingsExtraControls(document, window, suite, dialog) {
+  const find = id => dialog.querySelector(`#ytms-${id}`);
+  const make = (tag, id, text) => {
+    const node = document.createElement(tag);
+    if (id) node.id = `ytms-${id}`;
+    if (text) node.textContent = text;
+    return node;
   };
+  const button = (id, text) => {
+    const node = make('button', id, text); node.type = 'button'; node.className = 'text-button outlined-button'; return node;
+  };
+  let opened = false, generation = 0, updateGeneration = 0, markerDraft = null, markerChanged = false, markerPreparing = false, markerConflict = false, markerBaseline = null, updateResult = null, sourceBaseline = '';
+  let unsubscribeStorage = null;
+  const marker = make('section', 'playhead-marker'); marker.className = 'extra-settings';
+  const markerHeading = make('h3', 'playhead-marker-heading', 'Playback marker image');
+  const markerNote = make('p', null, 'Replace the red playback dot with a small image. Your image stays in this browser profile and is saved separately from other settings.');
+  markerNote.className = 'section-note';
+  const fileLabel = make('label', null, 'Choose an image'); fileLabel.htmlFor = 'ytms-marker-file';
+  const file = make('input', 'marker-file'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
+  const preview = make('img', 'marker-preview'); preview.alt = 'Playback marker preview'; preview.width = 40; preview.height = 40; preview.hidden = true;
+  const markerSizeLabel = make('label', null, 'Image size'); markerSizeLabel.htmlFor = 'ytms-marker-size';
+  const markerSize = make('input', 'marker-size'); markerSize.type = 'range'; markerSize.min = '16'; markerSize.max = '40'; markerSize.step = '1';
+  const markerSizeValue = make('output', 'marker-size-value'); markerSizeValue.htmlFor = markerSize.id;
+  const markerSizeRow = make('div'); markerSizeRow.className = 'extra-settings-controls'; markerSizeRow.append(markerSizeLabel, markerSize, markerSizeValue, preview);
+  const markerActions = make('div'); markerActions.className = 'extra-settings-controls';
+  const markerSave = button('marker-save', 'Save image'); markerSave.classList.add('primary');
+  const markerRemove = button('marker-remove', 'Restore red dot'); markerActions.append(markerSave, markerRemove);
+  const markerStatus = make('p', 'marker-status'); markerStatus.className = 'section-note'; markerStatus.setAttribute('role', 'status');
+  marker.append(markerHeading, markerNote, fileLabel, file, markerSizeRow, markerActions, markerStatus);
+  find('section-player').append(marker);
+
+  function renderMarker() {
+    preview.hidden = !markerDraft;
+    if (markerDraft) preview.src = markerDraft.dataUrl;
+    else preview.removeAttribute('src');
+    markerSize.value = String(markerDraft?.size || suite.playheadMarker.defaultSize);
+    markerSizeValue.value = `${markerSize.value} px`; markerSize.disabled = markerPreparing || !markerDraft;
+    markerSave.disabled = markerPreparing || markerConflict || !markerDraft || !markerChanged;
+  }
+  function resetMarker() {
+    const result = suite.playheadMarker.read();
+    markerDraft = result.ok && result.value ? { ...result.value } : null;
+    markerChanged = false; markerPreparing = false; markerConflict = false; markerBaseline = result.ok ? JSON.stringify(result.value) : null; file.value = '';
+    markerStatus.textContent = result.ok ? '' : result.error;
+    markerRemove.disabled = !result.ok || !markerDraft;
+    renderMarker();
+  }
+  function markerPreflight() {
+    const current = suite.playheadMarker.read();
+    if (current.ok && JSON.stringify(current.value) === markerBaseline && !markerConflict) return true;
+    markerConflict = true; markerRemove.disabled = true; renderMarker();
+    markerStatus.textContent = current.ok ? 'The saved marker changed in another window. Close and reopen settings before saving or restoring the red dot.' : current.error;
+    return false;
+  }
+  file.addEventListener('change', async () => {
+    const token = ++generation, selected = file.files?.[0];
+    if (!selected) { markerPreparing = false; markerStatus.textContent = ''; renderMarker(); return; }
+    markerPreparing = true; renderMarker(); markerStatus.textContent = 'Preparing image…';
+    const result = await suite.playheadMarker.prepareFile(selected);
+    if (!opened || token !== generation) return;
+    markerPreparing = false;
+    markerStatus.textContent = result.ok ? 'Preview ready. Save image to apply it.' : result.error;
+    if (result.ok) { markerDraft = result.value; markerChanged = true; }
+    renderMarker();
+  });
+  markerSize.addEventListener('input', () => {
+    if (!markerDraft || markerPreparing) return;
+    markerDraft = { ...markerDraft, size: Number(markerSize.value) }; markerChanged = true; renderMarker();
+  });
+  markerSave.addEventListener('click', () => {
+    if (!markerDraft || markerPreparing || markerSave.disabled || !markerPreflight()) return;
+    const result = suite.playheadMarker.save(markerDraft);
+    if (result.ok) { resetMarker(); markerStatus.textContent = 'Playback marker saved. No reload needed.'; }
+    else markerStatus.textContent = result.error;
+  });
+  markerRemove.addEventListener('click', () => {
+    if (!markerPreflight()) return;
+    const result = suite.playheadMarker.remove();
+    if (result.ok) { ++generation; resetMarker(); markerStatus.textContent = 'The native red playback dot is restored.'; }
+    else markerStatus.textContent = result.error;
+  });
+
+  const updates = make('section', 'updates'); updates.className = 'extra-settings';
+  const updatesHeading = make('h3', 'updates-heading', 'Script updates');
+  const updatesNote = make('p', null, 'The latest stable GitHub release is selected by default. You can change the source to another public GitHub Releases page or a hosted release-manifest.json. Installation opens in Tampermonkey.');
+  updatesNote.className = 'section-note';
+  const sourceLabel = make('label', null, 'Release source URL'); sourceLabel.htmlFor = 'ytms-updates-source';
+  const source = make('input', 'updates-source'); source.type = 'url'; source.maxLength = 2048; source.autocomplete = 'off'; source.spellcheck = false;
+  const latest = make('p', 'updates-latest', 'Latest version: Not checked'); latest.className = 'section-note';
+  const updateActions = make('div'); updateActions.className = 'extra-settings-controls';
+  const check = button('updates-check', 'Check for updates');
+  const install = make('a', 'updates-install', 'Install update'); install.className = 'text-button extension-link';
+  install.target = '_blank'; install.rel = 'noopener noreferrer'; install.hidden = true;
+  updateActions.append(check, install);
+  const updateStatus = make('p', 'updates-status'); updateStatus.className = 'section-note'; updateStatus.setAttribute('role', 'status');
+  updates.append(updatesHeading, updatesNote, sourceLabel, source, latest, updateActions, updateStatus); find('section-credits').append(updates);
+  function cancelUpdate() {
+    ++updateGeneration; suite.updates.cancel(); updateResult = null; install.hidden = true; install.removeAttribute('href'); check.disabled = false;
+  }
+  source.addEventListener('input', () => { cancelUpdate(); latest.textContent = 'Latest version: Not checked'; updateStatus.textContent = ''; });
+  check.addEventListener('click', async () => {
+    cancelUpdate();
+    latest.textContent = 'Latest version: Not checked';
+    const saved = suite.updates.saveSource(source.value);
+    if (!saved.ok) { updateStatus.textContent = saved.error; return; }
+    source.value = sourceBaseline = saved.url;
+    const token = updateGeneration; check.disabled = true; updateStatus.textContent = 'Checking for updates…';
+    const result = await suite.updates.check();
+    if (!opened || token !== updateGeneration) return;
+    check.disabled = false;
+    if (!result.ok) { updateStatus.textContent = result.error; return; }
+    updateResult = result; latest.textContent = `Latest version: ${result.latestVersion}`;
+    const url = suite.updates.installationUrl(result);
+    if (url) { install.href = url; install.hidden = false; }
+    updateStatus.textContent = result.status === 'newer' ? 'An update is available. Complete installation in Tampermonkey, then reload YouTube.' :
+      result.status === 'older' ? 'Your installed version is newer than this release source.' : 'You have the latest version from this source.';
+  });
+  const validateInstall = event => {
+    const url = suite.updates.installationUrl(updateResult);
+    if (!url) { event.preventDefault(); cancelUpdate(); updateStatus.textContent = 'Check for updates again before installing.'; }
+    else install.href = url;
+  };
+  install.addEventListener('click', validateInstall);
+  install.addEventListener('auxclick', validateInstall);
+  install.addEventListener('contextmenu', validateInstall);
+  function sourceChanged(event) {
+    if (event.key !== null && event.key !== suite.updates.key) return;
+    const hasDraft = source.value !== sourceBaseline;
+    cancelUpdate(); latest.textContent = 'Latest version: Not checked';
+    const result = suite.updates.readSource();
+    if (!hasDraft && result.ok) source.value = result.url;
+    sourceBaseline = result.ok ? result.url : '';
+    updateStatus.textContent = result.ok ? 'The release source changed in another window. Check again before installing.' : result.error;
+  }
+  for (const section of [marker, updates]) {
+    section.addEventListener('input', event => event.stopPropagation());
+    section.addEventListener('change', event => event.stopPropagation());
+  }
+  return {
+    open() {
+      opened = true; ++generation; resetMarker(); cancelUpdate();
+      const result = suite.updates.readSource(); source.value = sourceBaseline = result.ok ? result.url : '';
+      unsubscribeStorage?.();
+      if (suite.storage?.subscribe) unsubscribeStorage = suite.storage.subscribe(sourceChanged);
+      else {
+        window.addEventListener('storage', sourceChanged);
+        unsubscribeStorage = () => window.removeEventListener('storage', sourceChanged);
+      }
+      updateStatus.textContent = result.ok ? '' : result.error; latest.textContent = 'Latest version: Not checked';
+    },
+    close() { opened = false; ++generation; cancelUpdate(); unsubscribeStorage?.(); unsubscribeStorage = null; markerDraft = null; markerPreparing = false; file.value = ''; preview.removeAttribute('src'); },
+    selectTab(id) { if (id !== 'credits') { cancelUpdate(); if (updateStatus.textContent === 'Checking for updates…') updateStatus.textContent = ''; } },
+  };
+},
+  };
+  suite.channelLookup = (function createChannelLookup({ fetch, origin = 'https://www.youtube.com', now = () => Date.now(), timeoutMs = 12000, maximumBytes = 4 * 1024 * 1024 } = {}) {
+  const canonicalOrigin = 'https://www.youtube.com';
+  const idPattern = /^UC[A-Za-z0-9_-]{22}$/;
+  const cache = new Map(), active = new Set();
+  let verified = new WeakMap(), generation = 0;
+  const timeout = Number.isInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 30000 ? timeoutMs : 12000;
+  const byteLimit = Number.isInteger(maximumBytes) && maximumBytes >= 1024 && maximumBytes <= 4 * 1024 * 1024 ? maximumBytes : 4 * 1024 * 1024;
+  const label = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100) : '';
+  const failed = (code, error) => ({ ok:false,code,error });
+
+  function candidateUrl(value) {
+    if (typeof value !== 'string' || value.length > 1024) return null;
+    try {
+      const url = new URL(value, canonicalOrigin);
+      if (origin !== canonicalOrigin || url.origin !== canonicalOrigin || url.username || url.password || url.search || url.hash) return null;
+      const match = /^\/@([^/]+)\/?$/.exec(url.pathname);
+      if (!match) return null;
+      const handle = decodeURIComponent(match[1]);
+      if (!handle || handle.length > 100 || /[\s\u0000-\u001f\u007f<>?&#%/\\@]/u.test(handle)) return null;
+      return { handle:`@${handle}`,url:`${canonicalOrigin}/@${encodeURIComponent(handle)}` };
+    } catch { return null; }
+  }
+
+  function sameHandle(left, right) {
+    return left.normalize('NFC').toLowerCase() === right.normalize('NFC').toLowerCase();
+  }
+
+  function finalUrl(value, candidate) {
+    try {
+      const url = new URL(value);
+      if (url.origin !== canonicalOrigin || url.username || url.password || url.hash ||
+          [...url.searchParams].some(([key,value]) => !['cbrd','ucbcb'].includes(key) || value !== '1')) return null;
+      const channel = /^\/channel\/(UC[A-Za-z0-9_-]{22})\/?$/.exec(url.pathname);
+      if (channel) return { channelId:channel[1] };
+      url.search = '';
+      const handle = candidateUrl(url.href);
+      return handle && sameHandle(handle.handle, candidate.handle) ? {} : null;
+    } catch { return null; }
+  }
+
+  function decodeAttribute(value) {
+    return value.replace(/&(?:amp|quot|apos|lt|gt|#\d{1,7}|#x[0-9a-f]{1,6});/gi, entity => {
+      const named = { '&amp;':'&','&quot;':'"','&apos;':"'",'&lt;':'<','&gt;':'>' }[entity.toLowerCase()];
+      if (named !== undefined) return named;
+      const number = entity[2].toLowerCase() === 'x' ? parseInt(entity.slice(3,-1),16) : Number(entity.slice(2,-1));
+      return Number.isInteger(number) && number > 0 && number <= 0x10ffff && !(number >= 0xd800 && number <= 0xdfff)
+        ? String.fromCodePoint(number) : '';
+    });
+  }
+
+  function attributes(tag) {
+    const result = new Map();
+    const pattern = /([^\s=<>"']+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+    let match;
+    while ((match = pattern.exec(tag))) {
+      const name = match[1].toLowerCase();
+      if (result.has(name)) return null;
+      result.set(name,decodeAttribute(match[2] ?? match[3] ?? match[4]));
+    }
+    return result;
+  }
+
+  function headIdentity(html, add) {
+    const start = html.search(/<head(?:\s|>)/i);
+    if (start < 0) return { name:'' };
+    const close = html.indexOf('</head', start);
+    const head = html.slice(start, Math.min(close < 0 ? html.length : close, start + 768 * 1024));
+    let cursor = 0, name = '';
+    while (cursor < head.length) {
+      const at = head.indexOf('<', cursor);
+      if (at < 0) break;
+      if (head.startsWith('<!--', at)) { const end = head.indexOf('-->',at + 4); cursor = end < 0 ? head.length : end + 3; continue; }
+      const opening = /^<\s*(script|style)\b/i.exec(head.slice(at, at + 16));
+      if (opening) {
+        const pattern = new RegExp('</' + opening[1] + '\\s*>','ig'); pattern.lastIndex = at;
+        const end = pattern.exec(head); cursor = end ? pattern.lastIndex : head.length; continue;
+      }
+      let end = at + 1, quote = '';
+      for (; end < head.length && end - at <= 8192; end++) {
+        const character = head[end];
+        if (quote) { if (character === quote) quote = ''; }
+        else if (character === '"' || character === "'") quote = character;
+        else if (character === '>') break;
+      }
+      cursor = end + 1;
+      if (end >= head.length || end - at > 8192) continue;
+      const tag = head.slice(at,end + 1), type = /^<\s*(meta|link)\b/i.exec(tag)?.[1].toLowerCase();
+      if (!type) continue;
+      const attrs = attributes(tag);
+      if (!attrs) continue;
+      if (type === 'link' && attrs.get('rel')?.toLowerCase() === 'canonical') add(attrs.get('href'), 'canonical');
+      if (type === 'meta') {
+        const property = attrs.get('itemprop')?.toLowerCase();
+        if (property === 'identifier' || property === 'channelid') add(attrs.get('content'),'identifier');
+        if (attrs.get('property')?.toLowerCase() === 'og:url') add(attrs.get('content'),'canonical');
+        if (attrs.get('property')?.toLowerCase() === 'og:title') name = label(attrs.get('content'));
+      }
+    }
+    return { name };
+  }
+
+  function initialData(html) {
+    const pattern = /(?:\bvar\s+)?\bytInitialData\s*=\s*|window\s*\[\s*["']ytInitialData["']\s*\]\s*=\s*/g;
+    const values = [];
+    let match, attempts = 0;
+    while ((match = pattern.exec(html)) && attempts++ < 8) {
+      let start = pattern.lastIndex;
+      while (/\s/.test(html[start] || '') && start < html.length) start++;
+      if (html[start] !== '{') continue;
+      let depth = 0, quoted = false, escaped = false;
+      for (let index = start; index < html.length; index++) {
+        const character = html[index];
+        if (quoted) {
+          if (escaped) escaped = false;
+          else if (character === '\\') escaped = true;
+          else if (character === '"') quoted = false;
+        } else if (character === '"') quoted = true;
+        else if (character === '{' || character === '[') { if (++depth > 128) break; }
+        else if (character === '}' || character === ']') {
+          if (--depth === 0) {
+            try { const value = JSON.parse(html.slice(start,index + 1)); if (value && typeof value === 'object') values.push(value); } catch { /* Unsupported native data stays unavailable. */ }
+            pattern.lastIndex = index + 1; break;
+          }
+        }
+      }
+    }
+    return values;
+  }
+
+  function parseIdentity(html, candidate, final) {
+    const ids = new Set();
+    let conflict = false, name = '';
+    function add(value, kind) {
+      if (typeof value !== 'string') return;
+      if (idPattern.test(value)) { ids.add(value); return; }
+      try {
+        const url = new URL(value, canonicalOrigin);
+        // YouTube's own channelMetadataRenderer still emits an http vanity
+        // URL. It is identity text only: upgrade it locally and never request it.
+        if (kind === 'canonical' && url.protocol === 'http:' && url.hostname === 'www.youtube.com' && !url.port && !url.username && !url.password) url.protocol = 'https:';
+        const id = url.origin === canonicalOrigin && !url.username && !url.password && !url.search && !url.hash
+          ? /^\/channel\/(UC[A-Za-z0-9_-]{22})\/?$/.exec(url.pathname)?.[1] : null;
+        if (id) { ids.add(id); return; }
+        const handle = candidateUrl(url.href);
+        if (kind === 'canonical' && (!handle || !sameHandle(handle.handle,candidate.handle))) conflict = true;
+      } catch { if (kind === 'canonical') conflict = true; }
+    }
+    if (final.channelId) ids.add(final.channelId);
+    const head = headIdentity(html,add); name = head.name;
+    for (const value of initialData(html)) {
+      const metadata = value.metadata?.channelMetadataRenderer;
+      if (!metadata || typeof metadata !== 'object') continue;
+      add(metadata.externalId,'identifier');
+      if (metadata.channelUrl) add(metadata.channelUrl,'canonical');
+      if (metadata.vanityChannelUrl) add(metadata.vanityChannelUrl,'canonical');
+      name = label(metadata.title) || name;
+    }
+    if (conflict || ids.size > 1) return failed('conflict','YouTube returned conflicting channel identities. Open the channel directly and try again.');
+    if (ids.size !== 1) return failed('not-found','The public channel page did not expose a verified channel ID. You can add its permanent channel URL manually.');
+    return { ok:true,channel:{ channelId:[...ids][0],name:name || candidate.name || candidate.handle,handle:candidate.handle,url:candidate.url } };
+  }
+
+  function abortable(promise, signal) {
+    if (signal.aborted) return Promise.reject(new Error('aborted'));
+    return new Promise((resolve,reject) => {
+      const abort = () => { cleanup(); reject(new Error('aborted')); };
+      const cleanup = () => signal.removeEventListener('abort',abort);
+      signal.addEventListener('abort',abort,{ once:true });
+      Promise.resolve(promise).then(value => { cleanup(); resolve(value); },error => { cleanup(); reject(error); });
+    });
+  }
+
+  async function bodyText(response, signal) {
+    const declared = response.headers?.get?.('content-length');
+    if (declared && (!/^\d+$/.test(declared) || Number(declared) > byteLimit)) throw new Error('size');
+    if (!response.body?.getReader) throw new Error('stream');
+    const reader = response.body.getReader(), decoder = new TextDecoder('utf-8',{ fatal:true });
+    let bytes = 0, text = '';
+    try {
+      for (;;) {
+        const chunk = await abortable(reader.read(),signal);
+        if (chunk.done) break;
+        if (!ArrayBuffer.isView(chunk.value) || chunk.value.BYTES_PER_ELEMENT !== 1) throw new Error('stream');
+        if ((bytes += chunk.value.byteLength) > byteLimit) throw new Error('size');
+        text += decoder.decode(chunk.value,{ stream:true });
+      }
+      return text + decoder.decode();
+    } finally {
+      try { Promise.resolve(reader.cancel()).catch(() => {}); } catch { /* An aborted body is already closed. */ }
+      try { reader.releaseLock(); } catch { /* A test or aborted reader may be unavailable. */ }
+    }
+  }
+
+  function resultFor(channel, candidate, expires) {
+    const result = Object.freeze({ ...channel,name:label(channel.name) || candidate.name || candidate.handle,handle:candidate.handle,url:candidate.url });
+    verified.set(result,{ url:candidate.url,expires,generation });
+    return { ok:true,channel:result };
+  }
+
+  async function lookup(input, { signal } = {}) {
+    const candidate = candidateUrl(input?.url);
+    if (!candidate || (input.handle !== undefined && input.handle !== candidate.handle) || typeof fetch !== 'function') return failed('invalid','Choose a creator handle from this video before looking up its channel.');
+    candidate.name = label(input.name);
+    if (signal?.aborted) return failed('cancelled','Channel lookup cancelled.');
+    const timestamp = Number(now()), cached = cache.get(candidate.url);
+    if (cached && Number.isFinite(timestamp) && cached.expires > timestamp) return resultFor(cached.channel,candidate,cached.expires);
+    cache.delete(candidate.url);
+    if (active.size >= 4) return failed('busy','Another channel lookup is still finishing. Please try again.');
+    const controller = new AbortController(), requestGeneration = generation;
+    const externalAbort = () => controller.abort();
+    signal?.addEventListener('abort',externalAbort,{ once:true });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); },timeout);
+    active.add(controller);
+    try {
+      // These public-page flags avoid YouTube's cookie-consent redirect. Never
+      // follow a redirect: a renamed or unavailable handle can be opened manually.
+      const response = await abortable(fetch(candidate.url + '?cbrd=1&ucbcb=1',{ method:'GET',credentials:'omit',referrerPolicy:'no-referrer',redirect:'error',signal:controller.signal }),controller.signal);
+      const bound = response && finalUrl(response.url,candidate);
+      const type = response?.headers?.get?.('content-type') || '';
+      if (!response?.ok || !bound || !/^text\/html(?:\s*;|\s*$)/i.test(type)) return failed('unavailable','The public channel page is unavailable or redirected to an unsupported page.');
+      const html = await bodyText(response,controller.signal);
+      if (controller.signal.aborted || generation !== requestGeneration) return failed('cancelled','Channel lookup cancelled.');
+      const parsed = parseIdentity(html,candidate,bound);
+      if (!parsed.ok) return parsed;
+      const expires = Number(now()) + 600000;
+      cache.set(candidate.url,{ channel:parsed.channel,expires });
+      while (cache.size > 32) cache.delete(cache.keys().next().value);
+      return resultFor(parsed.channel,candidate,expires);
+    } catch (error) {
+      if (controller.signal.aborted || generation !== requestGeneration) return failed(timedOut ? 'timeout' : 'cancelled',timedOut ? 'Channel lookup timed out. Please try again.' : 'Channel lookup cancelled.');
+      return failed(error?.message === 'size' ? 'too-large' : 'unavailable',error?.message === 'size'
+        ? 'The channel page exceeded the lookup size limit. Open the channel directly instead.' : 'The public channel page could not be read. Please try again.');
+    } finally { clearTimeout(timer); active.delete(controller); signal?.removeEventListener('abort',externalAbort); }
+  }
+
+  function isVerified(candidate, channel) {
+    const url = candidateUrl(candidate?.url), proof = channel && verified.get(channel);
+    return Boolean(url && proof && proof.generation === generation && proof.url === url.url && proof.expires > Number(now()) && idPattern.test(channel.channelId));
+  }
+
+  function clear() {
+    generation++; cache.clear(); verified = new WeakMap();
+    for (const controller of active) controller.abort();
+  }
+
+  return Object.freeze({ lookup,isVerified,clear });
+})({ fetch: (...args) => window.fetch(...args), origin: location.origin });
   suite.backup = (function createSuiteBackup(getStorage, settings, channelAge) {
   const format = "youtube-master-suite-backup";
   const channelFormat = "youtube-master-suite-channel-filters";
@@ -3108,9 +5592,11 @@
   // Older version 1 backups gain defaults for these newer preferences only.
   // Keep every pre-existing field required and validate optional fields if present.
   const requiredSettingNames = settingNames.filter(name =>
+    !settings.features?.some(feature => feature.key === name) &&
     name !== "hideFullscreenQuickActions" && name !== "liveChatButton" &&
     name !== "hideLiveVideos" && name !== "hideUpcomingStreams" && name !== "timelinePreviewSize" &&
-    name !== "keepHoverPreviews" && name !== "timeDisplayMode");
+    name !== "keepHoverPreviews" && name !== "timeDisplayMode" &&
+    name !== "miniplayerSizeMode" && name !== "miniplayerWidth" && name !== "menuLayout");
   const ruleNames = ["channelId", "name", "maxAge", "unit", "enabled", "blocked"];
   const previews = new WeakMap();
   const channelPreviews = new WeakMap();
@@ -3136,8 +5622,15 @@
       // This exact earlier default is a supported preference migration, not a
       // malformed custom order. Keep all other normalisation failures rejected.
       if (name === "menuItemOrder" && settings.isPreviousDefaultMenuOrder(input[name])) continue;
+      // A submenu node's field order is immaterial; sibling array order is
+      // preserved by the strict layout validator and remains significant.
+      if (name === "menuLayout") {
+        if (!settings.isValidMenuLayout(input[name])) fail("The backup contains an invalid video menu layout.");
+        continue;
+      }
       if (!same(input[name], values[name])) fail(`The backup contains an invalid setting: ${name}.`);
     }
+    if (JSON.stringify({ version: 1, values }).length > 8192) fail("The video menu layout makes these settings too large to restore safely.");
     return values;
   }
 
@@ -3398,7 +5891,7 @@
   }
 
   return Object.freeze({ exportData, preview, restore, exportChannels, previewChannels, restoreChannels });
-})(() => window.localStorage, suite.settings, suite.channelAge);
+})(() => storage, suite.settings, suite.channelAge);
   suite.support = (function createSuiteSupport(document, version, moduleIds) {
   const knownModules = ['commentCleaner', 'feedUiCleaner', 'miniplayerButtonRestorer', 'pageCoherence',
     'playerPreferencesLite', 'scrollMiniplayer', 'suiteSettings', 'watchLayoutCleaner'];
@@ -3479,12 +5972,1775 @@
   }
   return Object.freeze({ snapshot, report: () => JSON.stringify(snapshot(), null, 2) });
 })(document, MASTER_VERSION, STYLE_ORDER);
+  suite.playheadMarker = (function createPlayheadMarker({ document, window, getStorage, subscribeStorage }) {
+  const key = 'yt-master-suite.playhead-image.v1';
+  const defaultSize = 24, maxFileBytes = 2 * 1024 * 1024, maxDataLength = 40000;
+  const markerAttribute = 'data-ytms-playhead-marker';
+  const markerClass = 'ytms-playhead-marker';
+  const styleId = 'ytms-playhead-marker-style';
+  const selector = '[id="movie_player"], .ytp-scrubber-container, .ytp-scrubber-button';
+  let started = false, disposed = false, navigationPending = false, pageSuspended = false, frame = 0;
+  let current = null, record = null, style = null, unrenderableData = null;
+  let discoveryTimer = 0, discoveryExpired = false;
+  const playbackPage = () => window.location.pathname === '/watch' || /^\/live\/[^/]+\/?$/.test(window.location.pathname);
+  const failure = error => ({ ok: false, error });
+  function validSize(value) { return Number.isInteger(value) && value >= 16 && value <= 40; }
+  function pngDimensions(bytes) {
+    if (bytes.length < 33 || ![137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v) ||
+        String.fromCharCode(...bytes.subarray(12, 16)) !== 'IHDR') return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(8) !== 13) return null;
+    return { width: view.getUint32(16), height: view.getUint32(20), type: 'image/png' };
+  }
+  function fileDimensions(bytes) {
+    const png = pngDimensions(bytes);
+    if (png) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let offset = 8;
+      while (offset + 12 <= bytes.length) {
+        const length = view.getUint32(offset), end = offset + 12 + length;
+        if (end > bytes.length) return null;
+        const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+        if (type === 'acTL') return null;
+        if (type === 'IEND') return end === bytes.length ? png : null;
+        offset = end;
+      }
+      return null;
+    }
+    if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 3 < bytes.length) {
+        if (bytes[offset++] !== 0xff) return null;
+        while (bytes[offset] === 0xff) offset++;
+        const marker = bytes[offset++];
+        if (marker === 0xd9 || marker === 0xda) return null;
+        if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+        if (offset + 2 > bytes.length) return null;
+        const length = bytes[offset] * 256 + bytes[offset + 1];
+        if (length < 2 || offset + length > bytes.length) return null;
+        if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+          if (length < 8) return null;
+          return { width: bytes[offset + 5] * 256 + bytes[offset + 6],
+            height: bytes[offset + 3] * 256 + bytes[offset + 4], type: 'image/jpeg' };
+        }
+        offset += length;
+      }
+    }
+    const text = (offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length));
+    if (bytes.length >= 30 && text(0, 4) === 'RIFF' && text(8, 4) === 'WEBP') {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (view.getUint32(4, true) + 8 > bytes.length) return null;
+      const u24 = offset => bytes[offset] + bytes[offset + 1] * 256 + bytes[offset + 2] * 65536;
+      let offset = 12;
+      while (offset + 8 <= bytes.length) {
+        const type = text(offset, 4), length = view.getUint32(offset + 4, true), data = offset + 8;
+        if (data + length > bytes.length) return null;
+        if (type === 'VP8X' && length >= 10) {
+          if (bytes[data] & 2) return null; // Keep the marker static.
+          return { width: u24(data + 4) + 1, height: u24(data + 7) + 1, type: 'image/webp' };
+        }
+        if (type === 'VP8L' && length >= 5 && bytes[data] === 0x2f) {
+          const bits = view.getUint32(data + 1, true);
+          return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1, type: 'image/webp' };
+        }
+        if (type === 'VP8 ' && length >= 10 && text(data + 3, 3) === '\u009d\u0001*') {
+          return { width: view.getUint16(data + 6, true) & 0x3fff,
+            height: view.getUint16(data + 8, true) & 0x3fff, type: 'image/webp' };
+        }
+        offset = data + length + (length % 2);
+      }
+    }
+    return null;
+  }
+  function normalisePngDataUrl(value) {
+    if (typeof value !== 'string' || value.length > maxDataLength ||
+        !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+    try {
+      const binary = window.atob(value.slice(22));
+      const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+      const dimensions = pngDimensions(bytes);
+      if (!dimensions || !dimensions.width || !dimensions.height || dimensions.width > 64 || dimensions.height > 64) return null;
+      const view = new DataView(bytes.buffer), parts = [bytes.subarray(0, 8)];
+      let offset = 8, ended = false, hasImage = false;
+      while (offset + 12 <= bytes.length) {
+        const length = view.getUint32(offset), end = offset + length + 12;
+        if (end > bytes.length) return null;
+        const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+        if (['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND'].includes(type)) parts.push(bytes.subarray(offset, end));
+        else if (type[0] === type[0].toUpperCase()) return null;
+        if (type === 'IDAT') hasImage = true;
+        offset = end;
+        if (type === 'IEND') { ended = true; break; }
+      }
+      if (!ended || !hasImage || offset !== bytes.length) return null;
+      // Canvas PNG writers can add ancillary debug/resolution chunks. Retain
+      // encoded pixels and transparency only, never original image metadata.
+      const encoded = parts.map(part => String.fromCharCode(...part)).join('');
+      return `data:image/png;base64,${window.btoa(encoded)}`;
+    } catch { return null; }
+  }
+  function validDataUrl(value) { return typeof value === 'string' && normalisePngDataUrl(value) === value; }
+  function checkedValue(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.keys(value).some(name => name !== 'dataUrl' && name !== 'size') ||
+        !validDataUrl(value.dataUrl) || !validSize(value.size)) return null;
+    return { dataUrl: value.dataUrl, size: value.size };
+  }
+  function parse(raw) {
+    if (raw === null) return { ok: true, value: null };
+    if (typeof raw !== 'string' || raw.length > maxDataLength + 100) return failure('Saved marker data is incompatible or damaged. Nothing was overwritten.');
+    try {
+      const stored = JSON.parse(raw);
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored) || stored.version !== 1 ||
+          Object.keys(stored).some(name => !['version', 'dataUrl', 'size'].includes(name))) throw new Error();
+      const value = checkedValue({ dataUrl: stored.dataUrl, size: stored.size });
+      if (!value) throw new Error();
+      return { ok: true, value };
+    } catch { return failure('Saved marker data is incompatible or damaged. Nothing was overwritten.'); }
+  }
+  function read() {
+    try { return parse(getStorage().getItem(key)); }
+    catch { return failure('The marker could not be read. Browser storage is unavailable.'); }
+  }
+  async function prepareFile(file) {
+    if (!file || typeof file.arrayBuffer !== 'function' || !Number.isInteger(file.size) || file.size <= 0 || file.size > maxFileBytes) {
+      return failure('Choose a PNG, JPEG or WebP image no larger than 2 MB.');
+    }
+    let bitmap;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!bytes.length || bytes.length !== file.size || bytes.length > maxFileBytes) return failure('The image could not be read.');
+      const dimensions = fileDimensions(bytes);
+      if (!dimensions || !dimensions.width || !dimensions.height || dimensions.width > 4096 || dimensions.height > 4096 ||
+          (file.type && file.type !== dimensions.type)) return failure('Choose a static PNG, JPEG or WebP image no larger than 4096 × 4096 pixels.');
+      if (typeof window.createImageBitmap !== 'function') return failure('This browser cannot prepare marker images.');
+      bitmap = await window.createImageBitmap(new window.Blob([bytes], { type: dimensions.type }));
+      if (!bitmap.width || !bitmap.height || bitmap.width > 4096 || bitmap.height > 4096) return failure('The image dimensions are unsupported.');
+      const factor = Math.min(1, 64 / bitmap.width, 64 / bitmap.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bitmap.width * factor));
+      canvas.height = Math.max(1, Math.round(bitmap.height * factor));
+      const context = canvas.getContext('2d');
+      if (!context) return failure('This browser cannot prepare marker images.');
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const dataUrl = normalisePngDataUrl(canvas.toDataURL('image/png'));
+      if (!dataUrl) return failure('The prepared image is too large or unsupported.');
+      return { ok: true, value: { dataUrl, size: defaultSize } };
+    } catch { return failure('The image could not be decoded. Choose a different PNG, JPEG or WebP file.'); }
+    finally { bitmap?.close?.(); }
+  }
+  function save(value) {
+    const checked = checkedValue(value);
+    if (!checked) return failure('Choose a valid image and a marker size from 16 to 40 pixels.');
+    try {
+      const storage = getStorage(), existing = parse(storage.getItem(key));
+      if (!existing.ok) return existing;
+      storage.setItem(key, JSON.stringify({ version: 1, ...checked }));
+      current = checked; unrenderableData = null; reconcileRuntime();
+      return { ok: true, value: { ...checked } };
+    } catch { return failure('The marker could not be saved. Browser storage is unavailable or full.'); }
+  }
+  function remove() {
+    try {
+      const storage = getStorage(), existing = parse(storage.getItem(key));
+      if (!existing.ok) return existing;
+      storage.removeItem(key); current = null; unrenderableData = null; reconcileRuntime();
+      return { ok: true, value: null };
+    } catch { return failure('The marker could not be removed. Browser storage is unavailable.'); }
+  }
+  function visible(node) {
+    if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
+    const computed = window.getComputedStyle(node);
+    return computed.display !== 'none' && computed.visibility !== 'hidden' && computed.visibility !== 'collapse';
+  }
+  function clearMarker() {
+    if (!record) return;
+    if (record.container.getAttribute(markerAttribute) === '1') record.container.removeAttribute(markerAttribute);
+    record.image.remove(); record = null;
+  }
+  function ensureStyle() {
+    if (style?.isConnected) return;
+    style = document.createElement('style'); style.id = styleId;
+    style.textContent = `[${markerAttribute}="1"] > .ytp-scrubber-button { opacity:0 !important; }
+      .${markerClass} { position:absolute !important; left:50% !important; top:50% !important;
+        transform:translate(-50%,-50%) !important; pointer-events:none !important;
+        object-fit:contain !important; max-width:none !important; max-height:none !important;
+        padding:0 !important; margin:0 !important; border:0 !important; user-select:none !important; }`;
+    (document.head || document.documentElement).append(style);
+  }
+  const treeObserver = new window.MutationObserver(records => {
+    if (records.some(change => [...change.addedNodes, ...change.removedNodes].some(node =>
+      (record?.image === node && node.parentElement !== record.container) ||
+      (node.nodeType === 1 && !node.classList.contains(markerClass) &&
+      (node.matches(selector) || node.querySelector(selector)))))) schedule();
+  });
+  const structureObserver = new window.MutationObserver(() => schedule());
+  const discoveryObserver = new window.MutationObserver(records => {
+    if (records.some(change => [...change.addedNodes].some(node => node.nodeType === 1 &&
+        (node.matches('[id="movie_player"]') || node.querySelector('[id="movie_player"]'))))) schedule();
+  });
+  const attributeObserver = new window.MutationObserver(() => schedule());
+  function stopDiscovery() {
+    discoveryObserver.disconnect();
+    if (discoveryTimer) window.clearTimeout(discoveryTimer);
+    discoveryTimer = 0;
+  }
+  function disconnectObservers() {
+    treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect(); stopDiscovery();
+  }
+  function observePlayers(candidates) {
+    treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect();
+    const observed = new Set();
+    for (const candidate of candidates.slice(0, 8)) {
+      treeObserver.observe(candidate, { childList: true, subtree: true });
+      for (let ancestor = candidate; ancestor; ancestor = ancestor.parentElement) {
+        if (observed.has(ancestor)) continue;
+        structureObserver.observe(ancestor, { childList: true });
+        attributeObserver.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
+        observed.add(ancestor);
+      }
+    }
+    if (candidates.length) { stopDiscovery(); discoveryExpired = false; return; }
+    // While YouTube is building a watch page, follow its structural containers
+    // directly. Comment and feed descendants are never observed in steady state.
+    for (const root of document.querySelectorAll('html, body, ytd-app, ytd-page-manager, ytd-watch-flexy, #columns, #primary, #primary-inner, #player, #single-column-container')) {
+      structureObserver.observe(root, { childList: true });
+    }
+    if (!discoveryExpired && !discoveryTimer && document.documentElement) {
+      discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
+      discoveryTimer = window.setTimeout(() => {
+        discoveryObserver.disconnect(); discoveryTimer = 0; discoveryExpired = true;
+      }, 10000);
+    }
+  }
+  function sync() {
+    frame = 0;
+    if (!started || disposed || pageSuspended || navigationPending || document.hidden || !playbackPage() ||
+        !current || unrenderableData === current.dataUrl) { disconnectObservers(); clearMarker(); return; }
+    const candidates = [...document.querySelectorAll('[id="movie_player"]')];
+    observePlayers(candidates);
+    const players = candidates.filter(player => visible(player) && !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer'));
+    if (players.length !== 1) { clearMarker(); return; }
+    const player = players[0];
+    const containers = [...player.querySelectorAll('.ytp-scrubber-container')].filter(visible);
+    if (player.matches('.ad-showing, .ad-interrupting') || !player.querySelector('video') || containers.length !== 1) { clearMarker(); return; }
+    const container = containers[0], buttons = container.querySelectorAll(':scope > .ytp-scrubber-button');
+    if (buttons.length !== 1 || !container.offsetWidth || !container.offsetHeight ||
+        !container.closest('.ytp-progress-bar, .ytp-progress-bar-container')) { clearMarker(); return; }
+    if (record?.container === container && record.dataUrl === current.dataUrl && record.image.parentElement === container) {
+      if (record.image.width !== current.size) {
+        record.image.width = record.image.height = current.size;
+        record.image.style.setProperty('width', `${current.size}px`, 'important');
+        record.image.style.setProperty('height', `${current.size}px`, 'important');
+      }
+      return;
+    }
+    clearMarker(); ensureStyle();
+    const image = document.createElement('img'); image.className = markerClass;
+    image.alt = ''; image.setAttribute('aria-hidden', 'true'); image.draggable = false;
+    image.width = image.height = current.size;
+    image.style.setProperty('width', `${current.size}px`, 'important');
+    image.style.setProperty('height', `${current.size}px`, 'important');
+    record = { player, container, image, dataUrl: current.dataUrl };
+    const thisRecord = record;
+    image.addEventListener('load', () => {
+      if (record === thisRecord && image.isConnected && current?.dataUrl === thisRecord.dataUrl) {
+        container.setAttribute(markerAttribute, '1');
+      }
+    }, { once: true });
+    image.addEventListener('error', () => {
+      if (record !== thisRecord) return;
+      unrenderableData = thisRecord.dataUrl; clearMarker();
+    }, { once: true });
+    image.src = current.dataUrl; container.append(image);
+  }
+  function schedule() { if (started && !disposed && !pageSuspended && !navigationPending && !document.hidden && !frame) frame = window.requestAnimationFrame(sync); }
+  function reconcileRuntime() {
+    if (!started || disposed) return;
+    const shouldObserve = !!current && !!document.documentElement && playbackPage() && !navigationPending && !pageSuspended && !document.hidden;
+    if (!shouldObserve) {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+      disconnectObservers();
+      clearMarker(); style?.remove(); style = null;
+    }
+    schedule();
+  }
+  function reload() { const saved = read(); current = saved.ok ? saved.value : null; unrenderableData = null; discoveryExpired = false; reconcileRuntime(); }
+  function storage(event) { if (event.key === key || event.key === null) reload(); }
+  function navigateStart() { navigationPending = true; reconcileRuntime(); }
+  function navigateFinish() { navigationPending = false; reload(); }
+  function pageHide() { pageSuspended = true; reconcileRuntime(); }
+  function pageShow() {
+    const restoring = pageSuspended; pageSuspended = false;
+    if (restoring) navigationPending = false;
+    reload();
+  }
+  function visibility() {
+    if (document.hidden) { disconnectObservers(); clearMarker(); }
+    else { discoveryExpired = false; schedule(); }
+  }
+  function pageData() { discoveryExpired = false; schedule(); }
+  const listeners = [];
+  let unsubscribeStorage = null;
+  function listen(target, type, handler) { target.addEventListener(type, handler, true); listeners.push([target, type, handler]); }
+  function start() {
+    if (started || disposed) return;
+    started = true;
+    if (subscribeStorage) unsubscribeStorage = subscribeStorage(storage);
+    else listen(window, 'storage', storage);
+    listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
+    listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
+    listen(window, 'yt-page-data-updated', pageData);
+    listen(document, 'DOMContentLoaded', reload);
+    listen(document, 'visibilitychange', visibility);
+    reload();
+  }
+  function dispose() {
+    disposed = true; started = false;
+    if (frame) window.cancelAnimationFrame(frame);
+    frame = 0; disconnectObservers(); clearMarker(); style?.remove(); style = null;
+    unsubscribeStorage?.(); unsubscribeStorage = null;
+    for (const [target, event, handler] of listeners) target.removeEventListener(event, handler, true);
+    listeners.length = 0;
+  }
+  return Object.freeze({ key, defaultSize, read, prepareFile, save, remove, start, dispose });
+})({ document, window, getStorage: () => storage, subscribeStorage: storage.subscribe });
+  suite.updates = (function createSuiteUpdates({
+  getStorage,
+  fetch: fetchRequest = globalThis.fetch?.bind(globalThis),
+  installedVersion,
+  defaultSourceUrl = '',
+  setTimeout: startTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+  clearTimeout: stopTimer = timer => globalThis.clearTimeout(timer),
+  AbortController: AbortControllerType = globalThis.AbortController,
+  now = () => Date.now(),
+  timeoutMs = 10000,
+} = {}) {
+  const key = 'yt-master-suite.update-source.v1';
+  const scriptName = 'youtube-master-suite.user.js';
+  const manifestName = 'release-manifest.json';
+  const sourceLimit = 2048;
+  const scriptLimit = 8 * 1024 * 1024;
+  const checkLifetime = 10 * 60 * 1000;
+  const deadlineMs = Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30000 ? timeoutMs : 10000;
+  let active = null;
+  let results = new WeakMap();
+
+  function failure(error, extra = {}) { return { ok: false, error, ...extra }; }
+  function fail(message) { throw new Error(message); }
+  function versionParts(value) {
+    if (typeof value !== 'string' || value.length > 64 || !/^\d+(?:\.\d+){1,7}$/.test(value)) return null;
+    const parts = value.split('.').map(Number);
+    return parts.every(part => Number.isSafeInteger(part) && part >= 0) ? parts : null;
+  }
+  function compareVersions(left, right) {
+    const a = versionParts(left), b = versionParts(right);
+    if (!a || !b) fail('The update source contains an unsupported version.');
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+      if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) > (b[index] || 0) ? 1 : -1;
+    }
+    return 0;
+  }
+  function cleanUrl(value) {
+    if (typeof value !== 'string' || !value.trim() || value.trim().length > sourceLimit) return null;
+    try {
+      const input = value.trim();
+      if (/[\u0000-\u0020\u007f?#]/.test(input) || /^https:\/\/[^/]*@/i.test(input)) return null;
+      const url = new URL(input);
+      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return null;
+      return url;
+    } catch { return null; }
+  }
+  function sourceDetails(value) {
+    const url = cleanUrl(value);
+    if (!url) return null;
+    if (url.hostname === 'github.com' && !url.port) {
+      const path = url.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/releases(?:\/latest)?\/?$/);
+      if (!path || path[2] === '.' || path[2] === '..') return null;
+      const [, owner, repository] = path;
+      return { type: 'github', url: `https://github.com/${owner}/${repository}/releases/latest`, owner, repository,
+        requestUrl: `https://api.github.com/repos/${owner}/${repository}/releases/latest` };
+    }
+    if (!url.pathname.endsWith(`/${manifestName}`)) return null;
+    return { type: 'manifest', url: url.href, requestUrl: url.href };
+  }
+  const defaultSource = sourceDetails(defaultSourceUrl);
+  function readRecord() {
+    const raw = getStorage().getItem(key);
+    if (raw === null) return { raw, url: defaultSource?.url || '', details: defaultSource };
+    if (typeof raw !== 'string' || raw.length > sourceLimit + 100) fail('The saved update source is incompatible or damaged. It was left unchanged.');
+    let record;
+    try { record = JSON.parse(raw); } catch { fail('The saved update source is incompatible or damaged. It was left unchanged.'); }
+    if (!record || typeof record !== 'object' || Array.isArray(record) ||
+        Object.keys(record).length !== 2 || !Object.hasOwn(record, 'version') || !Object.hasOwn(record, 'url') || record.version !== 1) {
+      fail('The saved update source is incompatible or damaged. It was left unchanged.');
+    }
+    const details = sourceDetails(record.url);
+    if (!details || details.url !== record.url) fail('The saved update source is incompatible or damaged. It was left unchanged.');
+    return { raw, url: details.url, details };
+  }
+  function readSource() {
+    try { const record = readRecord(); return { ok: true, url: record.url }; }
+    catch { return failure('The saved update source is unavailable, incompatible or damaged. It was left unchanged.', { url: '' }); }
+  }
+  function cancel() {
+    results = new WeakMap();
+    const previous = active;
+    active = null;
+    if (previous) {
+      previous.cancelled = true;
+      previous.controller?.abort();
+      previous.rejectCancel?.(new Error('cancelled'));
+    }
+  }
+  function saveSource(value) {
+    cancel();
+    const empty = typeof value === 'string' && !value.trim();
+    const details = empty ? null : sourceDetails(value);
+    if (!empty && !details) return failure('Use a public GitHub Releases URL or an HTTPS release-manifest.json URL without credentials, query parameters or a fragment.');
+    let storage, previous, desired;
+    let attempted = false;
+    try {
+      storage = getStorage();
+      previous = readRecord().raw;
+      desired = details ? JSON.stringify({ version: 1, url: details.url }) : null;
+      if (storage.getItem(key) !== previous) return failure('The saved update source changed. Review it and try again.', { conflict: true });
+      if (desired !== previous) {
+        attempted = true;
+        if (desired === null) storage.removeItem(key);
+        else storage.setItem(key, desired);
+      }
+      if (storage.getItem(key) !== desired) fail('Update source was not retained');
+      return { ok: true, url: details?.url || defaultSource?.url || '' };
+    } catch {
+      // Only recover this operation's own partial value; a newer source wins.
+      if (attempted) try {
+        if (storage.getItem(key) === desired) {
+          if (previous === null) storage.removeItem(key);
+          else storage.setItem(key, previous);
+        }
+      } catch { /* The error remains explicit when browser storage is unavailable. */ }
+      return failure('The update source could not be saved. Existing incompatible data was not replaced; browser storage may be unavailable.');
+    }
+  }
+  async function readJson(response, limit) {
+    const length = response.headers?.get?.('content-length');
+    if (length && (!/^\d+$/.test(length) || Number(length) > limit)) fail('The update response is too large.');
+    if (!response.body?.getReader) fail('The update source returned no readable metadata.');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let bytes = 0, text = '';
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (!(chunk.value instanceof Uint8Array)) fail('The update source returned unreadable metadata.');
+        bytes += chunk.value.byteLength;
+        if (bytes > limit) fail('The update response is too large.');
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      try { return JSON.parse(text); }
+      catch { fail('The update source returned invalid JSON metadata.'); }
+    } catch (error) {
+      try { await reader.cancel(); } catch { /* The request may already be closed. */ }
+      throw error;
+    } finally { try { reader.releaseLock(); } catch { /* Already released by a failed response. */ } }
+  }
+  function scriptSize(value) { return Number.isSafeInteger(value) && value > 0 && value <= scriptLimit; }
+  function checkedManifest(record, source) {
+    const fields = ['schemaVersion', 'name', 'version', 'source', 'sha256', 'bytes', 'characters', 'registeredModules'];
+    if (!record || typeof record !== 'object' || Array.isArray(record) ||
+        Object.keys(record).length !== fields.length || fields.some(field => !Object.hasOwn(record, field)) ||
+        record.schemaVersion !== 1 || record.name !== 'YouTube Master Suite' || !versionParts(record.version) ||
+        record.source !== scriptName || !/^[0-9a-f]{64}$/.test(record.sha256) || !scriptSize(record.bytes) ||
+        !Number.isSafeInteger(record.characters) || record.characters <= 0 || record.characters > record.bytes ||
+        !Number.isInteger(record.registeredModules) || record.registeredModules < 1 || record.registeredModules > 64) {
+      fail('The update source returned an incompatible release manifest.');
+    }
+    const install = new URL(record.source, source.url);
+    if (install.origin !== new URL(source.url).origin) fail('The update source changed the installation origin.');
+    return { version: record.version, sha256: record.sha256, bytes: record.bytes, installUrl: install.href };
+  }
+  function checkedGithub(record, source) {
+    if (!record || typeof record !== 'object' || Array.isArray(record) || record.draft !== false ||
+        record.prerelease !== false || typeof record.published_at !== 'string' || record.published_at.length > 40 ||
+        !Number.isFinite(Date.parse(record.published_at)) || typeof record.tag_name !== 'string' ||
+        !record.tag_name.startsWith('v') || !versionParts(record.tag_name.slice(1)) ||
+        !Array.isArray(record.assets) || record.assets.length > 100) {
+      fail('The update source returned an incompatible stable release.');
+    }
+    const matches = record.assets.filter(asset => asset?.name === scriptName);
+    if (matches.length !== 1) fail('The release must contain exactly one uploaded Suite userscript.');
+    const asset = matches[0];
+    if (asset.state !== 'uploaded' || !scriptSize(asset.size) || typeof asset.digest !== 'string' ||
+        !/^sha256:[0-9a-f]{64}$/.test(asset.digest)) fail('The release userscript has no valid size and SHA-256 metadata.');
+    const install = cleanUrl(asset.browser_download_url);
+    const parts = install?.pathname.split('/').slice(1);
+    if (!install || install.origin !== 'https://github.com' || parts.length !== 6 ||
+        parts[0].toLowerCase() !== source.owner.toLowerCase() || parts[1].toLowerCase() !== source.repository.toLowerCase() ||
+        parts[2] !== 'releases' || parts[3] !== 'download' || parts[4] !== record.tag_name || parts[5] !== scriptName) {
+      fail('The release userscript changed the approved repository or download path.');
+    }
+    return { version: record.tag_name.slice(1), sha256: asset.digest.slice(7), bytes: asset.size, installUrl: install.href };
+  }
+  async function fetchRelease(source, controller) {
+    const response = await fetchRequest(source.requestUrl, { method: 'GET', credentials: 'omit', cache: 'no-store',
+      referrerPolicy: 'no-referrer', redirect: 'follow', signal: controller.signal,
+      headers: { Accept: source.type === 'github' ? 'application/vnd.github+json' : 'application/json' } });
+    if (!response?.ok) {
+      if (response?.status === 403 || response?.status === 429) fail('The update service is rate-limited. Try again later.');
+      if (response?.status === 404) fail('No public stable release was found at this update source.');
+      fail('The update source did not return release metadata.');
+    }
+    // Never store or use a CDN redirect URL as the installation target.
+    if (response.url && new URL(response.url).protocol !== 'https:') fail('The update source redirected to an insecure location.');
+    const record = await readJson(response, source.type === 'github' ? 128 * 1024 : 16 * 1024);
+    return source.type === 'github' ? checkedGithub(record, source) : checkedManifest(record, source);
+  }
+  async function check() {
+    cancel();
+    if (!versionParts(installedVersion)) return failure('The installed Suite version is unsupported.');
+    if (typeof fetchRequest !== 'function' || typeof AbortControllerType !== 'function') return failure('This browser cannot check the update source.');
+    let source;
+    try { source = readRecord(); }
+    catch { return failure('The saved update source is unavailable, incompatible or damaged. It was left unchanged.'); }
+    if (!source.details) return failure('Save a release source URL before checking for updates.');
+    const request = { controller: new AbortControllerType(), cancelled: false, timedOut: false };
+    active = request;
+    let timer;
+    try {
+      const stopped = new Promise((resolve, reject) => { request.rejectCancel = reject; });
+      timer = startTimer(() => {
+        request.timedOut = true;
+        request.controller.abort();
+        request.rejectCancel?.(new Error('timeout'));
+      }, deadlineMs);
+      const release = await Promise.race([fetchRelease(source.details, request.controller), stopped]);
+      if (active !== request || request.cancelled) return failure('The update check was cancelled.', { cancelled: true });
+      if (getStorage().getItem(key) !== source.raw) return failure('The update source changed during the check. Check again.', { conflict: true });
+      const compared = compareVersions(release.version, installedVersion);
+      const result = Object.freeze({ ok: true, status: compared > 0 ? 'newer' : compared < 0 ? 'older' : 'current',
+        installedVersion, latestVersion: release.version, sha256: release.sha256, bytes: release.bytes });
+      results.set(result, { raw: source.raw, url: release.installUrl, expires: now() + checkLifetime });
+      return result;
+    } catch (error) {
+      if (request.cancelled || active !== request) return failure('The update check was cancelled.', { cancelled: true });
+      if (request.timedOut) return failure('The update check timed out. Try again.');
+      // Response and validation errors are fixed local messages. Network errors
+      // can contain private URLs, so never reproduce their browser-provided text.
+      const approved = ['The update response is too large.', 'The update source returned no readable metadata.',
+        'The update source returned unreadable metadata.', 'The update source returned invalid JSON metadata.',
+        'The update source returned an incompatible release manifest.',
+        'The update source returned an incompatible stable release.', 'The release must contain exactly one uploaded Suite userscript.',
+        'The release userscript has no valid size and SHA-256 metadata.', 'The release userscript changed the approved repository or download path.',
+        'The update source changed the installation origin.', 'The update service is rate-limited. Try again later.',
+        'No public stable release was found at this update source.', 'The update source did not return release metadata.',
+        'The update source redirected to an insecure location.', 'The update source contains an unsupported version.'];
+      return failure(approved.includes(error?.message) ? error.message :
+        'The update source could not be read. Check the connection and that its host allows browser requests (CORS).');
+    } finally {
+      if (timer !== undefined) stopTimer(timer);
+      if (active === request) active = null;
+    }
+  }
+  function installationUrl(result) {
+    const checked = result && typeof result === 'object' ? results.get(result) : null;
+    if (!checked || result.status !== 'newer') return null;
+    try {
+      if (now() > checked.expires || getStorage().getItem(key) !== checked.raw) { results.delete(result); return null; }
+      return checked.url;
+    } catch { return null; }
+  }
+  return Object.freeze({ key, readSource, saveSource, check, installationUrl, cancel });
+})({
+    getStorage: () => storage, installedVersion: MASTER_VERSION,
+    defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
+    fetch: (...args) => window.fetch(...args),
+  });
+
+  let nativeQueueLayoutStarted = false;
+  suite.startNativeQueueLayout = () => {
+    if (nativeQueueLayoutStarted) return;
+    nativeQueueLayoutStarted = true;
+    try {
+      (function installCompactNativeQueue({ document, window, enabled = true,
+  MutationObserver = window.MutationObserver, ResizeObserver = window.ResizeObserver, reportError = () => {} }) {
+  if (!enabled || !document || !MutationObserver || !ResizeObserver) return () => {};
+  const hostSelector = 'ytd-miniplayer.ytdMiniplayerComponentHost';
+  const panelSelector = 'ytd-playlist-panel-renderer.ytdMiniplayerComponentPlaylistPanel';
+  const marker = 'data-ytms-compact-native-queue';
+  const panelMarker = 'data-ytms-compact-native-queue-panel';
+  const heightVar = '--ytms-native-queue-host-height', panelVar = '--ytms-native-queue-panel-height';
+  const animationClasses = ['ytdMiniplayerComponentAnimatingSnap',
+    'ytdMiniplayerComponentAnimatingPlaylistExpand', 'ytdMiniplayerComponentAnimatingFade'];
+  let disposed = false, frame = 0, host = null, panel = null, gesture = null, released = false;
+  let nativeSignature = '', resizeTargets = new Set(), sizes = null, style = null;
+  let visibilityObserver = null, visibilityAncestors = [];
+  let suspended = document.hidden, settleTimer = 0, settling = '', settled = '';
+  let clickGuard = null, clickTimer = 0;
+  function ensureStyle() {
+    if (style) return;
+    style = document.createElement('style');
+    style.textContent = `${hostSelector}[${marker}] { height:var(${heightVar}) !important; }
+${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
+ height:var(${panelVar}) !important; min-height:var(${panelVar}) !important;
+ max-height:var(${panelVar}) !important; flex:0 0 var(${panelVar}) !important;
+}`;
+    (document.head || document.documentElement).append(style);
+  }
+
+  function release() {
+    host?.removeAttribute(marker);
+    panel?.removeAttribute(panelMarker);
+  }
+  function clearOwned() {
+    release();
+    host?.style.removeProperty(heightVar);
+    host?.style.removeProperty(panelVar);
+  }
+  function clearSettlement() {
+    if (settleTimer) window.clearTimeout(settleTimer);
+    settleTimer = 0; settling = ''; settled = '';
+  }
+  function clearClickGuard() {
+    if (clickTimer) window.clearTimeout(clickTimer);
+    for (const node of clickGuard?.boundaries || []) node.removeEventListener('click', click, true);
+    clickTimer = 0; clickGuard = null;
+  }
+  function signature(node) {
+    return node ? ['height', 'width', 'top', 'bottom', 'left', 'right', 'transform', 'display', 'opacity']
+      .map(name => node.style.getPropertyValue(name)).join('|') : '';
+  }
+  function visible(node) {
+    if (!node?.isConnected || node.hidden) return false;
+    const box = node.getBoundingClientRect(), css = window.getComputedStyle(node);
+    return box.width > 0 && box.height > 0 && css.display !== 'none' &&
+      css.visibility === 'visible' && Number(css.opacity) > 0;
+  }
+  function animating(node) {
+    const transform = window.getComputedStyle(node).transform;
+    const transformed = transform !== 'none' && transform !== 'matrix(1, 0, 0, 1, 0, 0)' &&
+      transform !== 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)';
+    const classes = animationClasses.filter(name => node.classList.contains(name)).join(' ');
+    if (!classes) { clearSettlement(); return transformed; }
+    const key = `${classes}|${signature(node)}`;
+    if (settling !== key) {
+      clearSettlement(); settling = key;
+      // Native transitions last at most500ms. One bounded follow-up also handles
+      // reduced-motion browsers that retain a class without a transition event.
+      settleTimer = window.setTimeout(() => { settleTimer = 0; settled = key; schedule(); }, 650);
+    }
+    const active = typeof node.getAnimations === 'function' &&
+      node.getAnimations().some(animation => animation.pending || animation.playState === 'running');
+    return transformed || active || settled !== key;
+  }
+  function observeSizes(nodes) {
+    const next = new Set(nodes.filter(Boolean));
+    if (next.size && !sizes) sizes = new ResizeObserver(schedule);
+    for (const node of resizeTargets) if (!next.has(node)) sizes.unobserve(node);
+    for (const node of next) if (!resizeTargets.has(node)) sizes.observe(node);
+    resizeTargets = next;
+  }
+  function observeHiddenAncestors(hidden) {
+    const next = [];
+    if (hidden) for (let node = host?.parentElement; node; node = node.parentElement) next.push(node);
+    if (next.length === visibilityAncestors.length && next.every((node,index) => node === visibilityAncestors[index])) return;
+    visibilityObserver?.disconnect();
+    visibilityAncestors = next;
+    if (!next.length) return;
+    // Keep these non-subtree registrations separate from the shared broker:
+    // merging ancestor attributes with global child discovery would capture
+    // unrelated descendant style changes throughout the page.
+    visibilityObserver ||= new window.MutationObserver(schedule);
+    for (const node of next) visibilityObserver.observe(node,{ attributes:true,
+      attributeFilter:['class','style','hidden','aria-hidden'] });
+  }
+  function adopt(next) {
+    if (host === next) return;
+    clearOwned(); clearSettlement(); clearClickGuard(); details.disconnect(); observeSizes([]); observeHiddenAncestors(false);
+    host?.removeEventListener('mousedown', startMain);
+    host?.removeEventListener('touchstart', startMain);
+    host = next; panel = null; gesture = null; released = false;
+    nativeSignature = signature(host);
+    if (host) details.observe(host, { subtree: true, attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'collapsed', 'loading', 'is-loading', 'aria-expanded'] });
+    host?.addEventListener('mousedown', startMain, { passive: true });
+    host?.addEventListener('touchstart', startMain, { passive: true });
+  }
+  function sync() {
+    frame = 0;
+    if (disposed || suspended) return;
+    try {
+      const hosts = [...document.querySelectorAll(hostSelector)];
+      const shown = hosts.filter(visible);
+      adopt(shown.length === 1 ? shown[0] : hosts.length === 1 ? hosts[0] : null);
+      if (!host) return;
+      nativeSignature = signature(host);
+      // A stylesheet or an ancestor can reveal this host without changing any
+      // of its own attributes. Keep one size observation until it is visible.
+      if (!visible(host)) { release(); observeSizes([host]); observeHiddenAncestors(true); return; }
+      observeHiddenAncestors(false);
+      if (gesture?.dragging || animating(host)) { release(); return; }
+      released = false;
+      const candidates = [...host.querySelectorAll(panelSelector)]
+        .filter(node => node.closest(hostSelector) === host && visible(node));
+      const nextPanel = candidates.length === 1 ? candidates[0] : null;
+      if (panel !== nextPanel) { clearOwned(); panel = nextPanel; }
+      const basicTargets = [host, panel];
+      if (!panel || panel.matches('[collapsed], [loading], [is-loading]') ||
+          host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]')) {
+        release(); observeSizes(basicTargets); return;
+      }
+      const lists = [...panel.querySelectorAll('.playlist-items')].filter(visible);
+      const list = lists.length === 1 ? lists[0] : null;
+      const header = panel.querySelector('.header');
+      const container = panel.querySelector('#container');
+      const content = host.querySelector('.ytdMiniplayerComponentContent');
+      const rows = list ? [...list.querySelectorAll('ytd-playlist-panel-video-renderer')]
+        .filter(node => node.closest('ytd-playlist-panel-renderer') === panel) : [];
+      const contents = list ? [...list.children].filter(visible) : [];
+      observeSizes([...basicTargets, content, list, header, container, ...rows.slice(0, 64), ...contents.slice(0, 64)]);
+      // An empty/loading or virtualised queue is not a trustworthy content extent.
+      if (!list || !header || !visible(container) || !visible(content) || content.scrollTop !== 0 ||
+          !rows.length || rows.length > 64 || contents.length > 64 ||
+          rows.some(row => !visible(row))) { release(); return; }
+      const declared = host.style.height;
+      const nativeHeight = /^\d+(?:\.\d+)?px$/.test(declared) ? Number.parseFloat(declared) : NaN;
+      if (!(nativeHeight > 285)) { release(); return; }
+      const nativeTop = host.style.top, nativeBottom = host.style.bottom;
+      const pxAnchor = value => /^\d+(?:\.\d+)?px$/.test(value);
+      const unset = value => value === '' || value === 'auto';
+      const south = pxAnchor(nativeBottom) && unset(nativeTop);
+      if (!south && !(pxAnchor(nativeTop) && unset(nativeBottom))) { release(); return; }
+      const panelBox = panel.getBoundingClientRect(), listBox = list.getBoundingClientRect();
+      const listCss = window.getComputedStyle(list), containerCss = window.getComputedStyle(container);
+      const px = value => Number.parseFloat(value) || 0;
+      // Native continuation/unavailable rows can also occupy list space. Their
+      // actual extent must remain visible even though they are not video rows.
+      const rowBottom = Math.max(...[...rows, ...contents].map(row => row.getBoundingClientRect().bottom));
+      const contentHeight = listBox.top - panelBox.top + rowBottom - listBox.top + list.scrollTop +
+        px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
+      const upperHeight = nativeHeight - 285;
+      const maximum = window.getComputedStyle(host).maxHeight;
+      if (!pxAnchor(maximum)) { release(); return; }
+      const effectiveHeight = Math.min(nativeHeight, px(maximum), window.innerHeight - 32);
+      const available = Math.min(285, effectiveHeight - upperHeight);
+      const target = Math.min(Math.ceil(contentHeight), available);
+      const minimum = listBox.top - panelBox.top + rows[0].getBoundingClientRect().height +
+        px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
+      // Keep the native scrolling layout for long queues or unknown geometry.
+      if (!(target > 0 && target < 284 && contentHeight > 0) || available < minimum) { release(); return; }
+      const values = [[heightVar, `${upperHeight + target}px`], [panelVar, `${target}px`]];
+      ensureStyle();
+      for (const [name, value] of values) if (host.style.getPropertyValue(name) !== value) host.style.setProperty(name, value);
+      // Native top/bottom anchors remain authoritative as the queue grows.
+      if (!host.hasAttribute(marker)) host.setAttribute(marker, '');
+      if (!panel.hasAttribute(panelMarker)) panel.setAttribute(panelMarker, '');
+      nativeSignature = signature(host);
+    } catch (error) {
+      release();
+      try { reportError(error); } catch { /* Reporting must not obstruct native controls. */ }
+    }
+  }
+  function schedule() {
+    if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(sync);
+  }
+  const details = new MutationObserver(records => {
+    if (records.some(record => {
+      const node = record.target;
+      if (node === host) return record.attributeName !== 'style' || signature(host) !== nativeSignature;
+      if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button')) return true;
+      if (node.closest?.('#movie_player') || !panel?.contains(node)) return false;
+      return node === panel || node.matches?.('.playlist-items, .header, #container, ytd-playlist-panel-video-renderer');
+    })) schedule();
+  });
+  const discovery = new MutationObserver(records => {
+    if (records.some(record => record.target === host ||
+        (host?.contains(record.target) && !record.target.closest?.('#movie_player')) ||
+        [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 &&
+          (node.matches?.(hostSelector) || node.querySelector?.(hostSelector))))) schedule();
+  });
+  discovery.observe(document.documentElement || document, { childList: true, subtree: true });
+  function coordinates(event) {
+    const point = event.touches?.[0] || event.changedTouches?.[0] || event;
+    return Number.isFinite(point.clientX) && Number.isFinite(point.clientY)
+      ? { x: point.clientX, y: point.clientY } : null;
+  }
+  function pointerDown(event) {
+    if (!event.isTrusted) return;
+    // A delayed touch compatibility mousedown is not a new pointer contact.
+    if (event.type !== 'mousedown' || !clickGuard?.touch ||
+        (!window.PointerEvent && !event.sourceCapabilities?.firesTouchEvents)) clearClickGuard();
+  }
+  function start(event, main = false) {
+    pointerDown(event);
+    if (!host || (event.type === 'mousedown' && event.button !== 0)) return;
+    const target = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+    if (target?.closest(hostSelector) !== host) return;
+    const handle = target.closest('yt-draggable.ytdMiniplayerComponentResizer');
+    if (handle?.classList.contains('ytdMiniplayerComponentResizerDisabled')) return;
+    if (main ? handle || !target.closest('yt-draggable.ytdMiniplayerComponentDraggable') : !handle) return;
+    const point = coordinates(event);
+    if (!point) return;
+    const control = target.closest('button, input, textarea, select, a, [role="button"], [role="slider"], ' +
+      '.ytp-chrome-controls, .ytp-progress-bar-container, .ytp-volume-panel');
+    gesture = { ...point, dragging: !!handle, trusted: event.isTrusted,
+      protectClick: !handle && !control, type: event.type === 'touchstart' ? 'touch' : 'mouse' };
+    if (handle) { released = true; release(); }
+  }
+  function startMain(event) { start(event, true); }
+  function move(event) {
+    if (!gesture || gesture.dragging) return;
+    const point = coordinates(event);
+    if (point && Math.hypot(point.x - gesture.x, point.y - gesture.y) > 5) {
+      gesture.protectClick &&= gesture.trusted && event.isTrusted;
+      gesture.dragging = true; released = true; release();
+    }
+  }
+  function end(event) {
+    if (gesture?.dragging && gesture.protectClick && event.isTrusted &&
+        ((gesture.type === 'mouse' && event.type === 'mouseup') ||
+         (gesture.type === 'touch' && event.type === 'touchend'))) {
+      const point = coordinates(event);
+      if (point) {
+        // Native draggable capture must run first so accepted drags clear its
+        // own click flag. Intercept rejected attempts before playback targets.
+        const boundaries = [...host.querySelectorAll('yt-draggable.ytdMiniplayerComponentDraggable > ' +
+          'ytd-miniplayer-player-container, yt-draggable.ytdMiniplayerComponentDraggable > ytd-miniplayer-info-bar')];
+        clearClickGuard(); clickGuard = { ...point, host, boundaries, touch: event.type === 'touchend' };
+        for (const node of boundaries) node.addEventListener('click', click, { capture: true });
+        clickTimer = window.setTimeout(clearClickGuard, event.type === 'mouseup' ? 0 : 1000);
+      }
+    }
+    if (event.type === 'touchcancel') clearClickGuard();
+    if (gesture || released) { gesture = null; schedule(); }
+  }
+  function click(event) {
+    if (!clickGuard || !event.isTrusted || event.button !== 0 || event.detail === 0) return;
+    const target = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+    if (!clickGuard.host?.contains(target) || Math.hypot(event.clientX - clickGuard.x, event.clientY - clickGuard.y) > 8) return;
+    clearClickGuard(); event.preventDefault(); event.stopImmediatePropagation();
+  }
+  function blur(event) {
+    if (event.target === window) { clearClickGuard(); gesture = null; schedule(); }
+  }
+  function resize(event) {
+    // Layout refreshes can dispatch resize inside an animation frame. Keep the
+    // fitted box until remeasurement instead of exposing native height for a
+    // frame; actual viewport changes still release before native handlers run.
+    if (event.isTrusted) release();
+    schedule();
+  }
+  function lifecycle(event) {
+    suspended = event.type === 'pagehide' || document.hidden;
+    if (suspended) {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0; gesture = null; released = false;
+      clearSettlement(); clearClickGuard(); release(); observeSizes([]); observeHiddenAncestors(false);
+    } else schedule();
+  }
+  function animation(event) { if (event.target === host) schedule(); }
+  function scroll(event) {
+    if (event.target?.matches?.('.ytdMiniplayerComponentContent') && host?.contains(event.target)) schedule();
+  }
+  const events = [['pointerdown', pointerDown], ['mousedown', start], ['touchstart', start], ['mousemove', move], ['touchmove', move],
+    ['mouseup', end], ['touchend', end], ['touchcancel', end], ['blur', blur], ['resize', resize],
+    ['transitionend', animation], ['transitioncancel', animation], ['animationend', animation], ['animationcancel', animation],
+    ['pagehide', lifecycle], ['pageshow', lifecycle], ['visibilitychange', lifecycle],
+    ['scroll', scroll],
+    ['yt-navigate-start', clearClickGuard],
+    ['yt-navigate-finish', schedule], ['yt-page-data-updated', schedule], ['yt-playlist-data-updated', schedule]];
+  for (const [name, listener] of events) window.addEventListener(name, listener, { capture: true, passive: true });
+  sync();
+  return function dispose() {
+    if (disposed) return;
+    disposed = true;
+    if (frame) window.cancelAnimationFrame(frame);
+    discovery.disconnect(); details.disconnect(); sizes?.disconnect();
+    visibilityObserver?.disconnect(); visibilityAncestors = [];
+    host?.removeEventListener('mousedown', startMain);
+    host?.removeEventListener('touchstart', startMain);
+    for (const [name, listener] of events) window.removeEventListener(name, listener, true);
+    clearSettlement(); clearClickGuard(); clearOwned(); style?.remove(); resizeTargets.clear(); gesture = null; host = null; panel = null;
+  };
+})({ document, window,
+        enabled: suite.settings.initial.compactNativeQueue,
+        MutationObserver: SharedMutationObserver,
+        reportError: error => reportModuleError('suiteSettings', 'native queue layout', error) });
+    } catch (error) { reportModuleError('suiteSettings', 'native queue layout', error); }
+  };
+  let featureControlsStarted = false;
+  suite.startFeatureControls = () => {
+    if (featureControlsStarted) return;
+    featureControlsStarted = true;
+    const options = { document, window, preferences: suite.settings.initial,
+      MutationObserver: SharedMutationObserver,
+      reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
+    for (const install of [function installPlayerControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
+  const p = preferences;
+  const css = [];
+  if (p.disableAmbientMode) css.push('ytd-watch-flexy #cinematics { display: none !important; }');
+  if (p.hideNextButton) css.push('#movie_player .ytp-next-button { display: none !important; }');
+  if (p.hidePlayerWatermark) css.push('#movie_player .ytp-watermark { display: none !important; }');
+  if (p.hideJumpAhead) css.push('#movie_player .ytp-skip-forward-button, #movie_player .ytp-skip-ahead-button { display: none !important; }');
+  if (p.hidePlayerAnnotations) css.push('#movie_player .annotation, #movie_player .ytp-cards-teaser { display: none !important; }');
+  if (p.classicProgressColour) css.push('#movie_player .ytp-play-progress, #movie_player .ytp-scrubber-container:not([data-ytms-playhead-marker="1"]) > .ytp-scrubber-button { background:#f00 !important; }');
+  if (p.playerBackground === 'black' || p.playerBackground === 'transparent') {
+    css.push(`#movie_player.html5-video-player { background-color: ${p.playerBackground === 'black' ? '#000' : 'transparent'} !important; }`);
+  }
+  if (p.disablePlayerBlur) css.push('#movie_player .ytp-cinematic-container, #movie_player .ytp-background-blur { display: none !important; }');
+  if (p.playerControlsBackground === 'transparent') css.push('#movie_player .ytp-gradient-bottom { background: none !important; } #movie_player .ytp-chrome-controls { background-color: transparent !important; }');
+  if (p.playerControlsBackground === 'blurred') css.push('#movie_player .ytp-chrome-controls { background-color: rgba(0,0,0,.18) !important; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }');
+  if (['transparent', 'blurred'].includes(p.playerControlsBackground)) {
+    // Delhi uses separate pill backings; the legacy gradient is normally hidden.
+    // Leave hover pseudo-elements, popovers, tooltips and timeline overlays alone.
+    const backplates = '#movie_player.ytp-delhi-modern .ytp-chrome-controls :is(.ytp-right-controls, .ytp-play-button, .ytp-prev-button, .ytp-next-button, .ytp-mute-button.ytp-standalone-mute-button, .ytp-volume-area, .ytp-time-wrapper, .ytp-chapter-title)';
+    const background = p.playerControlsBackground === 'transparent' ? 'transparent' : 'rgba(0,0,0,.18)';
+    const filter = p.playerControlsBackground === 'transparent' ? 'none' : 'blur(12px)';
+    css.push(`#movie_player.ytp-delhi-modern .ytp-chrome-controls { background-color:transparent !important; -webkit-backdrop-filter:none !important; backdrop-filter:none !important; } ${backplates} { background:${background} !important; -webkit-backdrop-filter:${filter} !important; backdrop-filter:${filter} !important; }`);
+  }
+  if (p.hideClipButton) {
+    // Recognise only native watch action hosts. Other languages/layouts retain
+    // their actions when no stable target ID or known native label is exposed.
+    css.push('ytd-watch-metadata #actions :is(ytd-button-renderer, yt-button-view-model):has(button[aria-label="Clip"]), ytd-watch-metadata #actions [target-id="watch-clip-button"] { display:none !important; }');
+  }
+  if (window.location.pathname.startsWith('/embed/')) {
+    if (p.embedHideShare) css.push('#movie_player .ytp-share-button, #movie_player .ytp-share-panel { display:none !important; }');
+    if (p.embedHidePauseOverlay) css.push('#movie_player .ytp-pause-overlay, #movie_player .ytp-pause-overlay-container { display:none !important; }');
+  }
+  const active = css.length || p.originalAudio || p.disableAutoplay || p.disableStableVolume ||
+    p.disableNumberKeySeeking || p.snapshotButton || p.transcriptDownload;
+  if (!active) return () => {};
+
+  const style = document.createElement('style');
+  style.id = 'ytms-player-controls-style';
+  style.textContent = css.join('\n') + `
+    #ytms-player-action-status { position:absolute; left:12px; bottom:60px; z-index:1001; max-width:calc(100% - 40px); padding:8px 12px; border-radius:8px; background:rgba(28,28,28,.9); color:#eee; font:13px/1.4 Roboto,Arial,sans-serif; pointer-events:none; }
+    #ytms-export-tooltip { position:absolute; z-index:1000; box-sizing:border-box; max-width:calc(100% - 16px); padding:5px 9px; border-radius:2px; background:rgba(28,28,28,.9); color:inherit; font-family:inherit; font-size:118%; font-weight:500; line-height:15px; pointer-events:none; }
+    .ytp-big-mode #ytms-export-tooltip { line-height:22px; }
+    .ytp-delhi-modern #ytms-export-tooltip { border-radius:8px; background:var(--yt-sys-color-baseline--overlay-background-medium-light,rgba(0,0,0,.3)); -webkit-backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); text-shadow:0 0 2px #000; }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+  let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, observing = false, snapshotPending = false, captureGeneration = 0, frame = 0, statusTimer = 0, status = null, owner = null;
+  const buttons = new Set(), attempts = new WeakMap(), downloads = new Map();
+  let tooltip = null, tooltipButton = null;
+  const visible = el => {
+    if (!el?.isConnected || el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return false;
+    // Opacity is not inherited: a retained native host can hide an otherwise
+    // measurable player without changing that player's own computed opacity.
+    for (let current = el; current; current = current.parentElement) {
+      const s = window.getComputedStyle(current);
+      if (s.display === 'none' || ['hidden', 'collapse'].includes(s.visibility) || Number(s.opacity) === 0) return false;
+    }
+    return true;
+  };
+  function selectedPlayer() {
+    const players = [...document.querySelectorAll('#movie_player')].filter(el => visible(el) &&
+      !el.closest('ytd-video-preview, ytd-reel-video-renderer') && !el.matches('.ad-showing, .ad-interrupting'));
+    return players.length === 1 ? players[0] : null;
+  }
+  function identity(player) {
+    try {
+      const id = player.getVideoData?.()?.video_id;
+      if (/^[A-Za-z0-9_-]{11}$/.test(id || '')) return id;
+    } catch { /* A changing player can expose its identity on a later native signal. */ }
+    return '';
+  }
+  function attempt(player, name, callback) {
+    const id = identity(player), video = player.querySelector('video');
+    if (!id || !video) return;
+    let record = attempts.get(player);
+    if (!record || record.id !== id || record.video !== video) {
+      record = { id, video, done: new Set(), counts: new Map() }; attempts.set(player, record);
+    }
+    const count = record.counts.get(name) || 0;
+    if (record.done.has(name) || count >= 8) return;
+    record.counts.set(name, count + 1);
+    try { if (callback()) record.done.add(name); }
+    catch (error) { record.done.add(name); reportError(name, error); }
+  }
+  function applyNativePreferences(player) {
+    if (p.originalAudio) attempt(player, 'original audio', () => {
+      if (typeof player.getAvailableAudioTracks !== 'function' || typeof player.getAudioTrack !== 'function' || typeof player.setAudioTrack !== 'function') return false;
+      const tracks = player.getAvailableAudioTracks();
+      if (!Array.isArray(tracks) || tracks.length < 2 || tracks.length > 64) return false;
+      const originals = tracks.filter(track => {
+        const info = track?.getLanguageInfo?.();
+        // Native audioIsDefault identifies the source default, independent of
+        // the user's selected language. An automatic dub must never qualify.
+        return info && typeof info.getIsDefault === 'function' && typeof info.getIsAutoDubbed === 'function' &&
+          info.getIsDefault() === true && info.getIsAutoDubbed() === false;
+      });
+      if (originals.length !== 1) return false;
+      const current = player.getAudioTrack(), currentId = current?.getLanguageInfo?.()?.getId?.();
+      const originalId = originals[0].getLanguageInfo()?.getId?.();
+      const sameId = typeof currentId === 'string' && currentId.length > 0 && currentId === originalId;
+      if (current !== originals[0] && !sameId) player.setAudioTrack(originals[0]);
+      return true;
+    });
+    if (p.disableAutoplay) attempt(player, 'autoplay', () => {
+      const toggle = player.querySelector('.ytp-autonav-toggle-button[aria-checked]');
+      const checked = toggle?.getAttribute('aria-checked');
+      if (!['true', 'false'].includes(checked) || typeof player.setAutonav !== 'function') return false;
+      if (checked === 'true') player.setAutonav(false, true);
+      return true;
+    });
+    if (p.disableStableVolume) attempt(player, 'stable volume', () => {
+      if (typeof player.getDrcUserPreference !== 'function' || typeof player.setDrcUserPreference !== 'function') return false;
+      const current = player.getDrcUserPreference();
+      if (current !== 0 && current !== 1) return false;
+      if (current === 1) player.setDrcUserPreference(0);
+      return true;
+    });
+  }
+  function message(text) {
+    window.clearTimeout(statusTimer); status?.remove();
+    if (!owner?.isConnected) return;
+    status = document.createElement('div'); status.id = 'ytms-player-action-status'; status.setAttribute('role', 'status');
+    status.textContent = text; owner.appendChild(status);
+    statusTimer = window.setTimeout(() => { status?.remove(); status = null; statusTimer = 0; }, 6000);
+  }
+  function describe(button, add) {
+    const ids = (button.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== 'ytms-export-tooltip');
+    if (add) ids.push('ytms-export-tooltip');
+    if (ids.length) button.setAttribute('aria-describedby', ids.join(' ')); else button.removeAttribute('aria-describedby');
+  }
+  function tooltipOwnerVisible() {
+    if (!owner || !tooltipButton || !buttons.has(tooltipButton) || tooltipButton.disabled || owner.classList.contains('ytp-autohide')) return false;
+    return owner.contains(tooltipButton) && visible(tooltipButton);
+  }
+  function hideTooltip() {
+    if (tooltipButton) describe(tooltipButton, false);
+    tooltip?.remove(); tooltip = null; tooltipButton = null;
+    document.removeEventListener('pointermove', pointerOutside, true);
+    document.removeEventListener('pointerdown', hideTooltip, true);
+    document.removeEventListener('pointercancel', hideTooltip, true);
+    document.removeEventListener('scroll', hideTooltip, true);
+    window.removeEventListener('blur', hideTooltip, true);
+  }
+  function pointerOutside(event) {
+    if (tooltipButton?.matches(':focus-visible') && document.activeElement === tooltipButton) return;
+    if (tooltipButton && !tooltipButton.contains(event.target)) hideTooltip();
+  }
+  function positionTooltip() {
+    if (!tooltip || !tooltipOwnerVisible()) { hideTooltip(); return; }
+    const playerRect = owner.getBoundingClientRect(), buttonRect = tooltipButton.getBoundingClientRect();
+    const width = owner.clientWidth || playerRect.width, scale = playerRect.width / width;
+    if (!Number.isFinite(scale) || scale <= 0) { hideTooltip(); return; }
+    const progress = owner.querySelector('.ytp-progress-bar-container');
+    const barTop = progress && visible(progress) ? progress.getBoundingClientRect().top : buttonRect.top;
+    const left = (buttonRect.left + buttonRect.width / 2 - playerRect.left) / scale - tooltip.offsetWidth / 2;
+    tooltip.style.left = `${Math.round(Math.max(8, Math.min(left, width - tooltip.offsetWidth - 8)))}px`;
+    tooltip.style.top = `${Math.round(Math.max(8, (Math.min(barTop, buttonRect.top) - playerRect.top) / scale - tooltip.offsetHeight - 8))}px`;
+  }
+  function showTooltip(event) {
+    const button = event.currentTarget;
+    if (disposed || suspended || !buttons.has(button) || (event.type === 'focus' && !button.matches(':focus-visible'))) return;
+    hideTooltip(); tooltipButton = button;
+    if (!tooltipOwnerVisible()) { tooltipButton = null; return; }
+    tooltip = document.createElement('div'); tooltip.id = 'ytms-export-tooltip'; tooltip.setAttribute('role', 'tooltip');
+    tooltip.textContent = button.getAttribute('aria-label'); owner.appendChild(tooltip); describe(button, true);
+    document.addEventListener('pointermove', pointerOutside, true);
+    document.addEventListener('pointerdown', hideTooltip, true);
+    document.addEventListener('pointercancel', hideTooltip, true);
+    document.addEventListener('scroll', hideTooltip, true);
+    window.addEventListener('blur', hideTooltip, true);
+    positionTooltip();
+  }
+  function leaveTooltip() {
+    if (tooltipButton?.matches(':focus-visible') && document.activeElement === tooltipButton) return;
+    hideTooltip();
+  }
+  function download(blob, filename) {
+    if (downloads.size >= 4) { message('Please wait for the previous exports to finish.'); return false; }
+    let url = null, anchor = null;
+    try {
+      url = window.URL.createObjectURL(blob); anchor = document.createElement('a');
+      anchor.href = url; anchor.download = filename;
+      // Keep blob URLs until the browser has consumed the click, then release.
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      const timer = window.setTimeout(() => { window.URL.revokeObjectURL(url); downloads.delete(url); }, 1000);
+      downloads.set(url, timer);
+      return true;
+    } catch {
+      anchor?.remove(); if (url) window.URL.revokeObjectURL(url);
+      message('The browser could not start this download.'); return false;
+    }
+  }
+  function releaseSnapshot() {
+    snapshotPending = false;
+    const button = document.getElementById('ytms-snapshot-button');
+    if (button && buttons.has(button)) { button.disabled = false; button.removeAttribute('aria-busy'); }
+  }
+  function snapshot(event) {
+    if (!event.isTrusted) return;
+    event.preventDefault(); event.stopPropagation();
+    if (snapshotPending) return;
+    const player = selectedPlayer(), video = player?.querySelector('video.html5-main-video, video');
+    if (player !== owner || !video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+      message('A video frame is not available yet.'); return;
+    }
+    if (video.videoWidth * video.videoHeight > 33554432) { message('This frame is too large to export safely.'); return; }
+    const generation = captureGeneration, capturedId = identity(player);
+    snapshotPending = true;
+    event.currentTarget.disabled = true; event.currentTarget.setAttribute('aria-busy', 'true');
+    try {
+      const canvas = document.createElement('canvas'); canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      if (!context) { releaseSnapshot(); message('This browser cannot create a snapshot.'); return; }
+      context.drawImage(video, 0, 0);
+      const jpeg = p.snapshotFormat === 'jpeg', type = jpeg ? 'image/jpeg' : 'image/png';
+      const quality = ['70', '80', '90', '100'].includes(p.snapshotQuality) ? Number(p.snapshotQuality) / 100 : 0.9;
+      canvas.toBlob(blob => {
+        releaseSnapshot();
+        if (disposed || suspended || generation !== captureGeneration || player !== owner || !player.isConnected ||
+            video !== player.querySelector('video.html5-main-video, video') || (capturedId && capturedId !== identity(player))) return;
+        if (!blob) { message('The browser could not export this frame.'); return; }
+        if (download(blob, `youtube-frame.${jpeg ? 'jpg' : 'png'}`)) message('Snapshot saved.');
+      }, type, quality);
+    } catch (error) {
+      releaseSnapshot();
+      message(error?.name === 'SecurityError' ? 'This video does not allow local frame export.' : 'The browser could not export this frame.');
+    }
+  }
+  function transcript(event) {
+    if (!event.isTrusted) return;
+    event.preventDefault(); event.stopPropagation();
+    const panels = [...document.querySelectorAll('ytd-transcript-renderer')].filter(visible);
+    if (panels.length !== 1) { message('Open YouTube’s transcript panel first, then try again.'); return; }
+    const rows = [...panels[0].querySelectorAll('ytd-transcript-segment-renderer')];
+    if (!rows.length || rows.length > 50000) { message('The loaded transcript is unavailable or too large.'); return; }
+    const lines = rows.map(row => {
+      const text = row.querySelector('.segment-text')?.textContent?.trim() || '';
+      const time = row.querySelector('.segment-timestamp')?.textContent?.trim() || '';
+      return text ? `${time ? time + ' ' : ''}${text}` : '';
+    }).filter(Boolean);
+    const text = lines.join('\n');
+    if (!text || text.length > 4 * 1024 * 1024) { message('The loaded transcript is unavailable or too large.'); return; }
+    if (download(new window.Blob([text + '\n'], { type: 'text/plain;charset=utf-8' }), 'youtube-transcript.txt')) message('Loaded transcript saved.');
+  }
+  function actionButton(player, id, label, path, handler, competingSelector) {
+    const controls = player.querySelector('.ytp-right-controls');
+    if (!controls) return;
+    let button = document.getElementById(id);
+    if (player.querySelector(competingSelector)) {
+      if (button && buttons.has(button)) {
+        if (tooltipButton === button) hideTooltip();
+        button.remove(); buttons.delete(button);
+      }
+      return;
+    }
+    if (button && !buttons.has(button)) return;
+    if (!button) {
+      button = document.createElement('button'); button.id = id; button.type = 'button'; button.className = 'ytp-button';
+      button.setAttribute('aria-label', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 36 36'); svg.setAttribute('width', '36'); svg.setAttribute('height', '36'); svg.setAttribute('aria-hidden', 'true');
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path'); shape.setAttribute('class', 'ytp-svg-fill'); shape.setAttribute('d', path); svg.appendChild(shape);
+      button.appendChild(svg); button.addEventListener('click', handler); buttons.add(button);
+      button.addEventListener('mouseenter', showTooltip); button.addEventListener('focus', showTooltip);
+      button.addEventListener('mouseleave', leaveTooltip); button.addEventListener('blur', hideTooltip);
+    }
+    const anchor = controls.querySelector('.ytp-settings-button'), parent = anchor?.parentElement || controls;
+    if (button.parentElement !== parent) parent.insertBefore(button, anchor);
+    if (id === 'ytms-snapshot-button') {
+      button.disabled = snapshotPending;
+      if (snapshotPending) button.setAttribute('aria-busy', 'true'); else button.removeAttribute('aria-busy');
+    }
+  }
+  function clearButtons() {
+    captureGeneration++;
+    hideTooltip();
+    for (const button of buttons) button.remove(); buttons.clear();
+    window.clearTimeout(statusTimer); statusTimer = 0; status?.remove(); status = null;
+  }
+  function reconcile() {
+    frame = 0;
+    if (disposed || suspended || document.hidden) return;
+    const player = selectedPlayer();
+    if (owner !== player) { clearButtons(); owner = player; }
+    if (!player) return;
+    for (const button of buttons) if (!button.isConnected) buttons.delete(button);
+    applyNativePreferences(player);
+    if (p.snapshotButton) actionButton(player, 'ytms-snapshot-button', 'Save video frame', 'M12 9l2-3h8l2 3h5v20H7V9h5zm-3 2v16h18V11h-4l-2-3h-6l-2 3H9zm9 2a6 6 0 1 1 0 12 6 6 0 0 1 0-12zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z', snapshot, '.ytp-snapshot-button, #take-snapshot-button, [data-ytms-native-snapshot]');
+    if (p.transcriptDownload) actionButton(player, 'ytms-transcript-button', 'Save loaded transcript', 'M9 6h13l5 5v19H9V6zm2 2v20h14V12h-5V8h-9zm11 1v1h1l-1-1zm-9 7h10v2H13v-2zm0 4h10v2H13v-2zm0 4h7v2h-7v-2z', transcript, '.ytp-transcript-download-button, [data-ytms-native-transcript-download]');
+    if (tooltip) positionTooltip();
+  }
+  function schedule() {
+    if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile);
+  }
+  function numberKey(event) {
+    if (!p.disableNumberKeySeeking || !event.isTrusted || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || !/^[0-9]$/.test(event.key)) return;
+    const target = event.target?.closest ? event.target : event.target?.parentElement;
+    if (!target || target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], .ytp-settings-menu, .ytp-popup')) return;
+    const player = selectedPlayer();
+    if (!player || !(player.contains(target) || player.contains(document.activeElement))) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+  }
+  const relevant = '#movie_player, .html5-video-player, .ytp-right-controls, .ytp-autonav-toggle-button, ytd-transcript-renderer';
+  const observer = new MutationObserver(records => {
+    if (records.some(record => record.type === 'attributes'
+      ? record.target.matches?.('.ytp-autonav-toggle-button, #movie_player, .ytp-chrome-bottom, .ytp-chrome-controls, .ytp-right-controls')
+      : record.target.matches?.('.ytp-right-controls') || [...record.addedNodes, ...record.removedNodes].some(node =>
+        node.nodeType === 1 && (node.matches(relevant + ', video') ||
+          (node.matches('ytd-app, ytd-watch-flexy, ytd-player, #player-container') && node.querySelector(relevant)))))) schedule();
+  });
+  function startObservation() {
+    if (disposed || observing) return;
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-checked', 'class'] }); observing = true;
+  }
+  function suspend() {
+    suspended = true; observer.disconnect(); observing = false;
+    if (frame) window.cancelAnimationFrame(frame); frame = 0; clearButtons(); owner = null;
+  }
+  function resume() {
+    if (disposed || pageSuspended || navigationPending || document.hidden) return;
+    suspended = false; startObservation(); schedule();
+  }
+  function navigateStart() { navigationPending = true; suspend(); }
+  function navigateFinish() { navigationPending = false; resume(); }
+  function pageHide() { pageSuspended = true; suspend(); }
+  function pageShow() {
+    const restoring = pageSuspended; pageSuspended = false;
+    if (restoring) navigationPending = false;
+    resume();
+  }
+  function visibility() { if (document.hidden) suspend(); else resume(); }
+  function media(event) { if (event.target?.localName === 'video' && event.target.closest('#movie_player')) schedule(); }
+  const listeners = [];
+  function listen(target, type, callback) { target.addEventListener(type, callback, true); listeners.push([target, type, callback]); }
+  listen(document, 'keydown', numberKey);
+  for (const type of ['loadedmetadata', 'emptied', 'durationchange']) listen(document, type, media);
+  listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
+  listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
+  for (const type of ['yt-page-data-updated', 'resize']) listen(window, type, resume);
+  listen(document, 'visibilitychange', visibility);
+  startObservation(); schedule();
+  return () => {
+    disposed = true; suspend(); snapshotPending = false; observer.disconnect(); style.remove();
+    for (const [url, timer] of downloads) { window.clearTimeout(timer); window.URL.revokeObjectURL(url); } downloads.clear();
+    for (const [target, type, callback] of listeners) target.removeEventListener(type, callback, true);
+  };
+}, function installDiscoveryControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
+  const p = preferences, root = document.documentElement;
+  const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
+  if (!root || (!keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
+  const attr = 'data-ytms-discovery-hidden', reasonAttr = 'data-ytms-discovery-reason';
+  const owned = new Set(), filteredCards = new Set(), pendingCards = new Set(), badgeNodes = new Set(), viewNodes = new Set(), headings = new Set(), restoredNavigation = new Set(), cardHeadings = new WeakMap(), cardDecorations = new WeakMap(), decorationOwners = new WeakMap(), rootOwned = new Map(), logoRecords = new Map(), attemptedRoutes = new Set();
+  const manuallyPlayed = new WeakSet(), pausedTrailers = new WeakSet();
+  const outerCardSelector = 'ytd-rich-item-renderer,ytd-video-renderer,ytd-grid-video-renderer,ytd-playlist-renderer,ytd-movie-renderer';
+  const cardSelector = outerCardSelector+',yt-lockup-view-model';
+  // Modern rich items contain a lockup renderer for the same video. Treat the
+  // native outer card as its one owner, including metadata-only recycling.
+  const canonicalCard = element => element?.closest?.(outerCardSelector) || element?.closest?.('yt-lockup-view-model') || null;
+  const excluded = 'ytd-miniplayer,ytd-playlist-panel-renderer,yt-playlist-panel-renderer,ytd-playlist-video-list-renderer,ytd-popup-container,ytd-engagement-panel-section-list-renderer';
+  const feedSurface = 'ytd-browse ytd-rich-grid-renderer,ytd-search ytd-section-list-renderer,ytd-two-column-search-results-renderer';
+  let frame = 0, disposed = false, suspended = false, navigationPending = false, pageSuspended = false, observerActive = false, scanAllCards = true, observedRoute = null;
+  const listeners = [];
+  const listen = (target, type, handler) => { target.addEventListener(type, handler, true); listeners.push([target,type,handler]); };
+  const text = el => el?.textContent?.replace(/\s+/g,' ').trim() || '';
+  const route = () => window.location.pathname;
+  const channelBase = () => /^\/(?:@[\w.%-]+|channel\/UC[\w-]{22}|c\/[^/]+|user\/[^/]+)\/?$/.test(route());
+  const isChannel = () => /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)(?:\/(?:featured|videos|streams|shorts|playlists|community|posts|about))?\/?$/.test(route());
+  const routeKind = () => ['/', '/feed/recommended'].includes(route()) ? 'home' : route() === '/feed/subscriptions' ? 'subscriptions' : route() === '/results' ? 'search' : route().startsWith('/shorts/') ? 'shorts' : isChannel() ? 'channel' : 'other';
+  const eligibleFeed = () => ['home','subscriptions','search','channel'].includes(routeKind());
+  const setRoot = (name, value) => {
+    if (!rootOwned.has(name)) rootOwned.set(name, { previous: root.getAttribute(name), value: null });
+    const record = rootOwned.get(name); record.value = value;
+    if (value === null) root.removeAttribute(name); else if (root.getAttribute(name) !== value) root.setAttribute(name,value);
+  };
+  const hide = (el, reason, found) => {
+    if (!el || el.closest(excluded)) return;
+    found.add(el); owned.add(el);
+    if (el.getAttribute(attr) !== '1') el.setAttribute(attr,'1');
+    if (el.getAttribute(reasonAttr) !== reason) el.setAttribute(reasonAttr,reason);
+  };
+  const style = document.createElement('style'); style.id = 'ytms-discovery-controls-style';
+  const rules = [];
+  const add = (enabled, selector, css = 'display:none!important') => { if (enabled) rules.push(`${selector}{${css}}`); };
+  add(true, `:root:not([data-yt-master-show-filtered="1"]) [${attr}="1"]`);
+  add(p.hideAllComments, 'ytd-watch-flexy ytd-comments,ytd-watch-grid ytd-comments');
+  add(p.hideCommentGifs, 'ytd-comments img[src*="tenor.com"],ytd-comments img[src*="giphy.com"],ytd-comments img[src$=".gif"],ytd-comments img[src*=".gif?"]');
+  add(p.hideHomePosts, '[data-ytms-discovery-route="home"] ytd-browse ytd-post-renderer,[data-ytms-discovery-route="home"] ytd-browse ytd-backstage-post-thread-renderer');
+  add(p.hideSubscriptionsHeaders, '[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-rich-grid-renderer #header,[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-feed-filter-chip-bar-renderer');
+  add(p.hideChannelBanner, '[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #channel-header-container #banner,[data-ytms-discovery-route="channel"] yt-page-header-renderer yt-image-banner-view-model,[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #banner');
+  add(p.fullWidthChannel, '[data-ytms-discovery-route="channel"] ytd-two-column-browse-results-renderer,[data-ytms-discovery-route="channel"] ytd-browse #primary', 'max-width:none!important;width:100%!important');
+  add(p.fullFeedTitles, feedSurface.split(',').flatMap(surface => [surface+' #video-title',surface+' .yt-lockup-metadata-view-model__title']).join(','), '-webkit-line-clamp:unset!important;max-height:none!important;white-space:normal!important');
+  add(p.squareCorners, 'ytd-browse ytd-thumbnail,ytd-search ytd-thumbnail,ytd-browse .ytThumbnailViewModelHost,ytd-search .ytThumbnailViewModelHost,ytd-browse .yt-thumbnail-view-model', 'border-radius:0!important');
+  add(p.disableThemedHover, 'ytd-browse .ytThumbnailHoverOverlayToggleActionsViewModelHost,ytd-search .ytThumbnailHoverOverlayToggleActionsViewModelHost', 'background:transparent!important;backdrop-filter:none!important');
+  add(p.disableVideoPreviews, 'ytd-browse ytd-video-preview,ytd-search ytd-video-preview');
+  add(p.hideSearchPrompts, 'ytd-search ytd-search-refinement-card-renderer,ytd-search ytd-search-refinement-card-list-renderer,ytd-search ytd-inline-survey-renderer,ytd-search yt-search-refinement-card-view-model');
+  add(true, '[data-ytms-discovery-badge-hidden="1"]');
+  add(true, '[data-ytms-discovery-view-line="1"]', 'display:block!important;flex-basis:100%!important;width:100%!important');
+  add(p.hidePremiumUpsells, 'ytd-mealbar-promo-renderer,yt-premium-spotlight-banner-renderer,ytd-statement-banner-renderer:has(a[href^="/premium"]),ytd-guide-entry-renderer:has(a[href^="/premium"])');
+  add(p.hideOpenApp, 'ytm-bottom-sheet-renderer:has(a[href^="vnd.youtube:"]),ytm-open-app-button-renderer,ytd-app-install-promo-renderer');
+  add(p.hideSubscriptionsChannels, '[data-ytms-discovery-route="subscriptions"] ytd-channel-list-sub-menu-renderer');
+  add(p.hideExplore, 'ytd-guide-entry-renderer:has(a[href="/feed/trending"]),ytd-guide-entry-renderer:has(a[href="/feed/explore"]),ytd-guide-entry-renderer:has(a[href="/gaming"])');
+  add(p.listChannelHeaders, '.ytms-discovery-channel-heading', 'display:block;margin:12px 0 8px;font:500 16px/24px Roboto,Arial,sans-serif');
+  add(p.listChannelHeaders, '.ytms-discovery-channel-heading a', 'color:inherit;text-decoration:none');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] ytd-rich-grid-renderer > #contents', 'display:block!important');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] ytd-rich-grid-row', 'display:contents!important');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] ytd-rich-item-renderer', 'width:100%!important;max-width:none!important;margin:0 0 16px!important');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] ytd-rich-grid-media #dismissible', 'display:flex!important;gap:16px!important;align-items:flex-start!important');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] ytd-rich-grid-media #thumbnail', 'flex:0 0 min(36%,320px)!important;width:min(36%,320px)!important');
+  add(p.homeList || p.subscriptionsList, '[data-ytms-discovery-list="1"] .ytLockupViewModelHost,[data-ytms-discovery-list="1"] .yt-lockup-view-model', 'flex-direction:row!important;gap:16px!important');
+  if (/^[2-6]$/.test(p.feedColumns || '')) {
+    add(true, '[data-ytms-discovery-route="home"] ytd-rich-grid-renderer,[data-ytms-discovery-route="subscriptions"] ytd-rich-grid-renderer', `--ytd-rich-grid-items-per-row:${p.feedColumns}!important;--ytd-rich-grid-posts-per-row:${p.feedColumns}!important`);
+  }
+  if (['small','medium','large'].includes(p.searchThumbnailSize)) {
+    const width = {small:240,medium:320,large:400}[p.searchThumbnailSize];
+    add(true, 'ytd-search ytd-video-renderer ytd-thumbnail', `width:min(${width}px,40vw)!important;max-width:${width}px!important;min-width:0!important`);
+  }
+  if (/^[3-6]$/.test(p.shortsColumns || '')) add(true, 'ytd-rich-grid-renderer:has(ytd-rich-grid-slim-media)', `--ytd-rich-grid-slim-items-per-row:${p.shortsColumns}!important`);
+  const shorts = '[data-ytms-discovery-route="shorts"] ';
+  add(p.shortsHideMetadata, shorts+'ytd-reel-video-renderer:not(:hover):not(:focus-within) ytd-reel-player-header-renderer,'+shorts+'ytd-reel-video-renderer:not(:hover):not(:focus-within) yt-reel-metapanel-view-model', 'opacity:0!important;pointer-events:none!important');
+  add(p.shortsHideActions, shorts+'ytd-reel-player-overlay-renderer #actions,'+shorts+'.ytReelPlayerOverlayViewModelActionsContainer');
+  add(p.shortsHideRelated, shorts+'yt-reel-multi-format-link-view-model');
+  add(p.shortsHideMusic, shorts+'ytd-reel-player-overlay-renderer #sound-metadata,'+shorts+'.ytReelSoundMetadataViewModelHost');
+  add(p.shortsHideRemix, shorts+'ytd-reel-player-overlay-renderer #remix-button,'+shorts+'yt-reel-player-overlay-view-model button[aria-label="Remix"]');
+  add(p.restoreSubscriptionsLink, 'html ytd-guide-renderer #sections ytd-guide-entry-renderer[data-ytms-subscriptions-restore="1"],html ytd-guide-renderer #sections > ytd-guide-section-renderer[data-ytms-subscriptions-restore="1"],html ytd-mini-guide-renderer ytd-mini-guide-entry-renderer[data-ytms-subscriptions-restore="1"]', 'display:block!important');
+  for (const [theme, bg, raised, fg, secondary] of [['dark','#0f0f0f','#272727','#f1f1f1','#aaa'],['light','#fff','#f2f2f2','#0f0f0f','#606060']]) {
+    add(true, `[data-ytms-discovery-theme="${theme}"]`, `color-scheme:${theme};--yt-spec-base-background:${bg}!important;--yt-spec-raised-background:${raised}!important;--yt-spec-menu-background:${bg}!important;--yt-spec-text-primary:${fg}!important;--yt-spec-text-secondary:${secondary}!important;--yt-spec-wordmark-text:${fg}!important;--yt-spec-general-background-a:${bg}!important;--yt-spec-general-background-b:${raised}!important`);
+    add(true, `[data-ytms-discovery-theme="${theme}"] ytd-app`, `background:${bg}!important;color:${fg}!important`);
+  }
+  style.textContent = rules.join('\n'); (document.head || root).append(style);
+
+  function parseViews(value) {
+    const match = value.normalize('NFKC').match(/^([\d\s.,]+)\s*([KMB])?\s+(?:views?|vues?|Aufrufe|visualizaciones|visualizzazioni|visualizaç(?:ão|ões))$/i);
+    if (!match) return null;
+    let language = document.documentElement.lang || window.navigator.language || 'en';
+    try {
+      const parts = new window.Intl.NumberFormat(language).formatToParts(12345.6);
+      const group = parts.find(x=>x.type === 'group')?.value.normalize('NFKC') || ',';
+      const decimal = parts.find(x=>x.type === 'decimal')?.value || '.';
+      let number = match[1].trim().replace(/\s/g,'');
+      if (!/\s/.test(group) && number.includes(group)) {
+        const groups = number.split(decimal)[0].split(group);
+        if (groups.some((part,index) => !/^\d+$/.test(part) || (index > 0 && part.length !== 3))) return null;
+        number = number.split(group).join('');
+      }
+      if (decimal !== '.') number = number.replace(decimal,'.');
+      if (!/^\d+(?:\.\d+)?$/.test(number)) return null;
+      const result = Number(number) * ({K:1000,M:1000000,B:1000000000}[match[2]?.toUpperCase()] || 1);
+      return Number.isFinite(result) && result >= 0 && (match[2] || Number.isInteger(result)) ? result : null;
+    } catch { return null; }
+  }
+  function filterReason(card) {
+    if (!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) return '';
+    const badges = [...card.querySelectorAll('ytd-badge-supported-renderer,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost')].map(text);
+    const metadata = [...card.querySelectorAll('#metadata-line span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')].map(text);
+    const nativeLinks = [...card.querySelectorAll('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title')];
+    if (p.hideFeedPlaylists && (card.matches('ytd-playlist-renderer') || nativeLinks.some(a => { try { const u = new window.URL(a.href); return u.origin === window.location.origin && u.pathname === '/playlist' && u.searchParams.has('list'); } catch { return false; } }))) return 'Playlist';
+    if (p.hideFeedVods && metadata.some(x => /^Streamed\s.+\sago$/i.test(x))) return 'Stream archive';
+    if (p.hideFeedDubbed && badges.some(x => /^auto[- ]dubbed$/i.test(x))) return 'Auto-dubbed';
+    if (p.hideFeedMovies && (card.matches('ytd-movie-renderer') || badges.some(x => /^(?:Movies?\s*(?:&|and)\s*TV|Buy or rent)$/i.test(x)))) return 'Film or television';
+    if (p.hideFeedCollaborations && (card.hasAttribute('is-collaboration') || [...card.querySelectorAll('.ytContentMetadataViewModelAvatarStack yt-avatar-stack-view-model')].some(stack => stack.querySelectorAll('img').length >= 2))) return 'Collaboration';
+    if (p.hideFeedLowViews) {
+      const values = metadata.map(parseViews).filter(x => x !== null);
+      const minimum = Number(p.lowViewThreshold);
+      if (values.length === 1 && [100,1000,10000].includes(minimum) && values[0] < minimum) return 'Low view count';
+    }
+    return '';
+  }
+  function clearDecorations(card) {
+    for (const node of cardDecorations.get(card) || []) {
+      if (decorationOwners.get(node) !== card) continue;
+      node.removeAttribute('data-ytms-discovery-badge-hidden'); node.removeAttribute('data-ytms-discovery-view-line');
+      badgeNodes.delete(node); viewNodes.delete(node);
+      decorationOwners.delete(node);
+    }
+    cardDecorations.delete(card);
+  }
+  function decorateCard(card) {
+    clearDecorations(card);
+    const valid = eligibleFeed() && !card.closest(excluded) && card.closest(feedSurface);
+    const list = routeKind() === 'home' && p.homeList || routeKind() === 'subscriptions' && p.subscriptionsList;
+    let heading = cardHeadings.get(card);
+    if (valid && list && p.listChannelHeaders) {
+      const source = [...card.querySelectorAll('a[href]')].find(anchor => {
+        if (anchor.closest('.ytms-discovery-channel-heading')) return false;
+        try { const url = new window.URL(anchor.href); return url.origin === window.location.origin && /^\/(?:@[^/]+|channel\/UC[\w-]{22})\/?$/.test(url.pathname) && text(anchor); } catch { return false; }
+      });
+      if (source) {
+        if (!heading) { heading = document.createElement('div'); heading.className = 'ytms-discovery-channel-heading'; const link = document.createElement('a'); heading.append(link); cardHeadings.set(card,heading); headings.add(heading); }
+        const link = heading.firstElementChild;
+        headings.add(heading);
+        if (link.href !== source.href) link.href = source.href;
+        if (link.textContent !== text(source)) link.textContent = text(source);
+        if (heading.parentElement !== card) card.prepend(heading);
+      } else if (heading) { heading.remove(); headings.delete(heading); cardHeadings.delete(card); }
+    } else if (heading) { heading.remove(); headings.delete(heading); cardHeadings.delete(card); }
+    if (!valid) return;
+    const nodes = new Set();
+    if (p.hideThumbnailBadges) for (const badge of card.querySelectorAll('.ytThumbnailOverlayBadgeViewModelHost,ytd-badge-supported-renderer .badge,.ytBadgeShapeBadgeText,.yt-badge-shape__text')) {
+      if (/^(?:New|4K|8K|HD|HDR|CC|360°|VR180)$/i.test(text(badge))) { badge.setAttribute('data-ytms-discovery-badge-hidden','1'); badgeNodes.add(badge); nodes.add(badge); }
+    }
+    if (p.hideViewsIcon || p.viewsSeparateLine) for (const meta of card.querySelectorAll('#metadata-line > span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')) {
+      if (parseViews(text(meta)) === null) continue;
+      if (p.viewsSeparateLine) { meta.setAttribute('data-ytms-discovery-view-line','1'); viewNodes.add(meta); nodes.add(meta); }
+      if (p.hideViewsIcon) for (const icon of meta.querySelectorAll('svg,yt-icon,.ytIconHost')) { icon.setAttribute('data-ytms-discovery-badge-hidden','1'); badgeNodes.add(icon); nodes.add(icon); }
+    }
+    for (const node of nodes) decorationOwners.set(node,card);
+    cardDecorations.set(card,nodes);
+  }
+  function clearNestedCardOwnership(card) {
+    for (const nested of card.querySelectorAll(cardSelector)) {
+      if (canonicalCard(nested) !== card) continue;
+      nested.removeAttribute(attr); nested.removeAttribute(reasonAttr); filteredCards.delete(nested);
+      clearDecorations(nested);
+      const heading = cardHeadings.get(nested);
+      if (heading) { heading.remove(); headings.delete(heading); cardHeadings.delete(nested); }
+    }
+  }
+  function restoreLogos() {
+    for (const [anchor, previous] of logoRecords) {
+      if (anchor.getAttribute('href') === '/feed/subscriptions') previous === null ? anchor.removeAttribute('href') : anchor.setAttribute('href',previous);
+    }
+    logoRecords.clear();
+  }
+  function syncLogos() {
+    if (!p.logoToSubscriptions) return;
+    for (const [anchor,previous] of logoRecords) if (!anchor.isConnected) {
+      if (anchor.getAttribute('href') === '/feed/subscriptions') previous === null ? anchor.removeAttribute('href') : anchor.setAttribute('href',previous);
+      logoRecords.delete(anchor);
+    }
+    for (const anchor of document.querySelectorAll('ytd-masthead a#logo,ytd-masthead #logo a[href]')) {
+      if (!logoRecords.has(anchor)) logoRecords.set(anchor,anchor.getAttribute('href'));
+      if (anchor.getAttribute('href') !== '/feed/subscriptions') anchor.setAttribute('href','/feed/subscriptions');
+    }
+  }
+  function navigationAnchor(kind) {
+    let anchor;
+    if (kind === 'subscriptions') anchor = [...document.querySelectorAll('ytd-guide-renderer a[href],ytd-mini-guide-renderer a[href]')].find(a => a.getAttribute('href') === '/feed/subscriptions');
+    else anchor = [...document.querySelectorAll('ytd-browse yt-tab-shape a[href],ytd-browse tp-yt-paper-tab a[href]')].find(a => { try { const u = new window.URL(a.href); return u.origin === window.location.origin && u.pathname.replace(/\/$/,'') === route().replace(/\/$/,'')+'/videos'; } catch { return false; } });
+    return anchor && !anchor.closest('[inert]') ? anchor : null;
+  }
+  function nativeNavigate(kind) {
+    const key = kind+':'+route();
+    if (attemptedRoutes.has(key)) return;
+    const anchor = navigationAnchor(kind);
+    if (anchor) { attemptedRoutes.add(key); anchor.click(); }
+  }
+  function hasActivePlayback() {
+    // Automatic page preferences must not navigate away from an ongoing main
+    // video or queue. A hidden native player can still be playing audio.
+    return [...document.querySelectorAll('#movie_player video')].some(video =>
+      !video.closest('ytd-video-preview,ytd-reel-video-renderer,ytd-channel-video-player-renderer') &&
+      !video.paused && !video.ended,
+    );
+  }
+  function syncSubscriptionsLink() {
+    const found = new Set();
+    if (p.restoreSubscriptionsLink) for (const anchor of document.querySelectorAll('ytd-guide-renderer a[href="/feed/subscriptions"],ytd-mini-guide-renderer a[href="/feed/subscriptions"]')) {
+      for (const node of [anchor.closest('ytd-guide-entry-renderer,ytd-mini-guide-entry-renderer'),anchor.closest('ytd-guide-section-renderer')]) if (node) { found.add(node); restoredNavigation.add(node); if (node.getAttribute('data-ytms-subscriptions-restore') !== '1') node.setAttribute('data-ytms-subscriptions-restore','1'); }
+    }
+    for (const node of restoredNavigation) if (!found.has(node)) { if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.delete(node); }
+  }
+  function pauseTrailer(video) {
+    if (!p.pauseChannelTrailers || !isChannel() || !video?.matches?.('video') || !video.closest('ytd-channel-video-player-renderer') || manuallyPlayed.has(video) || pausedTrailers.has(video)) return;
+    if (!video.paused && !video.ended) { pausedTrailers.add(video); video.pause(); }
+  }
+  function reconcile() {
+    frame = 0; if (disposed || suspended) return;
+    try {
+      const kind = routeKind(), found = new Set();
+      if (observedRoute !== route()) { observedRoute = route(); attemptedRoutes.clear(); }
+      setRoot('data-ytms-discovery-route',kind);
+      setRoot('data-ytms-discovery-list', (kind === 'home' && p.homeList || kind === 'subscriptions' && p.subscriptionsList) ? '1' : null);
+      const darkReader = document.querySelector('style.darkreader,link.darkreader') || root.hasAttribute('data-darkreader-mode');
+      setRoot('data-ytms-discovery-theme', !darkReader && ['dark','light'].includes(p.interfaceTheme) ? p.interfaceTheme : null);
+      const candidates = scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
+      const cards = new Set([...candidates].map(canonicalCard).filter(Boolean));
+      for (const card of cards) {
+        clearNestedCardOwnership(card);
+        decorateCard(card);
+        const reason = filterReason(card);
+        if (reason) { filteredCards.add(card); if (card.getAttribute(attr) !== '1') card.setAttribute(attr,'1'); if (card.getAttribute(reasonAttr) !== reason) card.setAttribute(reasonAttr,reason); }
+        else { card.removeAttribute(attr); card.removeAttribute(reasonAttr); filteredCards.delete(card); }
+      }
+      for (const card of filteredCards) if (!card.isConnected) { card.removeAttribute(attr); card.removeAttribute(reasonAttr); filteredCards.delete(card); }
+      for (const node of badgeNodes) if (!node.isConnected) { node.removeAttribute('data-ytms-discovery-badge-hidden'); badgeNodes.delete(node); }
+      for (const node of viewNodes) if (!node.isConnected) { node.removeAttribute('data-ytms-discovery-view-line'); viewNodes.delete(node); }
+      for (const node of headings) if (!node.isConnected) { node.remove(); headings.delete(node); }
+      scanAllCards = false; pendingCards.clear();
+      if (p.hideSearchAI && kind === 'search') for (const el of document.querySelectorAll('ytd-search yt-ai-search-input-view-model,ytd-search yt-ai-search-result-section-renderer,ytd-search yt-ai-search-ghost-card-view-model')) hide(el,'AI search',found);
+      if (p.hideSearchAI && kind === 'search') for (const shelf of document.querySelectorAll('ytd-search ytd-shelf-renderer')) if (/^(?:AI-powered overview|AI overview|AI-generated summary)$/i.test(text(shelf.querySelector('#title')))) hide(shelf,'AI search',found);
+      if (p.hideAIChapters) for (const panel of document.querySelectorAll('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-description-chapters"]')) {
+        if ([...panel.querySelectorAll('#header,.ytd-macro-markers-list-renderer')].some(el => /^(?:AI-generated chapters|Chapters generated with AI)$/i.test(text(el)))) { found.add(panel); owned.add(panel); if (panel.getAttribute(attr) !== '1') panel.setAttribute(attr,'1'); }
+      }
+      if (p.hideSidebarSubscriptions) for (const section of document.querySelectorAll('ytd-guide-section-renderer')) if (/^Subscriptions$/i.test(text(section.querySelector('#guide-section-title')))) hide(section,'Subscribed channels',found);
+      for (const el of owned) if (!found.has(el)) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); owned.delete(el); }
+      syncLogos(); syncSubscriptionsLink();
+      if (p.homeRedirect && kind === 'home' && document.querySelector('ytd-masthead #avatar-btn') && !hasActivePlayback()) nativeNavigate('subscriptions');
+      if (p.channelDefaultVideos && channelBase() && !hasActivePlayback()) nativeNavigate('videos');
+      if (p.pauseChannelTrailers && isChannel()) document.querySelectorAll('ytd-channel-video-player-renderer video').forEach(pauseTrailer);
+      syncObservation();
+    } catch (error) { reportError('discoveryControls','reconcile',error); }
+  }
+  function schedule(full = true) { if (full !== false) scanAllCards = true; if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile); }
+  const filters = ['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(k=>p[k]);
+  const observer = new MutationObserver(mutations => {
+    let changed = false;
+    for (const m of mutations) {
+      const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+      if (!el || el.closest('#ytms-settings-dialog,#ytms-age-dialog,.html5-video-player')) continue;
+      if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
+      const card = canonicalCard(el); if (card) { pendingCards.add(card); changed = true; }
+      if (el.closest('ytd-masthead,ytd-guide-renderer,yt-tab-group-shape,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer')) changed = true;
+      for (const node of m.addedNodes) if (node.nodeType === 1) {
+        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) pendingCards.add(card); changed = true; }
+        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) pendingCards.add(card); changed = true; }
+        if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
+      }
+      // Native virtualisation can remove cards without adding a replacement.
+      // Release detached owned markers in the next batch, without a feed scan.
+      for (const node of m.removedNodes) if (node.nodeType === 1 &&
+        (node.matches(cardSelector) || node.querySelector(cardSelector))) changed = true;
+    }
+    if (changed) schedule(false);
+  });
+  function syncObservation() {
+    const needed = !disposed && !suspended && (filters && eligibleFeed() || p.logoToSubscriptions || p.restoreSubscriptionsLink || p.homeRedirect && routeKind() === 'home' || p.channelDefaultVideos && channelBase() || p.hideSearchAI && routeKind() === 'search' || p.hideAIChapters || p.hideSidebarSubscriptions || ['dark','light'].includes(p.interfaceTheme));
+    if (needed && !observerActive) { observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','aria-label','title','overlay-style','is-collaboration','class','data-darkreader-mode']}); observerActive = true; }
+    else if (!needed && observerActive) { observer.disconnect(); observerActive = false; }
+  }
+  const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
+  function clearAllDecorations() { for (const node of badgeNodes) { node.removeAttribute('data-ytms-discovery-badge-hidden'); decorationOwners.delete(node); } for (const node of viewNodes) { node.removeAttribute('data-ytms-discovery-view-line'); decorationOwners.delete(node); } for (const node of headings) node.remove(); badgeNodes.clear(); viewNodes.clear(); headings.clear(); }
+  const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
+  const navigateStart = () => { navigationPending = true; start(); };
+  const navigateFinish = () => { navigationPending = false; if (!pageSuspended) { suspended = false; schedule(); } };
+  const pageHide = () => { pageSuspended = true; start(); };
+  const pageShow = () => { if (!pageSuspended) return; pageSuspended = false; navigationPending = false; suspended = false; schedule(); };
+  listen(window,'yt-navigate-start',navigateStart); listen(window,'yt-navigate-finish',navigateFinish);
+  listen(window,'yt-page-data-updated',schedule); listen(window,'pageshow',pageShow); listen(window,'pagehide',pageHide);
+  if (p.logoToSubscriptions) listen(document,'click',event => {
+    if (disposed || suspended || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target?.closest?.('ytd-masthead a#logo,ytd-masthead #logo a[href]');
+    if (!anchor || !logoRecords.has(anchor)) return;
+    const native = navigationAnchor('subscriptions');
+    if (!native) return;
+    event.preventDefault(); event.stopImmediatePropagation(); native.click();
+  });
+  if (p.pauseChannelTrailers) {
+    const interaction = event => { if (event.type === 'keydown' && ![' ','Enter','k','K'].includes(event.key)) return; event.target?.closest?.('ytd-channel-video-player-renderer')?.querySelectorAll('video').forEach(video => manuallyPlayed.add(video)); };
+    listen(document,'pointerdown',interaction); listen(document,'keydown',interaction); listen(document,'play',event => pauseTrailer(event.target));
+  }
+  reconcile();
+  return () => {
+    disposed = true; cancel(); restoreLogos(); style.remove();
+    for (const node of restoredNavigation) if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.clear();
+    for (const [target,type,handler] of listeners) target.removeEventListener(type,handler,true);
+    for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear();
+    clearAllDecorations();
+    for (const [name,record] of rootOwned) if (root.getAttribute(name) === record.value) { if (record.previous === null) root.removeAttribute(name); else root.setAttribute(name,record.previous); }
+  };
+}, function installLayoutControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
+  const flags = {
+    fullWindowTheatre: preferences.fullWindowTheatre === true,
+    theatreHideHeader: preferences.fullWindowTheatre === true && preferences.theatreHideHeader === true,
+    relatedBelowPlayer: preferences.relatedBelowPlayer === true && preferences.hideRelated !== true,
+    hideFullscreenTitle: preferences.hideFullscreenTitle === true,
+    hideFullscreenRelated: preferences.hideFullscreenRelated === true,
+    hideFullscreenEndscreen: preferences.hideFullscreenEndscreen === true,
+    hideFullscreenVoting: preferences.hideFullscreenVoting === true,
+    hideFullscreenMoreActions: preferences.hideFullscreenMoreActions === true,
+    hideFullscreenControls: preferences.hideFullscreenControls === true,
+    hideChatFullscreen: preferences.hideChatFullscreen === true,
+  };
+  if (!Object.values(flags).some(Boolean)) return () => {};
+
+  const style = document.createElement('style');
+  style.id = 'ytms-layout-controls';
+  const rules = [];
+  const routeAttribute = 'data-ytms-layout-watch';
+  const headerAttribute = 'data-ytms-theatre-header-hidden';
+  const watchScope = `:root[${routeAttribute}="1"]`;
+  const theatreHost = 'ytd-watch-flexy:is([theater], [theatre])';
+  const theatre = `${watchScope} ${theatreHost}`;
+  if (flags.fullWindowTheatre) {
+    const offset = flags.theatreHideHeader ? '0px' : 'var(--ytd-masthead-height, 56px)';
+    rules.push(`
+      ${theatre} #full-bleed-container {
+        height: calc(100vh - ${offset}) !important;
+        height: calc(100dvh - ${offset}) !important;
+        min-height: 0 !important; max-height: none !important;
+      }
+      ${theatre} #player-theater-container {
+        height: 100% !important; min-height: 0 !important; max-height: none !important;
+      }
+    `);
+    if (flags.theatreHideHeader) rules.push(`
+      :root[${headerAttribute}="1"] ytd-masthead { display: none !important; }
+      :root[${headerAttribute}="1"] ytd-app { --ytd-masthead-height: 0px !important; }
+      ${theatre} { --ytd-masthead-height: 0px !important; }
+    `);
+  }
+  // These target native in-player surfaces only. RYD, SponsorBlock notices,
+  // DeArrow titles and the main playback controls keep their own presentation.
+  if (flags.hideFullscreenTitle) rules.push('.html5-video-player.ytp-fullscreen .ytp-chrome-top { display: none !important; }');
+  if (flags.hideFullscreenRelated) rules.push('.html5-video-player.ytp-fullscreen .ytp-pause-overlay { display: none !important; }');
+  if (flags.hideFullscreenEndscreen) rules.push('.html5-video-player.ytp-fullscreen .ytp-endscreen-content { display: none !important; }');
+  if (flags.hideFullscreenVoting) rules.push(`
+    .html5-video-player.ytp-fullscreen .ytp-fullscreen-quick-actions :is(yt-like-button-view-model, yt-dislike-button-view-model, like-button-view-model, dislike-button-view-model, .ytLikeButtonViewModelHost, .ytDislikeButtonViewModelHost) { display: none !important; }
+  `);
+  if (flags.hideFullscreenMoreActions) rules.push(`
+    .html5-video-player.ytp-fullscreen .ytp-fullscreen-quick-actions :is(.ytp-overflow-button, yt-button-view-model:has(button[aria-label="More actions" i])) { display: none !important; }
+  `);
+  if (flags.hideFullscreenControls) rules.push('.html5-video-player.ytp-fullscreen .ytp-chrome-bottom { display: none !important; }');
+  if (flags.hideChatFullscreen) rules.push(`
+    :root:fullscreen ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]),
+    :root:has(.html5-video-player.ytp-fullscreen) ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]) { display: none !important; }
+  `);
+  const belowAttribute = 'data-ytms-related-below';
+  if (flags.relatedBelowPlayer) rules.push(`
+    :root ytd-watch-flexy[${belowAttribute}="1"] { --ytd-watch-flexy-sidebar-width: 0px !important; }
+    ytd-watch-flexy[${belowAttribute}="1"] #columns { flex-direction: column !important; }
+    ytd-watch-flexy[${belowAttribute}="1"] #columns > #primary,
+    ytd-watch-flexy[${belowAttribute}="1"] #columns > #secondary {
+      width: 100% !important; max-width: none !important; min-width: 0 !important;
+      box-sizing: border-box !important;
+    }
+    ytd-watch-flexy[${belowAttribute}="1"] #secondary { margin-inline-start: 0 !important; }
+  `);
+  style.textContent = rules.join('\n');
+  (document.head || document.documentElement).appendChild(style);
+
+  let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, frame = 0, observedTargets = [], geometryPending = false;
+  const needsObservation = flags.relatedBelowPlayer || flags.theatreHideHeader;
+  const needsReconciliation = needsObservation || flags.fullWindowTheatre;
+  const marked = new Set();
+  const onWatchRoute = () => window.location.pathname === '/watch' || window.location.pathname.startsWith('/live/');
+  function marker(element, name, value) {
+    if (element.getAttribute(name) === value) return;
+    if (value === null) element.removeAttribute(name); else element.setAttribute(name, value);
+    geometryPending = true;
+  }
+  function syncRouteMarker() {
+    marker(document.documentElement, routeAttribute, flags.fullWindowTheatre && onWatchRoute() && !suspended ? '1' : null);
+    if (!onWatchRoute() || suspended) marker(document.documentElement, headerAttribute, null);
+  }
+  const relevant = '#secondary, #secondary-inner, #related, ytd-watch-flexy, ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer';
+  function rendered(element, boundary) {
+    if (!element?.isConnected) return false;
+    for (let current = element; current; current = current.parentElement) {
+      if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.hasAttribute('collapsed')) return false;
+      const css = window.getComputedStyle(current);
+      if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || css.opacity === '0') return false;
+      if (current === boundary) break;
+    }
+    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  }
+  function railHasOtherContent(watch, secondary, related) {
+    const surfaces = secondary.querySelectorAll('ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer');
+    for (const surface of surfaces) {
+      if (related.contains(surface)) continue;
+      if (surface.matches('ytd-engagement-panel-section-list-renderer') &&
+          surface.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN') continue;
+      if (rendered(surface, watch)) return true;
+    }
+    // Unknown native or extension surfaces keep their rail. Do not hide or
+    // relocate a new feature merely because its custom-element name changed.
+    for (const child of secondary.children) {
+      const children = child.id === 'secondary-inner' ? [...child.children] : [child];
+      for (const surface of children) {
+        if (surface === related || surface.contains(related) || surface.tagName === 'STYLE' || surface.tagName === 'SCRIPT') continue;
+        if (rendered(surface, watch)) return true;
+      }
+    }
+    return false;
+  }
+  function sync() {
+    frame = 0;
+    if (disposed || suspended) return;
+    const route = onWatchRoute();
+    const hideHeader = flags.theatreHideHeader && route && [...document.querySelectorAll(theatreHost)].some(watch => rendered(watch, watch));
+    marker(document.documentElement, headerAttribute, hideHeader ? '1' : null);
+    const active = new Set();
+    if (flags.relatedBelowPlayer && route) {
+      for (const watch of document.querySelectorAll('ytd-watch-flexy')) {
+        const secondary = watch.querySelector('#secondary');
+        const related = secondary?.querySelector('#related');
+        if (!secondary || !related || !rendered(related, watch) || railHasOtherContent(watch, secondary, related)) continue;
+        active.add(watch);
+        if (!marked.has(watch)) { marker(watch, belowAttribute, '1'); marked.add(watch); }
+      }
+    }
+    for (const watch of marked) if (!active.has(watch)) { marker(watch, belowAttribute, null); marked.delete(watch); }
+    observe();
+    if (geometryPending) {
+      geometryPending = false;
+      // Notify after the complete owned layout transition, so native inline
+      // dimensions follow the new containers without changing player ownership.
+      if (route) window.dispatchEvent(new window.Event('resize'));
+    }
+  }
+  function schedule() {
+    if (!disposed && !suspended && needsReconciliation && !frame) frame = window.requestAnimationFrame(() => {
+      try { sync(); } catch (error) { reportError(error); }
+    });
+  }
+  function clearMarkers() { for (const watch of marked) marker(watch, belowAttribute, null); marked.clear(); }
+  const observer = needsObservation ? new MutationObserver(mutations => {
+    if (mutations.some(mutation => {
+      const target = mutation.target?.nodeType === 1 ? mutation.target : mutation.target?.parentElement;
+      if (target?.closest('#secondary, #secondary-inner')) return true;
+      if (mutation.type === 'attributes') return target?.matches('ytd-watch-flexy');
+      return [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === 1 && (node.matches(relevant) || node.querySelector(relevant)));
+    })) schedule();
+  }) : null;
+  function observe() {
+    if (!observer) return;
+    const targets = onWatchRoute() ? [document.documentElement, ...document.querySelectorAll('ytd-watch-flexy, ytd-watch-flexy #secondary')] : [];
+    if (targets.length === observedTargets.length && targets.every((target, index) => target === observedTargets[index])) return;
+    const registrations = targets.map(target => [target, target === document.documentElement
+      ? { childList: true, subtree: true }
+      : { attributes: true, subtree: target.id === 'secondary', attributeFilter: ['hidden', 'collapsed', 'visibility', 'aria-hidden', 'class', 'style', 'theater', 'theatre'] }]);
+    if (typeof observer.replaceRegistrations === 'function') observer.replaceRegistrations(registrations);
+    else { observer.disconnect(); for (const [target, options] of registrations) observer.observe(target, options); }
+    observedTargets = targets;
+  }
+  function suspend() {
+    suspended = true; observer?.disconnect();
+    observedTargets = [];
+    if (frame) window.cancelAnimationFrame(frame);
+    frame = 0; clearMarkers(); syncRouteMarker();
+  }
+  function resume() { if (!disposed && !pageSuspended && !navigationPending) { suspended = false; syncRouteMarker(); observe(); schedule(); } }
+  function navigateStart() { navigationPending = true; suspend(); }
+  function navigateFinish() { navigationPending = false; resume(); }
+  function pageHide() { pageSuspended = true; suspend(); }
+  function pageShow() {
+    const restoring = pageSuspended; pageSuspended = false;
+    if (restoring) navigationPending = false;
+    resume();
+  }
+  function pageData() { syncRouteMarker(); schedule(); }
+  const listeners = [];
+  function listen(type, handler) { window.addEventListener(type, handler); listeners.push([type, handler]); }
+  listen('yt-navigate-start', navigateStart); listen('pagehide', pageHide);
+  listen('yt-navigate-finish', navigateFinish); listen('pageshow', pageShow);
+  listen('yt-page-data-updated', pageData); listen('resize', schedule);
+  syncRouteMarker(); observe(); schedule();
+  return () => {
+    if (disposed) return;
+    disposed = true; suspend();
+    for (const [type, handler] of listeners) window.removeEventListener(type, handler);
+    style.remove();
+  };
+}]) {
+      try { install(options); } catch { options.reportError(); }
+    }
+  };
 
   installDiagnostics();
 
   suite.registerModule(
     "commentCleaner",
-    "Comment Cleaner v1.29",
+    "Comment Cleaner v1.30",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -4638,6 +8894,11 @@
               if (containsUploaderSource(mutation.target)) {
                 invalidateCachedUploaderPaths();
                 scheduleApply(document.querySelector("ytd-comments") || document);
+              } else if (CONFIG.colourCommenters && mutation.attributeName === "href" &&
+                  mutation.target.matches?.(COMMENT_AUTHOR_SELECTOR)) {
+                // Recycled authors can retain their text/children while changing
+                // channel. Refresh only this link, not the entire comments section.
+                scheduleApply(mutation.target);
               }
               continue;
             }
@@ -4775,7 +9036,7 @@
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.20",
+    "Feed UI Cleaner v2.23",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -4785,6 +9046,15 @@
 
         const CONFIG = {
           hideStaticUi: true,
+          hideHomeCategories: true,
+          hideNotifications: true,
+          hideVoiceSearch: true,
+          hideCreateButton: true,
+          hideSidebarSections: true,
+          hideGuideFooter: true,
+          hideFeedShelves: true,
+          hideFeedNudges: true,
+          hideHistoryAuxActions: true,
           tightenFeedGrid: true,
           filterProfiles: {
             default: { mixes: true, membersOnly: true, podcasts: true },
@@ -5025,7 +9295,19 @@
         }
 
         function buildStaticCss() {
-          return CONFIG.hideStaticUi ? buildHideCss(STATIC_HIDE_SELECTORS) : '';
+          if (!CONFIG.hideStaticUi) return '';
+          // Keep the existing defaults, but let each cleanup be restored independently.
+          const enabled = STATIC_HIDE_SELECTORS.filter(selector => {
+            if (selector.includes('feed-filter-chip-bar')) return CONFIG.hideHomeCategories !== false;
+            if (selector.includes('notification')) return CONFIG.hideNotifications !== false;
+            if (selector.includes('voice-search')) return CONFIG.hideVoiceSearch !== false;
+            if (selector.includes('create-button') || selector.includes('[aria-label="Create"]')) return CONFIG.hideCreateButton !== false;
+            if (selector.includes('feed-nudge')) return CONFIG.hideFeedNudges !== false;
+            if (selector.includes('ytd-rich-section-renderer')) return CONFIG.hideFeedShelves !== false;
+            if (selector.includes('guide-section') || selector.includes('guide-collapsible') || selector.includes('ytd-guide-entry-renderer')) return CONFIG.hideSidebarSections !== false;
+            return CONFIG.hideGuideFooter !== false;
+          });
+          return enabled.length ? buildHideCss(enabled) : '';
         }
 
         function buildFeedGridCss() {
@@ -5116,7 +9398,7 @@
             buildStaticCss(),
             buildFeedGridCss(),
             buildFilteredCardCss(),
-            CONFIG.hideStaticUi ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
+            CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false ? `[${HISTORY_AUX_ATTRIBUTE}="1"] { display: none !important; }` : '',
           ].filter(css => css.trim()).join('\n');
         }
 
@@ -5125,7 +9407,7 @@
         function reconcileHistoryActions() {
           historyActionsFrame = 0;
           const found = new Set();
-          if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+          if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
             document.querySelectorAll(HISTORY_ACTIONS_SELECTOR).forEach(contents => {
               for (const row of contents.children) {
                 if (!row.matches(HISTORY_ACTION_ROW_SELECTOR)) continue;
@@ -5174,7 +9456,9 @@
           const { card, channelId, videoId } = record;
           return card.isConnected && isChannelAgeFeedRoute() && card.closest(FEED_SURFACE_SELECTOR) &&
             !isInsideExcludedSurface(card) && channelAge.videoIdFromCard(card) === videoId &&
-            channelAge.channelFromCard(card)?.channelId === channelId;
+            (typeof channelAge.channelCandidatesFromCard === 'function'
+              ? channelAge.channelCandidatesFromCard(card).some(channel => channel.channelId === channelId)
+              : channelAge.channelFromCard(card)?.channelId === channelId);
         }
 
         function reconcileConfirmations(root = document) {
@@ -5576,7 +9860,7 @@
         const observer = new MutationObserver((mutations) => {
           let toggleDirty = false;
           for (const mutation of mutations) {
-            if (CONFIG.hideStaticUi && location.pathname === '/feed/history') {
+            if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
               const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
               const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
               if (target?.closest?.('ytd-browse-feed-actions-renderer') ||
@@ -5704,7 +9988,7 @@
 
   suite.registerModule(
     "miniplayerButtonRestorer",
-    "Miniplayer Button Restorer v1.16",
+    "Miniplayer Button Restorer v1.18",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -5716,11 +10000,13 @@
         const TOOLTIP_ID = "tmk-miniplayer-tooltip";
         const STYLE_ID = "tmk-miniplayer-style";
         const CONFIG = {
+          enabled: true,
           iconPx: 36,
           pollInterval: 250,
           pollMaxMs: 20000,
           navRetryDelays: [300, 900, 1800, 3500],
         };
+        if (!CONFIG.enabled) return;
 
         const PLAYER_SELECTORS = ["#movie_player", ".html5-video-player"];
         const RIGHT_CONTROLS_SELECTOR = ".ytp-right-controls";
@@ -5793,9 +10079,12 @@
               max-width:calc(100% - 16px) !important;
               padding:5px 9px !important;
               border-radius:2px !important;
-              background:rgba(0, 0, 0, 0.9) !important;
-              color:#eee !important;
-              font:500 12px/1.2 Roboto, Arial, sans-serif !important;
+              background:rgba(28, 28, 28, 0.9) !important;
+              color:inherit !important;
+              font-family:inherit !important;
+              font-size:118% !important;
+              font-weight:500 !important;
+              line-height:15px !important;
               text-shadow:none !important;
               pointer-events:none !important;
             }
@@ -5811,6 +10100,22 @@
               color:inherit !important;
               font:400 12px/14px Roboto, Arial, sans-serif !important;
               text-align:center !important;
+            }
+            .ytp-big-mode #${TOOLTIP_ID}{line-height:22px !important;}
+            .ytp-delhi-modern #${TOOLTIP_ID}{
+              border-radius:8px !important;
+              background:var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important;
+              -webkit-backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+              backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+              text-shadow:0 0 2px #000 !important;
+            }
+            .ytp-delhi-modern #${TOOLTIP_ID} kbd{
+              border-color:rgba(255, 255, 255, 0.3) !important;
+              border-radius:4px !important;
+              min-width:11px !important;
+              height:auto !important;
+              color:#fff !important;
+              font:inherit !important;
             }
           `;
         }
@@ -7238,7 +11543,7 @@
 
   suite.registerModule(
     "playerPreferencesLite",
-    "Player Preferences Lite v1.120",
+    "Player Preferences Lite v1.122",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -7281,6 +11586,7 @@
           preferredVideoQuality: "off",
           timelinePreviewSize: "auto",
           keepHoverPreviews: false,
+          disableVideoPreviews: false,
           timeDisplayMode: "native",
           enablePlayerWheelVolume: true,
           enableVideoMirrorButton: true,
@@ -9995,9 +14301,12 @@
                 max-width: calc(100% - 16px) !important;
                 padding: 5px 9px !important;
                 border-radius: 2px !important;
-                background: rgba(0, 0, 0, 0.9) !important;
-                color: #eee !important;
-                font: 500 12px/1.2 Roboto, Arial, sans-serif !important;
+                background: rgba(28, 28, 28, 0.9) !important;
+                color: inherit !important;
+                font-family: inherit !important;
+                font-size: 118% !important;
+                font-weight: 500 !important;
+                line-height: 15px !important;
                 text-shadow: none !important;
                 pointer-events: none !important;
               }
@@ -10013,6 +14322,22 @@
                 color: inherit !important;
                 font: 400 12px/14px Roboto, Arial, sans-serif !important;
                 text-align: center !important;
+              }
+              .ytp-big-mode #${VIDEO_MIRROR_TOOLTIP_ID} { line-height: 22px !important; }
+              .ytp-delhi-modern #${VIDEO_MIRROR_TOOLTIP_ID} {
+                border-radius: 8px !important;
+                background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important;
+                -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+                backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+                text-shadow: 0 0 2px #000 !important;
+              }
+              .ytp-delhi-modern #${VIDEO_MIRROR_TOOLTIP_ID} kbd {
+                border-color: rgba(255, 255, 255, 0.3) !important;
+                border-radius: 4px !important;
+                min-width: 11px !important;
+                height: auto !important;
+                color: #fff !important;
+                font: inherit !important;
               }
             `;
         }
@@ -12707,7 +17032,7 @@
 
         installTimelinePreviewSizing();
         if (typeof suite !== 'undefined') suite.installPlayerPresentation?.({
-          document, window, keepHoverPreviews: CONFIG.keepHoverPreviews, timeDisplayMode: CONFIG.timeDisplayMode,
+          document, window, keepHoverPreviews: CONFIG.keepHoverPreviews, disableVideoPreviews: CONFIG.disableVideoPreviews, timeDisplayMode: CONFIG.timeDisplayMode,
         });
         applyRoutePreferences();
 
@@ -12834,7 +17159,7 @@
 
   suite.registerModule(
     "scrollMiniplayer",
-    "Scroll Miniplayer v5.29",
+    "Scroll Miniplayer v5.33",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -12997,7 +17322,8 @@
             : "top-right";
 
           try {
-            const storedCorner = localStorage.getItem(CORNER_STORAGE_KEY);
+            const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+            const storedCorner = storage.getItem(CORNER_STORAGE_KEY);
             return isValidCorner(storedCorner) ? storedCorner : defaultCorner;
           } catch {
             return defaultCorner;
@@ -13008,7 +17334,8 @@
           if (!isValidCorner(corner)) return false;
 
           try {
-            localStorage.setItem(CORNER_STORAGE_KEY, corner);
+            const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+            storage.setItem(CORNER_STORAGE_KEY, corner);
             return true;
           } catch {
             return false;
@@ -13326,19 +17653,25 @@
         function canFloatPlayer() {
           if (!CONFIG.enabled || !isEligiblePath() || isFullscreen() || isNativeMiniplayerVisible()) return false;
 
-          const video = getPlayerVideo();
+          const player = getPlayer();
+          // Native ownership survives hidden/zero-size activation transitions.
+          // Taking its player during that interval causes competing resize loops.
+          if (!player || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
+
+          const video = player.querySelector(VIDEO_SELECTOR);
           if (!video || video.ended) return false;
 
-          const player = getPlayer();
-          return Boolean(player && !player.classList.contains("ended-mode"));
+          return !player.classList.contains("ended-mode");
         }
 
         function buildCss() {
           const defaultHeight = Math.round(CONFIG.width / CONFIG.aspectRatio);
 
+          // Only the direct body child is floated by this module. Native adoption
+          // must release these overrides synchronously, before observer cleanup.
           return `
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen),
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen),
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
               position: fixed !important;
               top: var(--ytsmp-top, 68px) !important;
               right: var(--ytsmp-right, auto) !important;
@@ -13359,21 +17692,21 @@
                 transform ${CONFIG.enterTransitionMs}ms ease-out !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
               opacity: 1 !important;
               transform: translateZ(0) scale(1) !important;
             }
 
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
               opacity: 0 !important;
               pointer-events: none !important;
               transform: translateZ(0) scale(0.985) !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content,
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content,
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content {
               top: 0 !important;
               left: 0 !important;
               width: var(--ytsmp-width, ${CONFIG.width}px) !important;
@@ -13381,24 +17714,24 @@
               margin-left: 0 !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-chrome-bottom {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-chrome-bottom {
               left: 12px !important;
               width: calc(100% - 24px) !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-gradient-bottom {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-gradient-bottom {
               height: 96px !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-ce-element,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-paid-content-overlay {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-ce-element,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-paid-content-overlay {
               display: none !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu,
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
-            body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu,
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
+            body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu {
               display: none !important;
               opacity: 0 !important;
               pointer-events: none !important;
@@ -13409,9 +17742,9 @@
               display: none !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID},
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID},
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID},
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID},
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} {
               appearance: none !important;
               align-items: center !important;
               background: rgba(0, 0, 0, 0.72) !important;
@@ -13432,9 +17765,9 @@
               z-index: 2147483647 !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} svg,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID} svg,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} svg {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} svg,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID} svg,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} svg {
               display: block !important;
               fill: currentColor !important;
               height: 18px !important;
@@ -13442,7 +17775,7 @@
               width: 18px !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} {
               opacity: 0 !important;
               position: absolute !important;
               right: 8px !important;
@@ -13450,7 +17783,7 @@
               transition: background-color 100ms ease-out, opacity 120ms ease-out, transform 80ms ease-out !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID} {
               align-items: center !important;
               display: flex !important;
               flex-direction: row-reverse !important;
@@ -13463,7 +17796,7 @@
               z-index: 2147483647 !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_MENU_ID} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_MENU_ID} {
               align-items: center !important;
               display: flex !important;
               gap: 4px !important;
@@ -13476,7 +17809,7 @@
               visibility: hidden !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}[data-open="1"] #${CORNER_MENU_ID} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}[data-open="1"] #${CORNER_MENU_ID} {
               max-width: 92px !important;
               opacity: 1 !important;
               pointer-events: auto !important;
@@ -13485,28 +17818,28 @@
               visibility: visible !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CLOSE_BUTTON_ID},
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CORNER_CONTROL_ID},
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}:focus-within {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CLOSE_BUTTON_ID},
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CORNER_CONTROL_ID},
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}:focus-within {
               opacity: 1 !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:hover,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:hover,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:hover {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:hover,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:hover,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:hover {
               background: rgba(0, 0, 0, 0.9) !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:active,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:active,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:active {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:active,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:active,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:active {
               transform: scale(0.92) !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:focus-visible,
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:focus-visible {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:focus-visible,
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:focus-visible {
               outline: 2px solid #fff !important;
               outline-offset: 2px !important;
             }
@@ -13515,7 +17848,7 @@
               display: none !important;
             }
 
-            body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${QUEUE_INFO_ID} {
+            body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${QUEUE_INFO_ID} {
               align-items: center !important;
               background: rgba(18, 18, 18, 0.88) !important;
               border-radius: 6px !important;
@@ -13557,6 +17890,37 @@
           suite.setStyle("scrollMiniplayer", buildCss());
         }
 
+        function getRequestedCustomWidth() {
+          return Number.isInteger(CONFIG.customWidth) && CONFIG.customWidth >= 320 && CONFIG.customWidth <= 1200
+            ? CONFIG.customWidth
+            : CONFIG.width;
+        }
+
+        function getAppliedScrollMiniplayerSize() {
+          return {
+            mode: CONFIG.sizeMode === "fixed" ? "custom" : "auto",
+            width: getRequestedCustomWidth(),
+          };
+        }
+
+        function setScrollMiniplayerSize(value) {
+          if (!value || typeof value !== "object" || Array.isArray(value) ||
+              !["auto", "custom"].includes(value.mode) || !Number.isInteger(value.width) ||
+              value.width < 320 || value.width > 1200) return false;
+
+          const sizeMode = value.mode === "custom" ? "fixed" : "dynamic";
+          if (CONFIG.sizeMode === sizeMode && getRequestedCustomWidth() === value.width) return true;
+          // Retain the automatic preferred width. A custom request is independent of
+          // the rendered size, which may be smaller while the viewport is cramped.
+          CONFIG.sizeMode = sizeMode;
+          CONFIG.customWidth = value.width;
+          if (isBodyActive()) {
+            setBodyBoxVars();
+            dispatchResize();
+          }
+          return true;
+        }
+
         function setBodyBoxVars() {
           const body = document.body;
           if (!body) return;
@@ -13565,12 +17929,15 @@
             ? getRemainingColumnBox()
             : null;
           const availableWidth = Math.max(160, innerWidth - CONFIG.edgeOffsetPx * 2);
-          const availableHeight = Math.max(90, innerHeight - getMastheadHeight() - CONFIG.mastheadGapPx - CONFIG.edgeOffsetPx);
+          const availableHeight = Math.max(CONFIG.sizeMode === "fixed" ? 1 : 90,
+            innerHeight - getMastheadHeight() - CONFIG.mastheadGapPx - CONFIG.edgeOffsetPx);
           const isPortraitViewport = innerHeight > innerWidth;
           let width;
 
           if (CONFIG.sizeMode === "fixed") {
-            width = Math.min(CONFIG.width, availableWidth);
+            const rightInset = remainingColumnBox ? remainingColumnBox.right : CONFIG.edgeOffsetPx;
+            const fittingWidth = Math.max(1, innerWidth - rightInset - CONFIG.edgeOffsetPx);
+            width = Math.min(getRequestedCustomWidth(), availableWidth, fittingWidth);
           } else if (CONFIG.sizeMode === "column") {
             width = Math.min(remainingColumnBox ? remainingColumnBox.width : CONFIG.width, availableWidth);
           } else {
@@ -13673,9 +18040,10 @@
         }
 
         function movePlayerToTopLevel(player) {
+          if (!player || !document.body || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
+
           clearPlayerRestoreRetries();
           clearPlayerOrphanFinaliseTimer();
-          if (!player || !document.body) return false;
 
           if (
             floatedPlayer &&
@@ -14813,7 +19181,7 @@
 
         suite.addWindowListener("scroll", scheduleScrollSync, { passive: true });
 
-        suite.addWindowListener("storage", (event) => {
+        const handleStoredCorner = (event) => {
           if (
             event.key !== CORNER_STORAGE_KEY ||
             !isValidCorner(event.newValue) ||
@@ -14832,7 +19200,9 @@
             setBodyBoxVars();
             dispatchResize();
           }
-        });
+        };
+        if (typeof suite === "undefined") suite.addWindowListener("storage", handleStoredCorner);
+        else suite.storage.subscribe(handleStoredCorner);
 
         function handleFullscreenChange() {
           setActive(false);
@@ -14901,13 +19271,15 @@
         // does not have the master's private suite object.
         if (typeof suite !== "undefined") {
           suite.getAppliedScrollMiniplayerCorner = () => currentCorner;
+          suite.getAppliedScrollMiniplayerSize = getAppliedScrollMiniplayerSize;
+          suite.setScrollMiniplayerSize = setScrollMiniplayerSize;
         }
     },
   );
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.63",
+    "Watch Layout Cleaner v1.75",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -14920,6 +19292,7 @@
           queueLayoutBreakpointPx: 1000,
           relatedVideosHideBreakpointPx: 1400,
           showDeArrowQueueButton: true,
+          collapseEmptySidebar: true,
         };
         Object.assign(CONFIG, suite.settings.overrides("watchLayoutCleaner", CONFIG));
 
@@ -15217,20 +19590,24 @@
 
         function getQueueItemVideoId(item) {
           const links = item.querySelectorAll('a[href*="/watch"]');
+          const videoIds = new Set();
 
           for (const link of links) {
             let videoId = "";
             try {
-              videoId = new URL(link.href || link.getAttribute("href"), location.origin)
-                .searchParams.get("v") || "";
+              const url = new URL(link.href || link.getAttribute("href"), location.origin);
+              if (url.origin !== location.origin || url.pathname !== "/watch") continue;
+              videoId = url.searchParams.get("v") || "";
             } catch {
               continue;
             }
 
-            if (/^[A-Za-z0-9_-]{11}$/.test(videoId)) return videoId;
+            if (/^[A-Za-z0-9_-]{11}$/.test(videoId)) videoIds.add(videoId);
           }
 
-          return "";
+          // Recycled rows can briefly retain the old thumbnail link beside a new
+          // title link. Do not choose an image until their valid identities agree.
+          return videoIds.size === 1 ? videoIds.values().next().value : "";
         }
 
         function hasLoadedQueueThumbnail(item) {
@@ -15265,7 +19642,10 @@
           }
 
           const videoId = getQueueItemVideoId(item);
-          if (!videoId) return;
+          if (!videoId) {
+            clearQueueThumbnailFallback(item);
+            return;
+          }
 
           const thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
           item.querySelectorAll(QUEUE_THUMBNAIL_TARGET_SELECTOR).forEach(
@@ -15297,6 +19677,7 @@
                 ) {
                   observer.unobserve(entry.target);
                   pendingQueueThumbnailItems.delete(entry.target);
+                  clearQueueThumbnailFallback(entry.target);
                   return;
                 }
                 if (!entry.isIntersecting) return;
@@ -15334,6 +19715,7 @@
             if (item.isConnected && item.closest(PLAYLIST_PANEL_SELECTOR)) return;
             queueThumbnailFallbackObserver?.unobserve(item);
             pendingQueueThumbnailItems.delete(item);
+            clearQueueThumbnailFallback(item);
           });
         }
 
@@ -15464,7 +19846,8 @@
               layoutChanged = true;
             }
             const eligible =
-              watchRoute && (watchFlexy.matches(TWO_COLUMN_WATCH_FLEXY_SELECTOR) || Boolean(managedChatState));
+              CONFIG.collapseEmptySidebar !== false && watchRoute &&
+              (watchFlexy.matches(TWO_COLUMN_WATCH_FLEXY_SELECTOR) || Boolean(managedChatState));
             const related = eligible ? watchFlexy.querySelector("#related") : null;
             const relatedHidden =
               eligible &&
@@ -15519,7 +19902,9 @@
         function getRailMutationTargets() {
           if (!isWatchPath()) return [];
 
-          const targets = new Set();
+          // The native miniplayer can adopt a queue without leaving the watch route.
+          // Keep observing every panel that the thumbnail fallback itself can own.
+          const targets = new Set(document.querySelectorAll(PLAYLIST_PANEL_SELECTOR));
           document.querySelectorAll("ytd-watch-flexy").forEach((watchFlexy) => {
             watchFlexy
               .querySelectorAll(RAIL_MUTATION_TARGET_SELECTOR)
@@ -15738,6 +20123,14 @@
           queueThumbnailFallbackTimers.forEach((timerId) => clearTimeout(timerId));
           refreshRailMutationObserver();
           scheduleSecondaryRailStateReconciliation();
+          if (!isWatchPath()) {
+            queueThumbnailFallbackTimers = [];
+            if (queueThumbnailMutationFrame) cancelAnimationFrame(queueThumbnailMutationFrame);
+            queueThumbnailMutationFrame = 0;
+            pendingQueueThumbnailItems.clear();
+            document.querySelectorAll(QUEUE_ITEM_SELECTOR).forEach(clearQueueThumbnailFallback);
+            return;
+          }
           queueThumbnailFallbackTimers = QUEUE_THUMBNAIL_FALLBACK_DELAYS_MS.map(
             (delay) => setTimeout(applyQueueThumbnailFallbacks, delay),
           );
@@ -15851,9 +20244,15 @@
           const marker = "ytMasterPlayNext";
           const panelSelector = "ytd-playlist-panel-renderer, yt-playlist-panel-renderer";
           const rowSelector = "ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer";
-          let entries = new WeakMap();
-          let sheets = new WeakMap();
+          const entries = new WeakMap();
+          const sheets = new WeakMap();
+          const menuBindings = new WeakMap();
+          const pendingIcons = new Set();
+          let pendingIconObserver = null;
           let pending = null;
+          let operationGeneration = 0;
+          let confirmedMiniOrders = new WeakMap();
+          let menuActivation = 0;
           let toast = null;
           let toastTimer = 0;
           let menuFrame = 0;
@@ -15879,7 +20278,7 @@
             const ids = command.videoIds || [command.videoId];
             if (!Array.isArray(ids) || ids.length !== 1 || !validId(ids[0]) ||
                 (command.videoId !== undefined && command.videoId !== ids[0])) return null;
-            return { endpoint, command, videoId: ids[0] };
+            return { endpoint, command, videoId: ids[0], sourceItem: item, signature: boundedMenuSignature(command) };
           }
 
           function activeVideoId() {
@@ -15912,7 +20311,58 @@
             return { mini, ids: [...ids] };
           }
 
-          function queueState(anchor) {
+          const queueEntries = videos => videos.map(video => ({ videoId: video.videoId, playlistSetVideoId: video.playlistSetVideoId }));
+          const sameEntries = (left, right) => left.length === right.length && left.every((entry, index) =>
+            entry.videoId === right[index].videoId && entry.playlistSetVideoId === right[index].playlistSetVideoId);
+
+          function captureOrderProof(queue, player, expectedEntries, playlist) {
+            return { player, anchor: queue.videos[queue.currentIndex].videoId, panel: queue.panel, owner: queue.owner, mini: queue.mini, listId: queue.listId,
+              playerListId: queue.playerListId, playerPlaylist: Array.isArray(playlist) ? [...playlist] : null,
+              expectedEntries };
+          }
+
+          function isAppendOrder(entries, proof, videoId) {
+            if (!proof || entries.length !== proof.expectedEntries.length + 1 ||
+                !sameEntries(entries.slice(0, -1), proof.expectedEntries)) return false;
+            const added = entries[entries.length - 1];
+            return added.videoId === videoId && typeof added.playlistSetVideoId === 'string' &&
+              added.playlistSetVideoId.length > 0 &&
+              entries.filter(entry => entry.playlistSetVideoId === added.playlistSetVideoId).length === 1;
+          }
+
+          function rememberMiniOrder(queue, player, proof, expectedEntries, operation) {
+            if (!proof || !queue.mini || proof.player !== player || proof.anchor !== operation.anchor ||
+                proof.panel !== queue.panel || proof.owner !== queue.owner || proof.mini !== queue.mini ||
+                proof.listId !== queue.listId || proof.playerListId !== queue.playerListId ||
+                !sameEntries(queueEntries(queue.videos), expectedEntries) || !reorderRows(queue) || pending !== operation) return;
+            confirmedMiniOrders.set(player, { player, anchor: proof.anchor, panel: proof.panel, owner: proof.owner,
+              mini: proof.mini, listId: proof.listId, playerListId: proof.playerListId,
+              playerPlaylist: proof.playerPlaylist, expectedEntries });
+          }
+
+          function allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery) {
+            // The native playlist API can lag its own panel after an accepted append
+            // or handleDrop. Accept only our exact, independently bound transition;
+            // an unrelated order, entry, owner or playback change still fails closed.
+            const entries = queueEntries(queue.videos);
+            const matchesContext = proof => proof && proof.player === player && proof.anchor === anchor && proof.mini === queue.mini &&
+              queue.mini && player.closest('ytd-miniplayer') === proof.mini && proof.panel === queue.panel &&
+              proof.owner === queue.owner && proof.listId === queue.listId &&
+              proof.playerListId === queue.playerListId &&
+              Array.isArray(proof.playerPlaylist) && sameIds(nativePlaylist, proof.playerPlaylist);
+            // Recovery separately verifies the exact optimistic DOM move before
+            // restoring it. Only its captured pre-move native model is eligible here.
+            if (recovery?.anchor === anchor && matchesContext(recovery.move) &&
+                sameEntries(entries, recovery.move.entries)) return true;
+            const activeMove = pending?.committed && pending.anchor === anchor ? pending.move : null;
+            for (const proof of [activeMove, confirmedMiniOrders.get(player)]) {
+              if (matchesContext(proof) && sameEntries(entries, proof.expectedEntries) && reorderRows(queue)) return true;
+            }
+            const append = pending && !pending.committed && pending.anchor === anchor ? pending.appendProof : null;
+            return matchesContext(append) && isAppendOrder(entries, append, pending.videoId) && Boolean(reorderRows(queue));
+          }
+
+          function queueState(anchor, recovery = null) {
             const queues = [];
             const player = activePlayer(anchor);
             const activeListId = player?.getPlaylistId?.();
@@ -15938,7 +20388,6 @@
               }
               const videos = data.contents.map(item => item.playlistPanelVideoRenderer);
               if (!videos.length || videos.some(video => !validId(video?.videoId))) return { unavailable: true };
-              if (missingListId && !sameIds(videos.map(video => video.videoId), miniQueue.ids)) return { unavailable: true };
               // Native display selection can retain the previous playing marker,
               // especially on Home where the miniplayer reports no playlist ID.
               // Prefer the independently verified index and unique playing video;
@@ -15952,7 +20401,10 @@
               if (!Number.isInteger(currentIndex) || videos[currentIndex]?.videoId !== anchor ||
                   videos.filter(video => video.videoId === anchor).length !== 1 ||
                   (Number.isInteger(data.totalVideos) && data.totalVideos > videos.length)) return { unavailable: true };
-              queues.push({ panel, owner, data, videos, currentIndex, listId: data.playlistId, mini: ownedMini ? mini : null });
+              const queue = { panel, owner, data, videos, currentIndex, listId: data.playlistId, playerListId: activeListId, mini: ownedMini ? mini : null };
+              if (missingListId && !sameIds(videos.map(video => video.videoId), miniQueue.ids) &&
+                  !allowsLaggingPlayerOrder(queue, player, anchor, miniQueue.ids, recovery)) return { unavailable: true };
+              queues.push(queue);
             }
             // A collapsed Home queue may not have stamped a panel yet. Never mistake
             // its existing playlist for no queue and send an append-only command.
@@ -15999,12 +20451,48 @@
             toastTimer = setTimeout(() => { toast?.remove(); toast = null; toastTimer = 0; }, 4000);
           }
 
-          function finish(message) {
-            if (pending) {
-              pending.observer.disconnect();
-              clearTimeout(pending.timer);
-              if (pending.frame) cancelAnimationFrame(pending.frame);
-              pending = null;
+          function recoverMove(operation) {
+            const move = operation?.move;
+            if (!move) return;
+            try {
+              const { panel, owner, player, items, rows, rowOwners, row, nodes, expected, entries, currentIndex,
+                listId, playerListId, playerPlaylist, mini, from } = move;
+              if (!panel.isConnected || !items.isConnected || controller(panel) !== owner ||
+                  panel.querySelector('#items') !== items || activeVideoId() !== operation.anchor ||
+                  activePlayer(operation.anchor) !== player || player.closest('ytd-miniplayer') !== mini ||
+                  player.getPlaylistId?.() !== playerListId) return;
+              // The native player can change before its panel catches up. Restore
+              // only if both independent native bindings still describe the old order.
+              const playlist = player.getPlaylist?.();
+              if (Array.isArray(playerPlaylist) ? !Array.isArray(playlist) || !sameIds(playlist, playerPlaylist)
+                : playerPlaylist != null || playlist !== playerPlaylist) return;
+              const queue = queueState(operation.anchor, operation);
+              if (!queue || queue.panel !== panel || queue.owner !== owner || queue.listId !== listId || queue.currentIndex !== currentIndex ||
+                  queue.videos.length !== entries.length || queue.videos.some((video, index) =>
+                    video.videoId !== entries[index].videoId || video.playlistSetVideoId !== entries[index].playlistSetVideoId)) return;
+              const reorder = owner.ytReorderableController;
+              if (reorder && Object.getOwnPropertyNames(reorder).some(name =>
+                name.endsWith('dragListGroup') && reorder[name]?.isDragging?.())) return;
+              if (!sameIds([...items.childNodes], expected) || rows.some((original, index) => {
+                const data = controller(original)?.data;
+                return controller(original) !== rowOwners[index] || data?.videoId !== entries[index].videoId ||
+                  data?.playlistSetVideoId !== entries[index].playlistSetVideoId;
+              })) return;
+              // Undo our one DOM move, preserving the original nodes and trailing
+              // native nodes. Never write native queue data or dispatch another move.
+              if (pending || operationGeneration !== operation.generation) return;
+              items.insertBefore(row, nodes[from + 1] || null);
+            } catch { /* A changed or disposed native binding must remain untouched. */ }
+          }
+
+          function finish(message, recover = false) {
+            const operation = pending;
+            pending = null; // DOM recovery can synchronously trigger native callbacks.
+            if (operation) {
+              operation.observer.disconnect();
+              clearTimeout(operation.timer);
+              if (operation.frame) cancelAnimationFrame(operation.frame);
+              if (recover) recoverMove(operation);
             }
             if (message) notify(message);
           }
@@ -16026,6 +20514,7 @@
                 return;
               }
               const queue = queueState(operation.anchor);
+              if (pending !== operation) return;
               if (operation.preparing) {
                 const current = miniplayerQueue(player, operation.anchor);
                 if (!current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
@@ -16033,9 +20522,9 @@
                   return;
                 }
                 if (!queue || queue.unavailable || queue.awaitingPanel || !reorderRows(queue)) return;
-                const { entry, popup } = operation;
+                const { entry, popup, activation } = operation;
                 finish();
-                begin(entry, popup);
+                begin(entry, popup, activation);
                 return;
               }
               if (!queue || queue.unavailable || queue.awaitingPanel) return;
@@ -16050,11 +20539,20 @@
                 // native move was pending. Confirm the specific committed queue
                 // entry, not merely another occurrence with the same video ID.
                 if (next?.videoId === operation.videoId && next.playlistSetVideoId === operation.entryId) {
+                  rememberMiniOrder(queue, player, operation.move, operation.move.expectedEntries, operation);
+                  if (pending !== operation) return;
                   finish("Playing next in queue");
                 }
                 return; // Wait for native data to confirm, never commit twice.
               }
-              if (next?.videoId === operation.videoId) { finish("Playing next in queue"); return; }
+              if (next?.videoId === operation.videoId) {
+                const entries = queueEntries(queue.videos);
+                if (isAppendOrder(entries, operation.appendProof, operation.videoId)) {
+                  rememberMiniOrder(queue, player, operation.appendProof, entries, operation);
+                }
+                if (pending !== operation) return;
+                finish("Playing next in queue"); return;
+              }
               const matches = queue.videos.flatMap((video, index) => video.videoId === operation.videoId ? [index] : []);
               if (!matches.length) return;
               if (matches.length > 1) {
@@ -16072,21 +20570,34 @@
               }
               const { items, rows } = binding;
               const row = rows[index];
+              const nodes = [...items.childNodes];
+              const expected = nodes.filter(node => node !== row);
+              expected.splice(expected.indexOf(rows[currentIndex]) + 1, 0, row);
+              const playlist = player.getPlaylist?.();
+              const expectedEntries = queueEntries(queue.videos);
+              const [movedEntry] = expectedEntries.splice(index, 1);
+              expectedEntries.splice(index < currentIndex ? currentIndex : currentIndex + 1, 0, movedEntry);
+              operation.move = { anchor: operation.anchor, expectedEntries, panel: queue.panel, owner: queue.owner, player, items, rows, rowOwners: rows.map(controller), row, nodes, expected,
+                entries: queue.videos.map(video => ({ videoId: video.videoId, playlistSetVideoId: video.playlistSetVideoId })),
+                currentIndex, listId: queue.listId, playerListId: player.getPlaylistId?.(),
+                playerPlaylist: Array.isArray(playlist) ? [...playlist] : playlist, mini: player.closest('ytd-miniplayer'), from: index };
               // This is the same DOM move + controller commit used by native dragging.
               // Never change the queue model, call a private network API or reload playback.
+              if (pending !== operation) return;
               items.insertBefore(row, rows[currentIndex].nextSibling);
+              if (pending !== operation) return;
               operation.committed = true;
               operation.entryId = entryId;
               try {
                 queue.owner.handleDrop({ currDragItem: row });
-                scheduleMove();
+                if (pending === operation) scheduleMove();
               } catch {
-                // The native commit may have partially completed. Do not retry it or
-                // overwrite native state with a speculative rollback.
-                finish("Could not confirm Play next. Please check the queue.");
+                // Never retry an ambiguous native commit. Only restore the owned DOM
+                // move when every captured native binding still proves no change.
+                if (pending === operation) finish("Could not confirm Play next. Please check the queue.", true);
               }
             } catch {
-              finish("Could not move the video next. Please check the queue.");
+              if (pending === operation) finish("Could not move the video next. Please check the queue.", true);
             }
           }
 
@@ -16149,7 +20660,7 @@
             return observer;
           }
 
-          function prepareMiniplayer(entry, popup, anchor) {
+          function prepareMiniplayer(entry, popup, anchor, activation) {
             const queue = miniplayerQueue(activePlayer(anchor), anchor);
             const toggles = queue?.mini ? [...queue.mini.querySelectorAll("ytd-miniplayer-info-bar button[aria-expanded]")]
               .filter(button => button.closest("ytd-miniplayer") === queue.mini && button.getClientRects().length) : [];
@@ -16157,7 +20668,7 @@
               notify("Could not prepare Play next. Open the miniplayer queue and try again. Nothing was added.");
               return;
             }
-            pending = { anchor, videoId: entry.videoId, entry, popup, preparing: true,
+            pending = { anchor, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
               mini: queue.mini, ids: queue.ids, observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
             pending.timer = setTimeout(() => finish("Could not prepare Play next. Nothing was added; please try again."), 2000);
             // The native queue header is outside the player's unrelated expand controls.
@@ -16165,8 +20676,18 @@
             scheduleMove();
           }
 
-          function begin(entry, popup) {
-            if (entry.used) return;
+          function begin(entry, popup, activation = menuActivation) {
+            if (entry.used === activation) return;
+            const startingGeneration = operationGeneration;
+            // Native menu objects can be recycled in place while a menu or queue
+            // preparation is open. Never dispatch a changed command under an older
+            // captured video ID, even when its object identity was retained.
+            const fresh = queueCommand(entry.sourceItem);
+            if (!fresh || fresh.videoId !== entry.videoId || fresh.endpoint !== entry.endpoint ||
+                fresh.command !== entry.command || entry.signature === null || fresh.signature !== entry.signature) {
+              notify("This menu changed. Reopen it and choose Play next again.");
+              return;
+            }
             if (pending) { notify("Please wait for the queue to update, then try again."); return; }
             const anchor = activeVideoId();
             if (anchor === undefined) { notify("Could not identify the playing video. Please try again."); return; }
@@ -16174,7 +20695,7 @@
             if (queue?.unavailable) { notify("The queue is still updating. Please try again."); return; }
             if (anchor === entry.videoId) { notify("This video is already playing."); return; }
             if (queue?.awaitingPanel || (queue?.mini && !reorderRows(queue))) {
-              prepareMiniplayer(entry, popup, anchor);
+              prepareMiniplayer(entry, popup, anchor, activation);
               return;
             }
             const playlist = anchor && activePlayer(anchor)?.getPlaylist?.();
@@ -16186,14 +20707,22 @@
             }
             const dispatch = existing ? null : queueDispatcher(popup);
             if (!existing && !dispatch) { notify("Play next is unavailable in this menu."); return; }
-            entry.used = true; // Only consume a selection once a native operation can start.
+            if (operationGeneration !== startingGeneration) return;
+            entry.used = activation; // Consume one opening, not a cached native model forever.
+            const generation = ++operationGeneration;
             if (anchor) {
-              pending = { anchor, videoId: entry.videoId, listId: queue?.listId, mini: queue?.mini,
+              const operation = pending = { anchor, videoId: entry.videoId, listId: queue?.listId, mini: queue?.mini, generation,
                 observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-              pending.timer = setTimeout(() => finish(pending.committed
-                ? "Could not confirm Play next. Please check the queue."
-                : existing ? "Could not move the queued video next. Please try again."
-                  : "Added to queue, but could not move it next. Please check the queue."), 8000);
+              if (!existing && queue?.mini) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
+              if (pending !== operation) return;
+              operation.timer = setTimeout(() => {
+                if (pending !== operation) return;
+                if (operation.committed) tryMoveNext(); // A native confirmation may have settled silently.
+                if (pending !== operation) return;
+                finish(operation.committed ? "Could not confirm Play next. Please check the queue."
+                  : existing ? "Could not move the queued video next. Please try again."
+                    : "Added to queue, but could not move it next. Please check the queue.", true);
+              }, 8000);
             }
             if (!existing) {
               const command = { ...entry.command, openMiniplayer: anchor ? false : entry.command.openMiniplayer };
@@ -16226,11 +20755,74 @@
                 args: [popup.localName], returnValue: [] } }));
           }
 
+          function boundedMenuSignature(model) {
+            try {
+              let fields = 0;
+              const value = JSON.stringify(model, (_key, entry) => {
+                if (++fields > 1000 || (typeof entry === 'string' && entry.length > 16384)) throw new Error('Menu signature exceeds its bound');
+                return entry;
+              });
+              return typeof value === 'string' && value.length <= 32768 ? value : null;
+            }
+            catch { return null; }
+          }
+
+          function clearPendingIcons(popup = null) {
+            for (const item of pendingIcons) if (!popup || item.popup === popup || popup.contains?.(item.svg)) {
+              item.svg.remove(); pendingIcons.delete(item);
+            }
+            if (!pendingIcons.size) { pendingIconObserver?.disconnect(); pendingIconObserver = null; }
+          }
+
+          function prunePendingIcons() {
+            for (const item of pendingIcons) {
+              let valid = false;
+              try {
+                const binding = menuBindings.get(item.popup);
+                const data = binding?.sheet ? sheetData(item.popup) : controller(item.popup)?.data;
+                valid = item.svg.isConnected && binding && binding === item.binding && data === binding.data &&
+                  boundedMenuSignature(binding.record) === binding.ownedSignature && item.row.contains(item.svg) &&
+                  (binding.sheet ? item.row.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]') : controller(item.row)?.data === binding.record) &&
+                  ![...item.slot.children].some(child => child !== item.svg);
+              } catch { /* A dismissed or rebound renderer releases the temporary glyph. */ }
+              if (!valid) { item.svg.remove(); pendingIcons.delete(item); }
+            }
+            if (!pendingIcons.size) { pendingIconObserver?.disconnect(); pendingIconObserver = null; }
+          }
+
+          function showPendingPlayNextIcon(popup) {
+            const binding = menuBindings.get(popup);
+            if (!binding || !popup.isConnected) return;
+            const row = binding.sheet
+              ? popup.querySelector('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
+              : [...popup.querySelectorAll('ytd-menu-service-item-renderer')].find(node => controller(node)?.data === binding.record);
+            if (!row || (binding.sheet ? sheetData(popup) !== binding.data : controller(popup)?.data !== binding.data)) return;
+            binding.row = row;
+            // YouTube's known icon-shape renderer leaves this host empty while its
+            // SVG promise is pending, then replaces its children when the icon loads.
+            // Supply only our action's temporary glyph; never replace native content.
+            const slot = row.querySelector(binding.sheet ? '.ytListItemViewModelLeading .yt-icon-shape' : 'yt-icon .yt-icon-shape');
+            if (!slot || slot.childElementCount) return;
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+            svg.setAttribute('data-ytms-play-next-fallback', '1');
+            svg.style.cssText = 'display:block;width:24px;height:24px;fill:currentColor;pointer-events:none';
+            const path = document.createElementNS(svg.namespaceURI, 'path');
+            path.setAttribute('d', 'M3 6h12v2H3V6zm0 4h12v2H3v-2zm0 4h8v2H3v-2zm14-4v10l6-5-6-5z');
+            svg.append(path); slot.append(svg);
+            pendingIcons.add({ svg, slot, row, popup, binding });
+            if (!pendingIconObserver) pendingIconObserver = new MutationObserver(prunePendingIcons);
+            pendingIconObserver.observe(row, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-target-id'] });
+            if (row.parentElement) pendingIconObserver.observe(row.parentElement, { childList: true });
+            pendingIconObserver.observe(popup, { childList: true });
+          }
+
           function openMenu(event) {
             const popup = event.target;
             if (!popup?.matches?.("ytd-menu-popup-renderer, yt-sheet-view-model")) return;
             try {
               const sheet = popup.matches("yt-sheet-view-model");
+              clearPendingIcons(popup);
               sheets.delete(popup);
               const owner = controller(popup);
               const data = sheet ? sheetData(popup) : owner?.data;
@@ -16238,6 +20830,26 @@
               const sourceItems = sheet ? list?.listItems : data?.items;
               if (!Array.isArray(sourceItems) || sourceItems.length > 60 ||
                   (sheet ? typeof popup.setters?.data !== "function" : typeof owner.set !== "function")) return;
+              const cached = menuBindings.get(popup);
+              const cachedEntry = cached && queueCommand(sourceItems[cached.queueIndex]);
+              if (cached && cached.data === data && cached.items === sourceItems &&
+                  cached.row?.isConnected && cached.row.closest('ytd-menu-popup-renderer, yt-sheet-view-model') === popup &&
+                  (sheet ? cached.row.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]') : controller(cached.row)?.data === cached.record) &&
+                  cached.rows.length === sourceItems.length && cached.rows.every((item, index) => sourceItems[index] === item) &&
+                  (sourceItems[cached.ownedIndex]?.menuServiceItemRenderer || sourceItems[cached.ownedIndex]?.listItemViewModel) === cached.record &&
+                  cached.record[marker] === true && cachedEntry?.videoId === cached.entry.videoId &&
+                  cachedEntry.endpoint === cached.entry.endpoint && cachedEntry.command === cached.entry.command &&
+                  cached.signature !== null && cachedEntry.signature === cached.signature &&
+                  cached.ownedSignature !== null && boundedMenuSignature(cached.record) === cached.ownedSignature) {
+                // Cached native rows already have the owned action. Renew its fresh
+                // activation binding without replacing the complete native menu.
+                if (sheet) sheets.set(popup, { data, entry: cachedEntry });
+                else entries.set(cached.record, cachedEntry);
+                showPendingPlayNextIcon(popup);
+                return;
+              }
+              if (cached) entries.delete(cached.record);
+              menuBindings.delete(popup);
               const items = sourceItems.filter(item =>
                 (item?.menuServiceItemRenderer || item?.listItemViewModel)?.[marker] !== true);
               if (items.some(item => {
@@ -16264,6 +20876,8 @@
                 // owned sheet's exact model and native target ID, not text or position.
                 sheets.set(popup, { data: updated, entry });
                 popup.data = updated;
+                menuBindings.set(popup, { sheet, data: updated, items, rows: [...items], record,
+                  ownedIndex: index, queueIndex: index + 1, entry, signature: entry.signature, ownedSignature: boundedMenuSignature(record) });
               } else {
                 const record = {
                   text: { simpleText: "Play next in queue" }, icon: { iconType: "QUEUE_PLAY_NEXT" },
@@ -16271,15 +20885,31 @@
                 };
                 entries.set(record, entry);
                 items.splice(index, 0, { menuServiceItemRenderer: record });
-                owner.set("data", { ...data, items });
+                const updated = { ...data, items };
+                owner.set("data", updated);
+                menuBindings.set(popup, { sheet, data: updated, items, rows: [...items], record,
+                  ownedIndex: index, queueIndex: index + 1, entry, signature: entry.signature, ownedSignature: boundedMenuSignature(record) });
               }
+              showPendingPlayNextIcon(popup);
+              queueMicrotask(() => showPendingPlayNextIcon(popup));
               // Stamp through the native menu, then let its dropdown fit the extra row.
               if (menuFrame) cancelAnimationFrame(menuFrame);
               menuFrame = requestAnimationFrame(() => {
                 menuFrame = 0;
+                showPendingPlayNextIcon(popup);
                 if (popup.isConnected) popup.closest("tp-yt-iron-dropdown")?.refit?.();
               });
             } catch { /* An unrecognised menu keeps its native Add to queue action. */ }
+          }
+
+          function renewMenuActivation(event) {
+            if (!event.isTrusted || !event.target?.isConnected ||
+                (event.type === 'keydown' && (event.repeat || !['Enter', ' ', 'ArrowDown'].includes(event.key))) ||
+                event.target.closest?.('ytd-menu-popup-renderer, yt-sheet-view-model')) return;
+            // Cached native menus can reopen without yt-popup-opened. A fresh trusted
+            // outside-menu activation rearms them; events within one opening share the
+            // same token, retaining the keydown/click/tap duplicate guard.
+            ++menuActivation;
           }
 
           function activate(event) {
@@ -16290,12 +20920,21 @@
             const popup = row?.closest("ytd-menu-popup-renderer, yt-sheet-view-model");
             const sheet = sheets.get(popup);
             const entry = row?.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
-              ? sheet && sheetData(popup) === sheet.data && sheet.entry
+              ? sheet?.entry
               : row && entries.get(controller(row)?.data);
             if (!entry) return;
             event.preventDefault();
             event.stopImmediatePropagation();
-            try { begin(entry, popup); }
+            try {
+              const binding = menuBindings.get(popup);
+              const data = row.matches('yt-list-item-view-model') ? sheetData(popup) : controller(popup)?.data;
+              const items = row.matches('yt-list-item-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
+              if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem)) {
+                notify("This menu changed. Reopen it and choose Play next again.");
+                return;
+              }
+              begin(entry, popup);
+            }
             catch { finish("Play next could not be completed. Please check the queue."); }
             finally {
               // Native activation is suppressed above, so dismiss rejected and
@@ -16306,9 +20945,15 @@
           }
 
           function reset() {
+            ++operationGeneration;
             finish();
-            entries = new WeakMap();
-            sheets = new WeakMap();
+            confirmedMiniOrders = new WeakMap();
+            // YouTube may keep this native menu model and reopen its owned row
+            // without another popup-open event after SPA navigation or BFCache.
+            // Retain its weak bindings: the placeholder has no native command of its
+            // own. Activation still requires the current exact model, source item
+            // and unchanged command; detached/rebound menus retain no strong roots.
+            clearPendingIcons();
             if (menuFrame) cancelAnimationFrame(menuFrame);
             menuFrame = 0;
             clearTimeout(toastTimer);
@@ -16317,6 +20962,10 @@
             toast = null;
           }
           suite.addWindowListener("yt-popup-opened", openMenu, true);
+          ['yt-popup-closed', 'iron-overlay-closed'].forEach(type => suite.addWindowListener(type, event => {
+            if (event.target?.contains) clearPendingIcons(event.target);
+          }, true));
+          ['click', 'keydown', 'contextmenu'].forEach(type => document.addEventListener(type, renewMenuActivation, true));
           ["click", "tap", "keydown"].forEach(type => document.addEventListener(type, activate, true));
           ["yt-playlist-data-updated", "yt-page-data-updated"].forEach(type => suite.addWindowListener(type, scheduleMove, true));
           ["yt-navigate-start", "pagehide"].forEach(type => suite.addWindowListener(type, reset, true));
@@ -17455,8 +22104,8 @@
 
   suite.registerModule(
     "suiteSettings",
-    "Suite Settings v1.49",
-    "document-idle",
+    "Suite Settings v1.58",
+    "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
       const GM_addStyle = (css) => suite.setStyle("suiteSettings", css);
@@ -17480,6 +22129,10 @@
         let playerTooltip = null;
         let playerTarget = null;
         let watchedPlayerBranch = [];
+        let watchedThemeRoot = null;
+        let watchedDocumentRoot = null;
+        let watchedBody = null;
+        let savedReconciliationPending = false;
 
         suite.openChannelAgeSettings = (channel, context) => {
           if (suspended) return;
@@ -17491,7 +22144,6 @@
             suite.reportModuleError('suiteSettings', 'open channel upload filters', error);
           }
         };
-        suite.installVideoMenu(suite);
 
         function createPanel() {
           const dialog = suite.createSettingsDialog(document);
@@ -17505,7 +22157,7 @@
               ['hideShorts', 'Hide Shorts'], ['hideWatchedVideos', 'Hide watched videos'],
               ['hideLiveVideos', 'Hide live videos'], ['hideUpcomingStreams', 'Hide upcoming streams and premieres'],
               ['hideMixes', 'Hide mixes'], ['hidePodcasts', 'Hide podcasts'], ['hideMembersOnly', 'Hide members-only videos'],
-              ['watchedThreshold', 'Watched threshold', ['80', '90', '95', '100'], value => `${value}%`],
+              ['watchedThreshold', 'Watched threshold', ['5', '10', '25', '50', '75', '80', '90', '95', '100'], value => `${value}%`],
               ['keepHoverPreviews', 'Keep hover previews with miniplayer'],
             ],
             player: [
@@ -17529,6 +22181,7 @@
             ],
             miniplayer: [
               ['miniplayerEnabled', 'Scroll miniplayer'],
+              ['miniplayerSizeMode', 'Miniplayer size', ['auto', 'custom'], value => value === 'auto' ? 'Automatic' : 'Custom width'],
               ['corner', 'Preferred corner', ['top-right', 'bottom-right', 'bottom-left', 'top-left'], value => value.replace('-', ' ')],
               ['queueInfo', 'Show compact title and queue information'],
             ],
@@ -17538,12 +22191,6 @@
               ['showRydTooltipBar', 'Show Return YouTube Dislike tooltip bar'],
               ['showDeArrowTitleButton', 'Show DeArrow icon beside video title'],
               ['showDeArrowQueueButton', 'Show DeArrow logo in queues'],
-              ['menuShowDownload', 'Show Download in video menus'],
-              ['menuGroupChannelTools', 'Group channel tools in a submenu'],
-              ['menuShowAgeLimit', 'Show Filter channel uploads action'],
-              ['menuShowNotInterested', 'Show Not interested'],
-              ['menuShowDontRecommend', 'Show Don’t recommend channel'],
-              ['menuShowReport', 'Show Report'],
             ],
           };
           const DESCRIPTIONS = {
@@ -17573,6 +22220,7 @@
             fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Player-only fullscreen is unchanged.',
             disableTitleHashtagLinks: 'Keep hashtag text as ordinary title text without opening hashtag pages. Preserves YouTube’s title nodes and DeArrow replacements. Applies after reload.',
             miniplayerEnabled: 'Float the watch player into a corner when it scrolls out of view.',
+            miniplayerSizeMode: 'Automatic keeps the existing adaptive size. Custom uses your chosen width, reduced only when needed to fit the window. Preview changes immediately; Save keeps them.',
             corner: 'Choose the floating player’s corner. This also synchronises with other open YouTube windows.',
             queueInfo: 'Show the current title and queue position at the top of the floating player.',
             headerSettingsIcon: 'Choose the icon beside your profile button. Available on feed and watch pages.',
@@ -17587,8 +22235,16 @@
             menuShowDontRecommend: 'Keep YouTube’s Don’t recommend channel action available, separately or inside Channel tools.',
             menuShowReport: 'Keep YouTube’s Report action available, separately or inside Channel tools. A report is never submitted automatically.',
           };
+          const featureByKey = new Map(settings.features.map(feature => [feature.key, feature]));
+          for (const feature of settings.features) {
+            (GROUPS[feature.tab] ||= []).push([feature.key, feature.label, feature.options?.map(option => option[0]),
+              value => feature.options?.find(option => option[0] === value)?.[1] || value]);
+            DESCRIPTIONS[feature.key] = feature.description;
+          }
           let saved = settings.read();
           let draft = { ...saved };
+          let menuEditor = null;
+          let lastValidMiniplayerWidth = draft.miniplayerWidth;
           let externalConflict = false;
           let pickerTarget = null;
           let pickerTrigger = null;
@@ -17597,7 +22253,7 @@
           let channelManager = null;
           let channelFooterHost = null;
 
-          let supportPanel = null;
+          let supportPanel = null, extraControls = null;
           const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
           const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
           const searchInput = document.createElement('input');
@@ -17640,6 +22296,7 @@
             dialog.querySelector('.content').scrollTop = 0;
             if (id === 'channels') renderChannelRules();
             if (id === 'support') supportPanel?.refresh();
+            extraControls?.selectTab(id);
             if (focus) $(`tab-${id}`).focus();
           }
           for (const id of tabIds) {
@@ -17659,6 +22316,19 @@
           const menuDetails = document.createElement('details'); menuDetails.id = 'ytms-video-menu-settings';
           const menuSummary = document.createElement('summary'); menuSummary.textContent = 'Video context menu';
           menuDetails.append(menuSummary); $('section-interface').append(menuDetails);
+          const featureSections = new Map();
+          function featureDestination(feature) {
+            const key = feature.tab + ':' + feature.section;
+            if (!featureSections.has(key)) {
+              const details = document.createElement('details'); details.className = 'feature-group';
+              const summary = document.createElement('summary'); summary.textContent = feature.section;
+              const note = document.createElement('p'); note.className = 'section-note';
+              note.textContent = 'Save changes and reload YouTube to apply these options.';
+              details.append(summary, note); $('section-' + feature.tab).append(details);
+              featureSections.set(key, details);
+            }
+            return featureSections.get(key);
+          }
           for (const [group, rows] of Object.entries(GROUPS)) {
             for (const [key, labelText, choices, format] of rows) {
               const row = document.createElement('div'); row.className = 'row';
@@ -17671,9 +22341,14 @@
                 for (const value of choices) { const option = document.createElement('option'); option.value = value; option.textContent = format(value); input.append(option); }
               } else { input.type = 'checkbox'; input.className = 'switch'; input.setAttribute('role', 'switch'); }
               row.append(label, input);
-              if (group === 'interface' && key.startsWith('menu')) menuDetails.append(row);
+              if (featureByKey.has(key)) featureDestination(featureByKey.get(key)).append(row);
+              else if (group === 'interface' && key.startsWith('menu')) menuDetails.append(row);
               else $(`section-${group}`).insertBefore(row, group === 'interface' ? menuDetails : null);
-              input.addEventListener('change', () => { draft[key] = choices ? input.value : input.checked; updateColours(); });
+              input.addEventListener('change', () => {
+                draft[key] = choices ? input.value : input.checked;
+                resolveDraftOpposites([key]);
+                syncFeatureDependencies(); updateColours();
+              });
             }
           }
           const ageRow = document.createElement('div'); ageRow.className = 'row';
@@ -17728,48 +22403,64 @@
             channelManager.open(channel, context);
           }
 
-          const menuOrder = document.createElement('section'); menuOrder.className = 'menu-order';
-          const menuOrderHeading = document.createElement('h3'); menuOrderHeading.textContent = 'Video context menu order';
-          const menuOrderNote = document.createElement('p'); menuOrderNote.className = 'section-note';
-          menuOrderNote.id = 'ytms-menu-order-description';
-          menuOrderNote.textContent = 'Use the arrows to arrange recognised video actions. Hidden or unavailable actions are skipped. Grouped actions keep their relative order inside Channel tools; other YouTube items are left available.';
-          const menuOrderList = document.createElement('ol'); menuOrderList.id = 'ytms-menu-order';
-          menuOrderList.setAttribute('aria-label', 'Video context menu order'); menuOrderList.setAttribute('aria-describedby', menuOrderNote.id);
-          const menuLabels = {
-            playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
-            savePlaylist: 'Save to playlist', download: 'Download', share: 'Share', notInterested: 'Not interested',
-            dontRecommend: 'Don’t recommend channel', report: 'Report', channelAge: 'Filter channel uploads', channelTools: 'Channel tools submenu',
-          };
-          function renderMenuOrder(focusId, focusDirection) {
-            menuOrderList.replaceChildren();
-            const order = draft.menuItemOrder;
-            for (const [index, id] of order.entries()) {
-              const item = document.createElement('li'); item.dataset.menuItem = id;
-              const label = document.createElement('span'); label.textContent = menuLabels[id];
-              item.append(label);
-              for (const [direction, text, offset] of [['up', '↑', -1], ['down', '↓', 1]]) {
-                const move = document.createElement('button'); move.type = 'button'; move.className = 'menu-order-move';
-                move.dataset.direction = direction; move.textContent = text;
-                move.setAttribute('aria-label', `Move ${menuLabels[id]} ${direction}`);
-                move.disabled = index + offset < 0 || index + offset >= order.length;
-                move.addEventListener('click', () => {
-                  const next = [...draft.menuItemOrder];
-                  [next[index], next[index + offset]] = [next[index + offset], next[index]];
-                  draft.menuItemOrder = next; markDraftChanged(); renderMenuOrder(id, direction);
-                });
-                item.append(move);
+          menuEditor = suite.createMenuEditor(document, suite.menuLayout, {
+            getPreferences: () => draft,
+            setLayout: layout => {
+              if (JSON.stringify(layout) === JSON.stringify(suite.menuLayout.fromPreferences(saved))) {
+                for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+                  draft[key] = key === 'menuLayout' ? suite.menuLayout.clone(saved[key]) : Array.isArray(saved[key]) ? [...saved[key]] : saved[key];
+                }
+              } else draft.menuLayout = suite.menuLayout.clone(layout);
+            },
+            onChange: () => markDraftChanged(),
+            onReset: () => {
+              for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+                draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
               }
-              menuOrderList.append(item);
-              if (id === focusId) {
-                const preferred = item.querySelector(`[data-direction="${focusDirection}"]`);
-                (preferred?.disabled ? item.querySelector('button:not(:disabled)') : preferred)?.focus();
-              }
-            }
-          }
-          menuOrder.append(menuOrderHeading, menuOrderNote, menuOrderList); menuDetails.append(menuOrder);
+              markDraftChanged();
+            },
+          });
+          const menuOrderHeading = menuEditor.heading, menuOrderNote = menuEditor.description;
+          const menuLabels = suite.menuLayout.labels;
+          menuDetails.append(menuEditor.element);
           const miniplayerNote = document.createElement('p'); miniplayerNote.className = 'section-note';
-          miniplayerNote.textContent = 'Size remains automatic and adapts to the available window space.';
+          miniplayerNote.textContent = 'The player keeps its proportions and stays inside the window. Cancel restores the saved size.';
+          const sizeRow = document.createElement('div'); sizeRow.className = 'row'; sizeRow.id = 'ytms-miniplayer-width-row';
+          const sizeLabel = document.createElement('label'); sizeLabel.htmlFor = 'ytms-miniplayerWidth'; sizeLabel.textContent = 'Custom width';
+          const sizeHelp = document.createElement('span'); sizeHelp.className = 'description'; sizeHelp.id = 'ytms-miniplayer-width-description';
+          sizeHelp.textContent = '320–1200 pixels. Your requested width is remembered when a smaller window requires a temporary reduction.';
+          sizeLabel.append(sizeHelp);
+          const sizeControls = document.createElement('div'); sizeControls.className = 'miniplayer-size-controls';
+          const sizeRange = document.createElement('input'); sizeRange.type = 'range'; sizeRange.min = '320'; sizeRange.max = '1200'; sizeRange.step = '1';
+          sizeRange.id = 'ytms-miniplayer-width-slider'; sizeRange.setAttribute('aria-label', 'Custom miniplayer width');
+          const sizeNumber = document.createElement('input'); sizeNumber.type = 'number'; sizeNumber.min = '320'; sizeNumber.max = '1200'; sizeNumber.step = '1';
+          sizeNumber.id = 'ytms-miniplayerWidth'; sizeNumber.setAttribute('aria-describedby', sizeHelp.id);
+          const sizeUnit = document.createElement('span'); sizeUnit.textContent = 'px';
+          sizeControls.append(sizeRange, sizeNumber, sizeUnit); sizeRow.append(sizeLabel, sizeControls);
+          $('miniplayerSizeMode').closest('.row').after(sizeRow);
           $('section-miniplayer').append(miniplayerNote);
+          function validSizeWidth(value) { return Number.isInteger(value) && value >= 320 && value <= 1200; }
+          function applyMiniplayerSize(values) {
+            if (validSizeWidth(values.miniplayerWidth)) suite.setScrollMiniplayerSize?.({ mode: values.miniplayerSizeMode, width: values.miniplayerWidth });
+          }
+          function updateSizeControls() {
+            const custom = draft.miniplayerSizeMode === 'custom';
+            if (validSizeWidth(draft.miniplayerWidth)) lastValidMiniplayerWidth = draft.miniplayerWidth;
+            else if (!custom) {
+              draft.miniplayerWidth = lastValidMiniplayerWidth;
+              sizeNumber.value = String(draft.miniplayerWidth);
+            }
+            sizeRow.hidden = !custom;
+            const invalid = custom && !validSizeWidth(draft.miniplayerWidth);
+            sizeNumber.setAttribute('aria-invalid', String(invalid));
+            if (validSizeWidth(draft.miniplayerWidth)) sizeRange.value = String(draft.miniplayerWidth);
+            if (!invalid) applyMiniplayerSize(draft);
+          }
+          for (const input of [sizeRange, sizeNumber]) input.addEventListener('input', () => {
+            draft.miniplayerWidth = input.value === '' ? NaN : Number(input.value);
+            if (input === sizeRange) sizeNumber.value = sizeRange.value;
+            updateSizeControls(); markDraftChanged();
+          });
           const accessNote = document.createElement('p'); accessNote.className = 'section-note';
           accessNote.textContent = 'Keep at least one button enabled. With the header button off, open a video to access settings. Changes apply after reload.';
           $('section-interface').append(accessNote);
@@ -17798,6 +22489,7 @@
           const author = document.createElement('p'); author.textContent = 'Created by Citizen';
           const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
           credits.append(logo, heading, author, version); $('section-credits').append(credits);
+          extraControls = suite.createSettingsExtraControls(document, window, suite, dialog);
           const normaliseHex = settings.normaliseHex;
           function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
           function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -17810,27 +22502,34 @@
           function samePreferences(left, right) {
             return Object.keys(DEFAULTS).every(key => {
               const value = left[key], other = right[key];
+              if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
               return Array.isArray(value) && Array.isArray(other)
                 ? value.length === other.length && value.every((item, index) => item === other[index])
                 : value === other;
             });
           }
           function primaryActionState() {
-            const invalid = draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value));
+            const invalid = (menuEditor && !menuEditor.isValid()) || (draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value))) ||
+              (draft.miniplayerSizeMode === 'custom' && !validSizeWidth(draft.miniplayerWidth));
             const inaccessible = draft.headerSettingsIcon === 'off' && draft.playerSettingsIcon === 'off';
             // Unlike most preferences, the floating player's corner may already
             // have been applied live by its control or a storage event. A settings
             // save on this same page does not apply it; use the actual module value
             // when available, retaining the startup baseline if it is unavailable.
             let appliedCorner = settings.initial.corner;
+            let appliedSize = { miniplayerSizeMode: settings.initial.miniplayerSizeMode, miniplayerWidth: settings.initial.miniplayerWidth };
             try {
               const currentCorner = suite.getAppliedScrollMiniplayerCorner?.();
               if (['top-right', 'bottom-right', 'bottom-left', 'top-left'].includes(currentCorner)) appliedCorner = currentCorner;
+              const size = suite.getAppliedScrollMiniplayerSize?.();
+              if (size && ['auto', 'custom'].includes(size.mode) && validSizeWidth(size.width)) {
+                appliedSize = { miniplayerSizeMode: size.mode, miniplayerWidth: size.width };
+              }
             } catch { /* A failed module must not break settings. */ }
             return {
               invalid, inaccessible,
               dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-              pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner }),
+              pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner, ...appliedSize }),
             };
           }
           function updatePrimaryAction() {
@@ -17880,6 +22579,7 @@
             if (element.hidden !== hidden) element.hidden = hidden;
           }
           function updateColours() {
+            updateSizeControls();
             const custom = draft.colourMode === 'custom';
             setHidden($('custom-colours'), !custom); setHidden($('palette-row'), draft.colourMode !== 'preset');
             const pair = colours(); const preview = $('comment-preview');
@@ -17901,6 +22601,24 @@
               return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05) < 4.5;
             }));
           }
+          function resolveDraftOpposites(keys) {
+            const opposites = { relatedBelowPlayer: 'hideRelated', hideRelated: 'relatedBelowPlayer',
+              disableVideoPreviews: 'keepHoverPreviews', keepHoverPreviews: 'disableVideoPreviews',
+              hideAllComments: 'fullscreenComments', fullscreenComments: 'hideAllComments' };
+            for (const key of keys) if (draft[key] && opposites[key]) {
+              draft[opposites[key]] = false;
+              if ($(opposites[key])) $(opposites[key]).checked = false;
+            }
+          }
+          function syncFeatureDependencies() {
+            const dependencies = { snapshotFormat: draft.snapshotButton, snapshotQuality: draft.snapshotButton && draft.snapshotFormat === 'jpeg',
+              lowViewThreshold: draft.hideFeedLowViews, theatreHideHeader: draft.fullWindowTheatre,
+              shortsHideMetadata: !draft.redirectShorts, shortsHideActions: !draft.redirectShorts,
+              shortsHideRelated: !draft.redirectShorts, shortsHideMusic: !draft.redirectShorts, shortsHideRemix: !draft.redirectShorts };
+            for (const [key, enabled] of Object.entries(dependencies)) {
+              const input = $(key); if (input) input.disabled = !enabled;
+            }
+          }
           function populate(keys) {
             const selected = keys ? new Set(keys) : null;
             for (const [key, value] of Object.entries(draft)) {
@@ -17915,8 +22633,9 @@
               $(`${name}-hex`).value = draft[`${name}Colour`];
               $(`${name}-hex`).setAttribute('aria-invalid', 'false'); $(`${name}-error`).hidden = true;
             }
+            if (!selected || [...selected].some(key => key.startsWith('menu'))) menuEditor.refresh();
             updateColours();
-            if (!selected || selected.has('menuItemOrder')) renderMenuOrder();
+            syncFeatureDependencies();
           }
           function closePicker(restoreFocus = true) {
             $('colour-picker').hidden = true;
@@ -17967,6 +22686,7 @@
             saved = settings.read(); draft = { ...saved };
             externalConflict = false;
             supportPanel?.reset();
+            extraControls.open();
             menuDetails.open = false;
             channelEntry = 'settings'; channelNotice.hidden = true; channelManager.reset({ defer: true });
             $('settings-status').hidden = true;
@@ -17980,6 +22700,8 @@
 
           for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
           dialog.addEventListener('close', () => {
+            applyMiniplayerSize(settings.read());
+            extraControls.close();
             closePicker(false); resetSearch(); channelEntry = 'settings'; channelManager.reset({ defer: true });
           });
           dialog.addEventListener('keydown', event => {
@@ -18000,6 +22722,7 @@
           dialog.addEventListener('change', markDraftChanged);
           function restoreDraftDefaults(keys, message) {
             for (const key of keys) draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
+            resolveDraftOpposites(keys);
             markDraftChanged(); closePicker(false); populate(keys);
             if (externalConflict) { showConflictNotice(); return; }
             const state = primaryActionState();
@@ -18010,10 +22733,11 @@
           }
           $('restore-section-defaults').addEventListener('click', () => {
             const keys = currentTab === 'comments'
-              ? ['colourMode', 'palette', 'viewerColour', 'ownerColour', 'compactComments', 'hideCommentControls']
+              ? ['colourMode', 'palette', 'viewerColour', 'ownerColour', 'compactComments', 'hideCommentControls', ...(GROUPS.comments || []).map(([key]) => key)]
               : (GROUPS[currentTab] || []).map(([key]) => key);
             if (!keys.length) return;
-            if (currentTab === 'interface') keys.push('menuItemOrder');
+            if (currentTab === 'interface') keys.push(...Object.keys(DEFAULTS).filter(key => key.startsWith('menu')));
+            if (currentTab === 'miniplayer') keys.push('miniplayerWidth');
             restoreDraftDefaults(keys, `${$(`tab-${currentTab}`).textContent} defaults restored in this draft. Save to apply. Saved channel filters are unchanged.`);
           });
           $('restore-defaults').addEventListener('click', () => {
@@ -18069,8 +22793,12 @@
               addSearchEntry(group, key, label, DESCRIPTIONS[key] || '', choices ? choices.map(format).join(' ') : '');
             }
           }
-          addSearchEntry('interface', 'menu-order', 'Video context menu order', menuOrderNote.textContent,
+          addSearchEntry('interface', 'menu-order', 'Video context menu editor', menuOrderNote.textContent,
             Object.values(menuLabels).join(' '));
+          const menuSearchActions = { menuShowDownload:'download', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
+          const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
+          for (const key of Object.keys(menuSearchActions)) addSearchEntry('interface', key, menuSearchLabels[key], DESCRIPTIONS[key]);
+
           addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
             'channels block age restrictions');
           addSearchEntry('support', 'backup-heading', 'Full backup and restore',
@@ -18081,6 +22809,9 @@
             addSearchEntry('extensions', `extension-${extension.id}`, extension.name, extension.description, extension.note);
           }
           addSearchEntry('credits', 'credits-logo', 'YouTube Master Suite credits', 'Author, version and licence.', 'about');
+          addSearchEntry('miniplayer', 'miniplayerSizeMode', 'Custom miniplayer width', sizeHelp.textContent, 'size resize automatic');
+          addSearchEntry('player', 'playhead-marker-heading', 'Playback marker image', 'Choose a local image to replace the red playback dot.', 'playhead picture scrubber');
+          addSearchEntry('credits', 'updates-heading', 'Check for script updates', 'Check a release source and open Tampermonkey to install an update.', 'latest version install');
           function showSearch() {
             const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
             searchClear.hidden = !searchInput.value;
@@ -18115,11 +22846,17 @@
                 let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
                 if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
                 if (entry.target === 'menu-order') target = menuOrderHeading;
+                if (Object.hasOwn(menuSearchActions, entry.target)) target = menuEditor.focusAction(menuSearchActions[entry.target]);
                 if (entry.target === 'credits-logo') target = heading;
                 if (entry.tab === 'extensions') target = target?.querySelector('h4') || target;
                 // Custom colour controls are conditional; do not change the user's
                 // draft just to expose one. Take them to the controlling selector.
                 if (!target || target.closest('[hidden]')) target = entry.tab === 'comments' ? $('colour-mode') : $(`tab-${entry.tab}`);
+                const controller = { snapshotFormat: 'snapshotButton', snapshotQuality: draft.snapshotButton ? 'snapshotFormat' : 'snapshotButton',
+                  lowViewThreshold: 'hideFeedLowViews', theatreHideHeader: 'fullWindowTheatre', shortsHideMetadata: 'redirectShorts',
+                  shortsHideActions: 'redirectShorts', shortsHideRelated: 'redirectShorts', shortsHideMusic: 'redirectShorts', shortsHideRemix: 'redirectShorts' };
+                if (target.disabled && controller[entry.target]) target = $(controller[entry.target]) || target;
+                for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
                 if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
                 target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
               });
@@ -18314,6 +23051,13 @@
         function installButton() {
           frame = 0;
           if (suspended) return;
+          const root = document.documentElement;
+          if (root !== watchedThemeRoot) {
+            themeObserver.disconnect();
+            watchedThemeRoot = root;
+            if (root) themeObserver.observe(root, { attributes: true, attributeFilter: ["dark"] });
+            syncTheme();
+          }
           const masthead = settings.initial.headerSettingsIcon === 'off' ? null : document.querySelector("ytd-masthead");
           const app = document.querySelector("ytd-app");
           const mastheadContainer = app?.querySelector('#masthead-container') || null;
@@ -18327,9 +23071,10 @@
           const pageManager = app?.querySelector('ytd-page-manager, #page-manager');
           if (pageManager) playerBranch.add(pageManager);
           const branch = Array.from(playerBranch);
-          if (!discoveryActive || app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
+          if (!discoveryActive || root !== watchedDocumentRoot || document.body !== watchedBody ||
+            app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
             branch.length !== watchedPlayerBranch.length || branch.some((node, index) => node !== watchedPlayerBranch[index])) {
-            const registrations = [[document.documentElement, { childList: true }]];
+            const registrations = [[root || document, { childList: true }]];
             if (document.body) registrations.push([document.body, { childList: true }]);
             if (app) registrations.push([app, { childList: true }]);
             if (mastheadContainer) registrations.push([mastheadContainer, { childList: true }]);
@@ -18337,6 +23082,7 @@
             for (const node of branch) registrations.push([node, { childList: true, ...(node === target?.controls ? { subtree: true } : {}) }]);
             discovery.replaceRegistrations(registrations);
             watchedApp = app; watchedMasthead = masthead;
+            watchedDocumentRoot = root; watchedBody = document.body;
             watchedMastheadContainer = mastheadContainer; discoveryActive = true;
             watchedPlayerBranch = branch;
           }
@@ -18384,14 +23130,15 @@
         function start() {
           suspended = false;
           watchedApp = null; watchedMasthead = null;
-          themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["dark"] });
-          syncTheme(); installButton();
+          watchedThemeRoot = undefined;
+          installButton();
         }
         function stop() {
           suspended = true;
           if (frame) cancelAnimationFrame(frame);
           frame = 0;
           discovery.disconnect(); themeObserver.disconnect();
+          watchedThemeRoot = null;
           discoveryActive = false;
           hidePlayerTooltip();
           document.getElementById(DIALOG_ID)?.close();
@@ -18403,8 +23150,22 @@
         suite.addWindowListener("yt-navigate-finish", scheduleInstall);
         suite.addWindowListener("yt-page-data-updated", scheduleInstall);
         suite.addWindowListener('yt-master-channel-age-changed', () => panel?.updateChannels());
-        suite.addWindowListener('storage', event => {
-          if (event.key === null || event.key === settings.key || event.key === 'yt-master-suite.scroll-miniplayer.corner.v1') panel?.reconcileSaved();
+        function scheduleSavedReconciliation() {
+          if (savedReconciliationPending) return;
+          savedReconciliationPending = true;
+          // Storage consumers apply live corner/size changes in the same delivery.
+          // Reconcile after those consumers, regardless of module startup order.
+          queueMicrotask(() => {
+            savedReconciliationPending = false;
+            panel?.reconcileSaved();
+          });
+        }
+        suite.storage.subscribe(event => {
+          if ((event.key === null || event.key === settings.key) && !document.getElementById(DIALOG_ID)?.open) {
+            const values = settings.read();
+            suite.setScrollMiniplayerSize?.({ mode: values.miniplayerSizeMode, width: values.miniplayerWidth });
+          }
+          if (event.key === null || event.key === settings.key || event.key === 'yt-master-suite.scroll-miniplayer.corner.v1') scheduleSavedReconciliation();
           if (event.key === null || event.key === suite.channelAge.key) window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));
         });
         document.addEventListener('loadedmetadata', event => { if (event.target?.matches?.('video.html5-main-video')) scheduleInstall(); }, true);
@@ -18412,6 +23173,16 @@
         suite.addWindowListener('resize', refreshPlayerTooltip);
         suite.addWindowListener('blur', hidePlayerTooltip);
         start();
+        // Start access controls and native sizing without waiting for parsed content.
+        // Optional controls still wait for parsed content and validated preferences.
+        suite.startNativeQueueLayout();
+        suite.installVideoMenu(suite);
+        const startOptionalControls = () => {
+          suite.playheadMarker.start();
+          suite.startFeatureControls();
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startOptionalControls, { once: true });
+        else queueMicrotask(startOptionalControls);
     },
   );
 

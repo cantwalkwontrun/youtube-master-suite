@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { createSuiteBackup } from "../sources/suite-backup.mjs";
 import { createSuiteSettings } from "../sources/suite-settings.mjs";
 import { createChannelAgeService } from "../sources/channel-age.mjs";
+import { createMenuLayout } from "../sources/menu-layout.mjs";
 
 const SETTINGS = "yt-master-suite.settings.v1";
 const CORNER = "yt-master-suite.scroll-miniplayer.corner.v1";
@@ -56,6 +57,62 @@ function staged(f, values = { hideChat: false, corner: "bottom-right" }, rules =
   assert.equal(result.ok, true, result.error);
   return result;
 }
+
+test('pre-submenu backups retain their legacy menu choices and default to no custom layout', () => {
+  const f = fixture();
+  const old = documentFor(f, { menuGroupChannelTools: false, menuShowDownload: true });
+  delete old.settings.menuLayout;
+  const preview = f.backup.preview(JSON.stringify(old));
+  assert.equal(preview.ok, true, preview.error);
+  const restored = f.backup.restore(preview.preview);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.values.menuLayout, null);
+  assert.equal(restored.values.menuGroupChannelTools, false);
+  assert.equal(restored.values.menuShowDownload, true);
+});
+
+test('custom submenu backups round-trip nested layout and visibility without depending on node field order', () => {
+  const f = fixture();
+  const layout = createMenuLayout().fromPreferences({});
+  layout.nodes.push({ parent: 'root', name: 'Sharing', id: 'submenu-sharing' },
+    { name: 'More sharing', id: 'submenu-inner', parent: 'submenu-sharing' });
+  layout.nodes.find(node => node.id === 'share').parent = 'submenu-inner';
+  layout.nodes.find(node => node.id === 'report').visible = false;
+  assert.equal(f.settings.save({ ...f.settings.defaults, menuLayout: layout, hideChat: false }).ok, true);
+  const exported = f.backup.exportData(); assert.equal(exported.ok, true, exported.error);
+  const g = fixture();
+  const preview = g.backup.preview(exported.text); assert.equal(preview.ok, true, preview.error);
+  assert.equal(g.backup.restore(preview.preview).ok, true);
+  assert.deepEqual(g.settings.read().menuLayout, createMenuLayout().validate(layout));
+  assert.equal(g.settings.read().hideChat, false);
+  assert.equal(g.settings.initial.menuLayout, null);
+  const reordered = documentFor(g, { menuLayout: layout });
+  assert.equal(g.backup.preview(JSON.stringify(reordered)).ok, true);
+});
+
+test('invalid custom submenu backups are rejected before storage writes or preview capabilities', () => {
+  const f = fixture();
+  const layout = createMenuLayout().fromPreferences({});
+  layout.nodes.find(node => node.id === 'channelTools').parent = 'channelAge';
+  const result = f.backup.preview(JSON.stringify(documentFor(f, { menuLayout: layout })));
+  assert.equal(result.ok, false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('older backups gain automatic sizing and personal marker/update data stays outside exports', () => {
+  const f = fixture({ 'yt-master-suite.playhead-image.v1': 'synthetic-private-image', 'yt-master-suite.update-source.v1': 'synthetic-private-source' });
+  const old = documentFor(f); delete old.settings.miniplayerSizeMode; delete old.settings.miniplayerWidth;
+  const preview = f.backup.preview(JSON.stringify(old));
+  assert.equal(preview.ok, true, preview.error);
+  const restored = f.backup.restore(preview.preview);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.values.miniplayerSizeMode, 'auto'); assert.equal(restored.values.miniplayerWidth, 720);
+  const exported = f.backup.exportData(); assert.equal(exported.ok, true);
+  assert.equal(exported.text.includes('synthetic-private'), false);
+  assert.equal(f.data.get('yt-master-suite.playhead-image.v1'), 'synthetic-private-image');
+  assert.equal(f.data.get('yt-master-suite.update-source.v1'), 'synthetic-private-source');
+  assert.equal(f.backup.preview(JSON.stringify(documentFor(f, { miniplayerWidth: '900' }))).ok, false);
+});
 
 test("backup factory embeds without imports or external runtime state", () => {
   const f = fixture();

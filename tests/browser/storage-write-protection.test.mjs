@@ -43,7 +43,7 @@ for (const [name, raw] of [
     await toggle.setChecked(!(await toggle.isChecked()));
     await page.locator('#ytms-save-preview').click();
     assert.match(await page.locator('#ytms-settings-status').textContent(), /incompatible or damaged.*nothing was overwritten/i);
-    assert.equal(await page.evaluate(key => localStorage.getItem(key), settingsKey), raw);
+    assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), settingsKey), raw);
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
     assert.equal(await page.locator('#ytms-save-preview').isEnabled(), true);
   });
@@ -66,7 +66,7 @@ for (const [name, raw] of [
     await list.getByLabel('Unit', { exact: true }).last().selectOption('weeks');
     await page.locator('#ytms-age-save').click();
     assert.match(await page.locator('#ytms-age-status').textContent(), /incompatible or damaged.*nothing was overwritten/i);
-    assert.equal(await page.evaluate(key => localStorage.getItem(key), channelKey), raw);
+    assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), channelKey), raw);
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
     assert.equal(await list.getByLabel('Channel name', { exact: true }).last().inputValue(), 'Synthetic channel');
   });
@@ -78,7 +78,7 @@ test('valid version-1 settings remain editable', async t => {
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
   await page.locator('#ytms-save-preview').click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.hideShorts, settingsKey), false);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideShorts, settingsKey), false);
 });
 
 test('valid version-1 channel filters remain editable', async t => {
@@ -88,5 +88,5 @@ test('valid version-1 channel filters remain editable', async t => {
   await page.getByRole('button', { name: 'Edit filter for Synthetic channel', exact: true }).click();
   await page.locator('#ytms-channel-filter-list').getByLabel('Maximum age', { exact: true }).fill('2');
   await page.locator('#ytms-age-save').click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, channelKey), 2);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, channelKey), 2);
 });

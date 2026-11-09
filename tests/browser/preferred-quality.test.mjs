@@ -210,8 +210,8 @@ test('Player quality setting persists on reload and keeps the panel size and exi
   await select.selectOption('hd1080'); await page.locator('#ytms-save-preview').click();
   assert.deepEqual(await dialog.boundingBox(), bounds);
   assert.deepEqual(await page.evaluate(() => qualityFixture.calls), [], 'Save must not change the running video');
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), true);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), true);
   await page.reload(); await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000 });
   await page.waitForFunction(() => qualityFixture.quality === 'hd1080');
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.preferredVideoQuality, KEY), 'hd1080');
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.preferredVideoQuality, KEY), 'hd1080');
 });

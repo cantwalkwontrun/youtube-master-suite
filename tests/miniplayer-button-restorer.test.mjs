@@ -10,6 +10,14 @@ const SOURCE = readFileSync(
 const CUSTOM_ID = "tmk-miniplayer-button";
 const TOOLTIP_ID = "tmk-miniplayer-tooltip";
 
+test("disabled restoration starts no DOM, observer, listener or timer work", () => {
+  const disabled = SOURCE.replace("enabled: true", "enabled: false");
+  assert.notEqual(disabled, SOURCE);
+  // No browser capabilities are supplied: disabled restoration must return
+  // before attempting discovery or registering any background work.
+  assert.doesNotThrow(() => vm.runInNewContext(disabled, {}));
+});
+
 function createHarness({ native = true, withControls = true, atomicObserver = true } = {}) {
   let now = 0;
   let nextTimerId = 1;

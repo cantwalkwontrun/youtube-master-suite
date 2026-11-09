@@ -12,6 +12,18 @@
       --error: #b3261e; --field: #fafafa;
     }
 #ytms-settings-dialog * { box-sizing: border-box; }
+#ytms-settings-dialog .miniplayer-size-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+#ytms-settings-dialog .miniplayer-size-controls input[type="range"] { width: 120px; min-width: 0; }
+#ytms-settings-dialog .miniplayer-size-controls input[type="number"] { width: 80px; padding: 6px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 6px; }
+#ytms-settings-dialog .extra-settings { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+#ytms-settings-dialog .extra-settings h3 { margin: 0 0 8px; font-size: 16px; }
+#ytms-settings-dialog .extra-settings label { display: block; margin: 10px 0 6px; font-size: 13px; }
+#ytms-settings-dialog .extra-settings input[type="url"], #ytms-settings-dialog .extra-settings input[type="file"] { display: block; width: 100%; max-width: 100%; color: var(--text); background: var(--field); padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+#ytms-settings-dialog .extra-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+#ytms-settings-dialog .extra-settings-controls label { margin: 0; }
+#ytms-settings-dialog .extra-settings-controls input[type="range"] { width: 140px; max-width: 100%; }
+#ytms-settings-dialog #ytms-marker-preview { object-fit: contain; }
+#ytms-settings-dialog .extra-settings .extension-link { display: inline-block; text-decoration: none; }
 #ytms-settings-dialog [hidden] { display: none !important; }
 #ytms-settings-dialog button,
 #ytms-settings-dialog input,
@@ -158,9 +170,16 @@
 #ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }
 #ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }
 #ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }
-#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(0, 0, 0, 0.9) !important; color: #eee !important; font: 500 12px/1.2 Roboto, Arial, sans-serif !important; text-shadow: none !important; pointer-events: none !important; }
+#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(28, 28, 28, 0.9) !important; color: inherit !important; font-family: inherit !important; font-size: 118% !important; font-weight: 500 !important; line-height: 15px !important; text-shadow: none !important; pointer-events: none !important; }
+.ytp-big-mode #ytms-player-settings-tooltip { line-height: 22px !important; }
+/* Follow the current native player surface and its theme overrides. */
+.ytp-delhi-modern #ytms-player-settings-tooltip { border-radius: 8px !important; background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important; -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; text-shadow: 0 0 2px #000 !important; }
 
 #ytms-settings-dialog .menu-order { margin-top: 20px; }
+#ytms-settings-dialog .feature-group { margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }
+#ytms-settings-dialog .feature-group > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }
+#ytms-settings-dialog .feature-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#ytms-settings-dialog .feature-group .row:has(input:disabled, select:disabled) label { opacity: .65; }
 #ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }
 #ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }
 #ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }
@@ -198,6 +217,26 @@
 #ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 #ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }
 #ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }
+#ytms-settings-dialog .menu-editor-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+#ytms-settings-dialog .menu-editor-toolbar > select { flex: 1; min-width: 150px; max-width: 100%; }
+#ytms-settings-dialog .menu-editor-group { display: grid; grid-template-columns: auto minmax(100px, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 12px; }
+#ytms-settings-dialog .menu-editor-group[hidden] { display: none; }
+#ytms-settings-dialog .menu-editor-group > .section-note { grid-column: 1 / -1; margin: 0; }
+#ytms-settings-dialog .menu-editor-group > input { width: 100%; min-width: 0; }
+#ytms-settings-dialog #ytms-menu-order .menu-editor-item-label { flex: 1 1 160px; }
+#ytms-settings-dialog .menu-editor-item-label > label { display: flex; align-items: center; gap: 8px; }
+#ytms-settings-dialog .menu-editor-item-label input[type="checkbox"] { width: 18px; height: 18px; flex-shrink: 0; }
+#ytms-settings-dialog .menu-editor-item-label > button { max-width: 100%; text-align: start; overflow-wrap: anywhere; }
+#ytms-settings-dialog #ytms-menu-order li > select { max-width: 190px; min-width: 100px; }
+#ytms-settings-dialog .menu-editor-preview { margin-top: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+#ytms-settings-dialog .menu-editor-preview li { overflow-wrap: anywhere; margin-block: 4px; }
+#ytms-settings-dialog .menu-layout-editor .error { color: var(--error, #f88); }
+@media (max-width: 600px) {
+  #ytms-settings-dialog #ytms-menu-order li { flex-wrap: wrap; }
+  #ytms-settings-dialog #ytms-menu-order li > select { flex: 1; max-width: none; }
+  #ytms-settings-dialog .menu-editor-group { grid-template-columns: minmax(0, 1fr) auto; }
+  #ytms-settings-dialog .menu-editor-group > label { grid-column: 1 / -1; }
+}
 #ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }
 #ytms-age-dialog::backdrop { background: #0008; }
 #ytms-age-dialog * { box-sizing: border-box; }

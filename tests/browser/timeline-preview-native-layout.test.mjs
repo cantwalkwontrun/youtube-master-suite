@@ -1,3 +1,4 @@
+import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Cached native-template structure with synthetic geometry/text.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,7 +42,7 @@ async function fixture(t) {
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
     ? route.fulfill({contentType:'text/html',body:BASE.replace('</head>',CSS+'</head>')
       .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+MARKUP)
-      .replace('</body>',`<script>${SUITE}</script></body>`)}) : route.abort());
+      .replace('</body>',`<script>${wrapFixtureUserscript(SUITE)}</script></body>`)}) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors,[]); } finally { await context.close(); } });
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page,MANIFEST.registeredModules,{timeoutMs:10000,errors});

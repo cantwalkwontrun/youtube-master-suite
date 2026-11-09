@@ -9,9 +9,11 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
   // Older version 1 backups gain defaults for these newer preferences only.
   // Keep every pre-existing field required and validate optional fields if present.
   const requiredSettingNames = settingNames.filter(name =>
+    !settings.features?.some(feature => feature.key === name) &&
     name !== "hideFullscreenQuickActions" && name !== "liveChatButton" &&
     name !== "hideLiveVideos" && name !== "hideUpcomingStreams" && name !== "timelinePreviewSize" &&
-    name !== "keepHoverPreviews" && name !== "timeDisplayMode");
+    name !== "keepHoverPreviews" && name !== "timeDisplayMode" &&
+    name !== "miniplayerSizeMode" && name !== "miniplayerWidth" && name !== "menuLayout");
   const ruleNames = ["channelId", "name", "maxAge", "unit", "enabled", "blocked"];
   const previews = new WeakMap();
   const channelPreviews = new WeakMap();
@@ -37,8 +39,15 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
       // This exact earlier default is a supported preference migration, not a
       // malformed custom order. Keep all other normalisation failures rejected.
       if (name === "menuItemOrder" && settings.isPreviousDefaultMenuOrder(input[name])) continue;
+      // A submenu node's field order is immaterial; sibling array order is
+      // preserved by the strict layout validator and remains significant.
+      if (name === "menuLayout") {
+        if (!settings.isValidMenuLayout(input[name])) fail("The backup contains an invalid video menu layout.");
+        continue;
+      }
       if (!same(input[name], values[name])) fail(`The backup contains an invalid setting: ${name}.`);
     }
+    if (JSON.stringify({ version: 1, values }).length > 8192) fail("The video menu layout makes these settings too large to restore safely.");
     return values;
   }
 

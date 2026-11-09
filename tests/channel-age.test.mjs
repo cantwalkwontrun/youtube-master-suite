@@ -458,3 +458,167 @@ test('age-limit sorting uses the same calendar cutoffs as filtering and never mu
   assert.equal(writes(), 0);
   assert.deepEqual(service.getRules(), []);
 });
+
+test('verified legacy co-creators are listed separately and only explicitly saved rules filter their collaboration', () => {
+  const { service } = fixture();
+  const node = card({ data:{ ownerText:{ runs:[
+    { text:'First creator',navigationEndpoint:{ browseEndpoint:{ browseId:ID } } },
+    { text:' and ' },
+    { text:'Second creator',navigationEndpoint:{ browseEndpoint:{ browseId:OTHER_ID } } },
+  ] } } });
+  assert.equal(service.channelFromCard(node),null);
+  assert.deepEqual(service.channelIdentityFromCard(node),{ status:'multiple',channels:[
+    { channelId:ID,name:'First creator' },{ channelId:OTHER_ID,name:'Second creator' },
+  ],handles:[] });
+  assert.equal(service.cardFilterReason(node),null);
+  service.save([rule({ channelId:OTHER_ID })]);
+  assert.equal(service.cardFilterReason(node),'Channel age');
+  service.save([rule({ channelId:OTHER_ID,blocked:true })]);
+  assert.equal(service.cardFilterReason(node),'Channel hidden');
+});
+
+test('modern collaboration command ranges supply each creator name without splitting display text heuristically', () => {
+  const { service } = fixture();
+  const node = componentCard();
+  const part = node.componentProps.value.metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[0].metadataParts[0];
+  part.text = { content:'Alpha and Beta',commandRuns:[
+    { startIndex:0,length:5,onTap:{ innertubeCommand:{ browseEndpoint:{ browseId:ID } } } },
+    { startIndex:10,length:4,onTap:{ innertubeCommand:{ browseEndpoint:{ browseId:OTHER_ID } } } },
+  ] };
+  assert.deepEqual(service.channelCandidatesFromCard(node),[{ channelId:ID,name:'Alpha' },{ channelId:OTHER_ID,name:'Beta' }]);
+  assert.equal(service.channelIdentityFromCard(node).status,'multiple');
+});
+
+test('separate conflicting endpoints do not become an inferred collaboration', () => {
+  const service = ageService({ blocked:true });
+  const node = componentCard();
+  node.componentProps.value.metadata.lockupMetadataViewModel.image = { decoratedAvatarViewModel:{ rendererContext:{ commandContext:{ onTap:{
+    innertubeCommand:{ browseEndpoint:{ browseId:OTHER_ID } },
+  } } } } };
+  assert.equal(service.channelIdentityFromCard(node).status,'conflict');
+  assert.deepEqual(service.channelCandidatesFromCard(node),[]);
+  assert.equal(service.cardFilterReason(node),null);
+});
+
+test('canonical creator links sharing one native byline provide explicit collaboration identity', () => {
+  const { service } = fixture();
+  const container = {};
+  const anchors = [ID,OTHER_ID].map((id,index) => ({ textContent:`Creator ${index + 1}`,getAttribute:() => `/channel/${id}`,closest:() => container }));
+  const node = card({ channel:null,anchors });
+  assert.equal(service.channelIdentityFromCard(node).status,'multiple');
+  assert.deepEqual(service.channelCandidatesFromCard(node).map(channel => channel.channelId),[ID,OTHER_ID]);
+});
+
+function handleCard(handles = ['fixture']) {
+  const container = {}, anchors = handles.map(handle => ({ textContent:`Creator ${handle}`,getAttribute:() => `/@${handle}`,closest:() => container }));
+  const node = card({ channel:null,anchors });
+  const video = { getAttribute:() => '/watch?v=aaaaaaaaaaa' };
+  node.querySelectorAll = selector => selector === 'a[href]' ? [video,...anchors] : selector.includes('#channel-name') ? anchors : [];
+  return node;
+}
+
+test('only safe byline handles become lookup candidates, including Unicode creators', () => {
+  const { service } = fixture();
+  const node = handleCard(['fixture','猫ちゃん']);
+  assert.deepEqual(service.handleCandidatesFromCard(node),[
+    { handle:'@fixture',url:'https://www.youtube.com/@fixture',name:'Creator fixture' },
+    { handle:'@猫ちゃん',url:'https://www.youtube.com/@%E7%8C%AB%E3%81%A1%E3%82%83%E3%82%93',name:'Creator 猫ちゃん' },
+  ]);
+  const arbitrary = card({ channel:null });
+  arbitrary.querySelectorAll = selector => selector === 'a[href]' ? [{ getAttribute:() => '/@unrelated' }] : [];
+  assert.deepEqual(service.handleCandidatesFromCard(arbitrary),[]);
+});
+
+test('resolved handles remain bound to fresh creator links and video identity, expire, and never write storage', () => {
+  let clock = NOW, writes = 0;
+  const service = createChannelAgeService(() => ({ getItem:() => null,setItem:() => writes++ }),() => clock);
+  const node = handleCard(), candidate = service.handleCandidatesFromCard(node)[0];
+  const channel = { ...candidate,channelId:ID };
+  assert.equal(service.rememberResolvedChannel(node,candidate,channel,'bbbbbbbbbbb').ok,false);
+  assert.equal(service.rememberResolvedChannel(node,candidate,channel,'aaaaaaaaaaa').ok,true);
+  assert.equal(service.isResolvedChannel(node,candidate.url,ID,'aaaaaaaaaaa'),true);
+  assert.equal(service.channelFromCard(node).channelId,ID);
+  assert.equal(service.channelFromCard(handleCard()).channelId,ID,'a later card reuses the bounded session association');
+  const stale = handleCard(['changed']);
+  assert.equal(service.rememberResolvedChannel(stale,candidate,channel,'aaaaaaaaaaa').ok,false);
+  clock += 600000;
+  assert.equal(service.isResolvedChannel(node,candidate.url,ID,'aaaaaaaaaaa'),false);
+  assert.equal(service.channelFromCard(node),null);
+  assert.equal(writes,0);
+});
+
+test('resolving both co-listed handles yields collaboration identity and explicit saved-rule matching', () => {
+  const service = ageService({ blocked:true });
+  const node = handleCard(['first','second']);
+  for (const [index,candidate] of service.handleCandidatesFromCard(node).entries()) {
+    assert.equal(service.rememberResolvedChannel(node,candidate,{ ...candidate,channelId:index ? OTHER_ID : ID },'aaaaaaaaaaa').ok,true);
+  }
+  assert.equal(service.channelIdentityFromCard(node).status,'multiple');
+  assert.equal(service.cardFilterReason(node),'Channel hidden');
+  assert.equal(service.channelFromCard(node),null);
+});
+
+test('throwing native data getters retain canonical DOM identity fallback', () => {
+  const { service } = fixture();
+  const node = card({ channel:null,anchors:[{ getAttribute:() => `/channel/${ID}`,textContent:'DOM creator' }] });
+  Object.defineProperty(node,'data',{ get:() => { throw new Error('disposed native getter'); } });
+  assert.equal(service.channelFromCard(node).channelId,ID);
+});
+
+function collaborationStack() {
+  return { avatars:[{ avatarViewModel:{ image:{} } },{ avatarViewModel:{ image:{} } }],rendererContext:{ commandContext:{ onTap:{
+    innertubeCommand:{ showDialogCommand:{ panelLoadingStrategy:{ inlineContent:{ dialogViewModel:{ customContent:{ listViewModel:{ listItems:[
+      { listItemViewModel:{ title:{ content:'First creator' },rendererContext:{ commandContext:{ onTap:{ innertubeCommand:{ browseEndpoint:{ browseId:ID } } } } } } },
+      { listItemViewModel:{ title:{ content:'Second creator' },rendererContext:{ commandContext:{ onTap:{ innertubeCommand:{ browseEndpoint:{ browseId:OTHER_ID } } } } } } },
+    ] } } } } } } },
+  } } } };
+}
+
+test('native collaboration avatar-stack dialogs expose verified individual creators', () => {
+  const service = ageService({ channelId:OTHER_ID,blocked:true });
+  const node = componentCard();
+  node.componentProps.value.metadata.lockupMetadataViewModel.image = { avatarStackViewModel:collaborationStack() };
+  assert.deepEqual(service.channelIdentityFromCard(node),{ status:'multiple',channels:[
+    { channelId:ID,name:'First creator' },{ channelId:OTHER_ID,name:'Second creator' },
+  ],handles:[] });
+  assert.equal(service.channelFromCard(node),null);
+  assert.equal(service.cardFilterReason(node),'Channel hidden');
+});
+
+test('avatar-stack collaborators do not override a conflicting independent channel endpoint', () => {
+  const service = ageService({ blocked:true });
+  const node = componentCard();
+  node.componentProps.value.metadata.lockupMetadataViewModel.image = { avatarStackViewModel:collaborationStack() };
+  node.componentProps.value.ownerText = { runs:[{ text:'Conflicting creator',navigationEndpoint:{ browseEndpoint:{ browseId:'UCcccccccccccccccccccccc' } } }] };
+  assert.equal(service.channelIdentityFromCard(node).status,'conflict');
+  assert.deepEqual(service.channelCandidatesFromCard(node),[]);
+  assert.equal(service.cardFilterReason(node),null);
+});
+
+test('an explicit byline co-list retains an unresolved creator beside its verified channel', () => {
+  const { service } = fixture();
+  const node = handleCard(['second']);
+  node.data.ownerText = { runs:[
+    { text:'First creator',navigationEndpoint:{ browseEndpoint:{ browseId:ID } } },
+    { text:' and ' },
+    { text:'Second creator',navigationEndpoint:{ urlEndpoint:{ url:'/\u0040second' } } },
+  ] };
+  const identity = service.channelIdentityFromCard(node);
+  assert.equal(identity.status,'multiple');
+  assert.deepEqual(identity.channels,[{ channelId:ID,name:'First creator' }]);
+  assert.deepEqual(identity.handles,[{ handle:'@second',url:'https://www.youtube.com/@second',name:'Creator second' }]);
+  assert.equal(service.channelFromCard(node),null,'the unresolved co-creator must remain available to the picker');
+  const selected = identity.handles[0];
+  assert.equal(service.rememberResolvedChannel(node,selected,{ ...selected,channelId:OTHER_ID },'aaaaaaaaaaa').ok,true);
+  assert.deepEqual(service.channelIdentityFromCard(node).channels.map(channel => channel.channelId),[ID,OTHER_ID]);
+});
+
+test('an independent single-creator handle is not inferred to be a second collaborator', () => {
+  const { service } = fixture();
+  const node = handleCard(['fixture']);
+  node.data.ownerText = { runs:[{ text:'First creator',navigationEndpoint:{ browseEndpoint:{ browseId:ID } } }] };
+  const identity = service.channelIdentityFromCard(node);
+  assert.equal(identity.status,'unique');
+  assert.equal(service.channelFromCard(node).channelId,ID);
+  assert.equal(identity.handles.length,1,'the separate handle is available without guessing whether it belongs to this ID');
+});

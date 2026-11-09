@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { installVideoMenu } from '../../sources/video-menu.mjs';
+import { createMenuLayout } from '../../sources/menu-layout.mjs';
 import { launchFixtureBrowser } from './fixture-browser.mjs';
 
 let browser;
@@ -41,7 +42,7 @@ async function open(t, options = {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.goto(fixtureUrl);
-  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover, blockTube, duplicateNotInterested }) => {
+  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover, blockTube, duplicateNotInterested, iconSlots, iconLoaded }) => {
     let card = document.getElementById('card');
     if (cardTag) {
       const replacement = document.createElement(cardTag); replacement.id = card.id;
@@ -54,7 +55,7 @@ async function open(t, options = {}) {
     const popup = document.createElement(sheet ? 'yt-sheet-view-model' : 'ytd-menu-popup-renderer');
     dropdown.append(popup);
     popup.setAttribute('role', 'menu');
-    const fixture = window.menuFixture = { nativeCalls: [], refits: 0, openedSettings: [], openedContexts: [], popup, dropdown, originals: [] };
+    const fixture = window.menuFixture = { nativeCalls: [], refits: 0, openedSettings: [], openedContexts: [], popup, dropdown, originals: [], selectedChannelIds: [] };
     dropdown.refit = () => {
       fixture.refits++;
       if (fixture.nativeLayoutPending) {
@@ -137,6 +138,12 @@ async function open(t, options = {}) {
           if (presentationRows) { row.tabIndex = 0; row.setAttribute('role', 'presentation'); }
         } else row.polymerController = { data: items[index].menuServiceItemRenderer || items[index].menuServiceItemDownloadRenderer };
         target.setAttribute('role', 'menuitem'); target.tabIndex = 0; target.textContent = label;
+        if (iconSlots) {
+          const leading=document.createElement('div');leading.className='ytListItemViewModelLeading';
+          const icon=document.createElement('yt-icon'),slot=document.createElement('span');slot.className='yt-icon-shape';
+          if(iconLoaded){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('data-native-icon','1');slot.append(svg);}
+          icon.append(slot);leading.append(icon);target.prepend(leading);
+        }
         target.onclick = () => { fixture.nativeCalls.push(id); dropdown.close(); };
         if (lateNativeLayout) host.hidden = true;
         parent.append(host);
@@ -167,7 +174,7 @@ async function open(t, options = {}) {
     window.suite = { settings: { initial: settings || {} },
       channelAge: { channelFromCard: () => missingChannel ? null : ({ channelId: 'UCabcdefghijklmnopqrstuv', name: 'News channel' }) },
       openChannelAgeSettings: (channel, context) => {
-        fixture.openedSettings.push(channel);
+        fixture.openedSettings.push(channel); fixture.selectedChannelIds.push(context?.selectedChannelId);
         fixture.openedContexts.push({ cardId: context?.card?.id, videoId: context?.videoId, connected: context?.card?.isConnected });
       },
     };
@@ -176,8 +183,9 @@ async function open(t, options = {}) {
     cardTag: options.cardTag, containerTag: options.containerTag, noQueue: Boolean(options.noQueue), nativeBinding: Boolean(options.nativeBinding), bindingFault: options.bindingFault,
     libraryActions: Boolean(options.libraryActions), contentType: options.contentType, modelVideo: options.modelVideo,
     nativeAutofocus: options.nativeAutofocus, presentationRows: Boolean(options.presentationRows),
-    lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover), blockTube: Boolean(options.blockTube), duplicateNotInterested: Boolean(options.duplicateNotInterested) });
-  await page.addScriptTag({ content: `window.disposeVideoMenu = (${installVideoMenu.toString()})(window.suite);` });
+    lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover), blockTube: Boolean(options.blockTube), duplicateNotInterested: Boolean(options.duplicateNotInterested),
+    iconSlots:Boolean(options.iconSlots),iconLoaded:Boolean(options.iconLoaded) });
+  await page.addScriptTag({ content: `window.suite.menuLayout = (${createMenuLayout.toString()})(); window.disposeVideoMenu = (${installVideoMenu.toString()})(window.suite);` });
   return page;
 }
 
@@ -1061,4 +1069,261 @@ test('expired trusted activation cannot restart discovery when a late native pop
   await page.waitForTimeout(120);
   assert.equal(await page.locator('[data-ytms-video-menu]').count(), 0);
   assert.equal(await page.locator('[data-ytms-menu-action]').count(), 0);
+});
+
+for(const sheet of [false,true])test(`video menu settles before its first paint without reconnecting correctly ordered native rows (${sheet?'current sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet,iconSlots:true});
+  await page.evaluate(()=>document.getElementById('trigger').addEventListener('click',()=>{
+    const rows=menuFixture.originals;let moves=0;
+    const observer=new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(rows.includes(node))moves++;});
+    observer.observe(rows[0].parentElement,{childList:true});
+    menuFixture.firstPaint=new Promise(resolve=>requestAnimationFrame(()=>{
+      for(const record of observer.takeRecords())for(const node of record.addedNodes)if(rows.includes(node))moves++;
+      observer.disconnect();resolve({ready:menuFixture.popup.getAttribute('data-ytms-video-menu')==='1',moves,notInterested:menuFixture.popup.querySelectorAll('[data-ytms-menu-icon-fallback="notInterested"]').length});
+    }));
+  }));
+  await page.locator('#trigger').click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.firstPaint),{ready:true,moves:0,notInterested:1});
+});
+
+test('Not interested cold-icon fallback preserves native and extension icons and releases its scoped observer',async t=>{
+  const page=await open(t,{sheet:true,iconSlots:true,blockTube:true});
+  await page.evaluate(()=>{
+    const Native=MutationObserver;window.activeIconWatchers=0;
+    window.MutationObserver=class extends Native{observe(...args){if(!this.active){this.active=true;activeIconWatchers++;}return super.observe(...args);}disconnect(){if(this.active){this.active=false;activeIconWatchers--;}return super.disconnect();}};
+  });
+  await show(page);assert.equal(await page.locator('[data-ytms-menu-icon-fallback]').count(),1);
+  assert.equal(await page.locator('[data-native-id="blockChannel"] [data-ytms-menu-icon-fallback]').count(),0);
+  assert.equal(await page.locator('[data-native-id="blockVideo"] [data-ytms-menu-icon-fallback]').count(),0);
+  assert.equal(await page.evaluate(()=>activeIconWatchers),1);
+  await page.evaluate(()=>{const fallback=document.querySelector('[data-ytms-menu-icon-fallback]');const native=document.createElementNS('http://www.w3.org/2000/svg','svg');native.setAttribute('data-native-icon','1');fallback.parentElement.append(native);window.nativeNotInterested=native;});
+  await page.waitForFunction(()=>!document.querySelector('[data-ytms-menu-icon-fallback]'));
+  assert.equal(await page.evaluate(()=>nativeNotInterested.isConnected),true);
+  assert.equal(await page.evaluate(()=>activeIconWatchers),0);
+  const loaded=await open(t,{sheet:true,iconSlots:true,iconLoaded:true});await show(loaded);
+  assert.equal(await loaded.locator('[data-ytms-menu-icon-fallback]').count(),0);assert.equal(await loaded.locator('[data-native-icon]').count(),9);
+});
+
+for(const reason of ['recycled','detached','disposed'])test(`Not interested pending glyph is released when its row is ${reason}`,async t=>{
+  const page=await open(t,{sheet:true,iconSlots:true});await show(page);
+  await page.evaluate(reason=>{
+    if(reason==='disposed'){disposeVideoMenu();return;}
+    const row=menuFixture.popup.querySelector('[data-native-id="notInterested"]');
+    if(reason==='detached'){row.remove();return;}
+    const index=menuFixture.items.findIndex(item=>item.listItemViewModel?.title.content==='Not interested');
+    menuFixture.items[index].listItemViewModel.leadingImage.sources[0].clientResource.imageName='SOMETHING_NEW';
+    row.append(document.createElement('span'));
+  },reason);
+  await page.waitForFunction(()=>!document.querySelector('[data-ytms-menu-icon-fallback]'));
+});
+
+test('menu cleanup preserves a later native or extension display change',async t=>{
+  const page=await open(t,{sheet:true});await show(page);
+  await page.evaluate(()=>{
+    const report=menuFixture.popup.querySelector('[data-native-id="report"]');
+    report.style.setProperty('display','grid','important');disposeVideoMenu();
+  });
+  assert.deepEqual(await page.locator('[data-native-id="report"]').evaluate(row=>({display:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display')})),{display:'grid',priority:'important'});
+});
+
+test('channel tools toggles preserve the latest external display baseline on disposal',async t=>{
+  const page=await open(t,{sheet:true});await show(page);
+  await page.evaluate(()=>menuFixture.popup.querySelector('[data-native-id="report"]').style.setProperty('display','grid','important'));
+  await page.getByRole('menuitem',{name:'Channel tools',exact:true}).click();
+  assert.equal(await page.locator('[data-native-id="report"]').evaluate(row=>row.style.display),'grid');
+  await page.getByRole('menuitem',{name:'Back',exact:true}).click();
+  assert.equal(await page.locator('[data-native-id="report"]').evaluate(row=>row.style.display),'none');
+  await page.evaluate(()=>disposeVideoMenu());
+  assert.deepEqual(await page.locator('[data-native-id="report"]').evaluate(row=>({display:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display')})),{display:'grid',priority:'important'});
+});
+
+test('a pre-existing native none-important row is never claimed or revealed by menu cleanup',async t=>{
+  const page=await open(t,{sheet:true});
+  await page.evaluate(()=>{
+    const trigger=document.getElementById('trigger');trigger.removeEventListener('click',menuFixture.open);
+    trigger.addEventListener('click',()=>{menuFixture.open();menuFixture.popup.querySelector('[data-native-id="report"]').style.setProperty('display','none','important');});
+  });
+  await show(page);await page.getByRole('menuitem',{name:'Channel tools',exact:true}).click();
+  assert.equal(await page.locator('[data-native-id="report"]').isVisible(),false);
+  await page.getByRole('menuitem',{name:'Back',exact:true}).click();await page.evaluate(()=>disposeVideoMenu());
+  assert.deepEqual(await page.locator('[data-native-id="report"]').evaluate(row=>({display:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display')})),{display:'none',priority:'important'});
+});
+
+// Language: en-GB. Synthetic layout and creator identities only.
+function nestedLayout({empty = false} = {}) {
+  const model = createMenuLayout(), result = model.fromPreferences({menuGroupChannelTools:false});
+  result.nodes = result.nodes.filter(node => node.id !== 'channelTools');
+  result.nodes.unshift({id:'submenu-tools',name:'My tools',parent:'root'},
+    {id:'submenu-queue',name:'Queue actions',parent:'submenu-tools'},
+    {id:'submenu-next',name:'Next videos',parent:'submenu-queue'},
+    {id:'submenu-empty',name:'Unavailable actions',parent:'root'});
+  for (const node of result.nodes) {
+    if (node.id === 'playNext' || node.id === 'addToQueue') { node.parent = 'submenu-next'; node.visible = !empty; }
+    if (node.id === 'download') { node.parent = 'submenu-empty'; node.visible = false; }
+  }
+  assert.ok(model.validate(result)); return result;
+}
+async function creatorFixture(page,{status = 'multiple',channels = [{channelId:'UCabcdefghijklmnopqrstuv',name:'Alpha creator'},
+  {channelId:'UCABCDEFGHIJKLMNOPQRSTUV',name:'Beta creator'}],handles = []} = {}) {
+  await page.evaluate(({status,channels,handles}) => {
+    const f = window.creatorFixture = {status,channels,handles,lookups:[],requests:[],verified:new WeakSet()};
+    suite.channelAge.channelIdentityFromCard = () => ({status:f.status,channels:f.channels.map(channel => ({...channel})),handles:f.handles.map(handle => ({...handle}))});
+    suite.channelAge.rememberResolvedChannel = (_card,candidate,channel,videoId) => {
+      if (videoId !== 'bbbbbbbbbbb' || !f.handles.some(handle => handle.url === candidate.url)) return {ok:false,error:'Creator changed'};
+      f.channels = [{channelId:channel.channelId,name:channel.name}]; f.status = 'unique'; return {ok:true,channel};
+    };
+    suite.channelLookup = {
+      lookup(candidate,{signal}) {
+        f.lookups.push({...candidate});
+        return new Promise(resolve => f.requests.push({candidate,signal,resolve}));
+      },
+      isVerified(candidate,channel) { return f.verified.has(channel) && channel.url === candidate.url; },
+    };
+    f.complete = (index,ok = true) => {
+      const request = f.requests[index];
+      const channel = {channelId:'UCabcdefghijklmnopqrstuv',name:'Resolved creator',handle:request.candidate.handle,url:request.candidate.url};
+      f.verified.add(channel); request.resolve(ok ? {ok:true,channel} : {ok:false,error:'Channel page could not be verified.'});
+    };
+  },{status,channels,handles});
+}
+for (const sheet of [false,true]) test('custom nested menu pages preserve native action nodes and skip empty groups ('+(sheet ? 'current sheet':'legacy')+')',async t => {
+  const page = await open(t,{sheet,unknown:true,blockTube:true,settings:{menuLayout:nestedLayout()}});
+  await show(page);
+  assert.equal(await page.getByRole('menuitem',{name:'Unavailable actions',exact:true}).isVisible(),false);
+  assert.equal(await page.getByRole('menuitem',{name:'Block Channel',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'My tools',exact:true}).click();
+  await page.getByRole('menuitem',{name:'Queue actions',exact:true}).click();
+  await page.getByRole('menuitem',{name:'Next videos',exact:true}).click();
+  assert.deepEqual(await visibleIds(page),['back','playNext','addToQueue']);
+  assert.equal(await page.evaluate(() => menuFixture.originals.every(node => node.isConnected)),true);
+  await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).click();
+  assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls),['playNext']);
+  assert.equal(await page.locator('[data-ytms-video-menu]').count(),0);
+});
+test('custom nested menu keyboard navigation returns one level at a time and restores native ordering on disposal',async t => {
+  const page = await open(t,{sheet:true,settings:{menuLayout:nestedLayout()}});
+  await page.locator('#trigger').focus(); await page.keyboard.press('Enter');
+  await page.locator('[data-ytms-video-menu="1"]').waitFor();
+  await page.getByRole('menuitem',{name:'My tools',exact:true}).focus(); await page.keyboard.press('ArrowRight');
+  assert.equal(await page.getByRole('menuitem',{name:'Queue actions',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'Queue actions',exact:true}).focus(); await page.keyboard.press('ArrowRight');
+  await page.getByRole('menuitem',{name:'Next videos',exact:true}).focus(); await page.keyboard.press('ArrowRight');
+  assert.equal(await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).isVisible(),true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('menuitem',{name:'Next videos',exact:true}).isVisible(),true);
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.getByRole('menuitem',{name:'Queue actions',exact:true}).isVisible(),true);
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.getByRole('menuitem',{name:'My tools',exact:true}).isVisible(),true);
+  await page.evaluate(()=>disposeVideoMenu());
+  assert.equal(await page.locator('[data-ytms-menu-action]').count(),0);
+  assert.equal(await page.evaluate(()=>menuFixture.originals.every((node,index)=>node.parentElement.children[index]===node)),true);
+});
+test('all-hidden custom menu actions leave unknown extension rows usable without empty submenus',async t => {
+  const layout = nestedLayout({empty:true}); for (const node of layout.nodes) if ('visible' in node) node.visible = false;
+  const page = await open(t,{unknown:true,blockTube:true,settings:{menuLayout:layout}}); await show(page);
+  assert.deepEqual(await visibleIds(page),['unrecognised','blockChannel','blockVideo']);
+  await page.getByRole('menuitem',{name:'Block Channel',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['blockChannel']);
+});
+for (const sheet of [false,true]) test('verified collaboration choices open only the selected creator settings ('+(sheet ? 'current sheet':'legacy')+')',async t => {
+  const page = await open(t,{sheet,settings:{menuGroupChannelTools:false}}); await creatorFixture(page); await show(page);
+  await page.getByRole('menuitem',{name:/^Filter channel uploads/}).click();
+  assert.equal(await page.getByRole('menuitem',{name:'Filter uploads from Alpha creator',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'Filter uploads from Beta creator',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[{channelId:'UCABCDEFGHIJKLMNOPQRSTUV',name:'Beta creator'}]);
+  assert.deepEqual(await page.evaluate(()=>menuFixture.selectedChannelIds),['UCABCDEFGHIJKLMNOPQRSTUV']);
+  assert.deepEqual(await page.evaluate(()=>creatorFixture.lookups),[]);
+});
+test('recycled creator identities and conflicting metadata cannot open a stale creator or start lookup',async t => {
+  const page = await open(t,{settings:{menuGroupChannelTools:false}}); await creatorFixture(page); await show(page);
+  await page.getByRole('menuitem',{name:/^Filter channel uploads/}).click();
+  await page.evaluate(()=>{creatorFixture.channels=[{channelId:'UCabcdefghijklmnopqrstuv',name:'Alpha creator'}];creatorFixture.status='unique';});
+  await page.getByRole('menuitem',{name:'Filter uploads from Beta creator',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+  await page.locator('#outside').click();
+  await page.evaluate(()=>{creatorFixture.status='conflict';creatorFixture.channels=[];});await show(page);
+  const action=page.locator('[data-ytms-menu-action="channelAge"]');
+  assert.equal(await action.getAttribute('aria-disabled'),'true');assert.match(await action.textContent(),/disagrees/);
+  await action.click({force:true});assert.deepEqual(await page.evaluate(()=>creatorFixture.lookups),[]);
+});
+test('handle lookup starts only on explicit selection and verified results bind the existing editor',async t => {
+  const page = await open(t,{sheet:true,settings:{menuGroupChannelTools:false}});
+  await creatorFixture(page,{status:'missing',channels:[],handles:[{handle:'@alpha',url:'https://www.youtube.com/@alpha',name:'Alpha creator'}]});
+  await show(page);assert.deepEqual(await page.evaluate(()=>creatorFixture.lookups),[]);
+  await page.getByRole('menuitem',{name:/^Look up channel ID/}).click();
+  await page.waitForFunction(()=>creatorFixture.lookups.length===1);
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+  await page.evaluate(()=>creatorFixture.complete(0));
+  await page.waitForFunction(()=>menuFixture.openedSettings.length===1);
+  assert.equal(await page.evaluate(()=>menuFixture.openedSettings[0].channelId),'UCabcdefghijklmnopqrstuv');
+  assert.deepEqual(await page.evaluate(()=>menuFixture.selectedChannelIds),['UCabcdefghijklmnopqrstuv']);
+});
+test('Back cancels handle lookup and a late response cannot open settings or alter a reopened menu',async t => {
+  const page = await open(t,{settings:{menuGroupChannelTools:false}});
+  await creatorFixture(page,{status:'missing',channels:[],handles:[{handle:'@alpha',url:'https://www.youtube.com/@alpha',name:'Alpha creator'}]});
+  await show(page);await page.getByRole('menuitem',{name:/^Look up channel ID/}).click();
+  await page.waitForFunction(()=>creatorFixture.requests.length===1);await page.getByRole('menuitem',{name:'Back',exact:true}).click();
+  assert.equal(await page.evaluate(()=>creatorFixture.requests[0].signal.aborted),true);
+  await page.evaluate(()=>creatorFixture.complete(0));await page.waitForTimeout(30);
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+  assert.equal(await page.getByRole('menuitem',{name:/^Look up channel ID/}).isVisible(),true);
+});
+test('failed lookup offers a retry while card recycling rejects a later successful response',async t => {
+  const page = await open(t,{sheet:true,settings:{menuGroupChannelTools:false}});
+  await creatorFixture(page,{status:'missing',channels:[],handles:[{handle:'@alpha',url:'https://www.youtube.com/@alpha',name:'Alpha creator'}]});
+  await show(page);await page.getByRole('menuitem',{name:/^Look up channel ID/}).click();
+  await page.waitForFunction(()=>creatorFixture.requests.length===1);await page.evaluate(()=>creatorFixture.complete(0,false));
+  await page.getByRole('status').filter({hasText:'Channel page could not be verified.'}).waitFor();
+  await page.getByRole('menuitem',{name:/^Look up @alpha/}).click();
+  await page.waitForFunction(()=>creatorFixture.requests.length===2);
+  await page.evaluate(()=>{document.querySelector('#card a').href='/watch?v=ccccccccccc';creatorFixture.complete(1);});
+  await page.waitForTimeout(30);assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+});
+
+test('closing, navigating or disposing aborts pending creator lookups and ignores late results',async t => {
+  for (const action of ['close','navigate','dispose']) {
+    const page = await open(t,{sheet:true,settings:{menuGroupChannelTools:false}});
+    await creatorFixture(page,{status:'missing',channels:[],handles:[{handle:'@alpha',url:'https://www.youtube.com/@alpha',name:'Alpha creator'}]});
+    await show(page);await page.getByRole('menuitem',{name:/^Look up channel ID/}).click();
+    await page.waitForFunction(()=>creatorFixture.requests.length===1);
+    await page.evaluate(action=>{
+      if(action==='close')menuFixture.dropdown.close();
+      if(action==='navigate')window.dispatchEvent(new Event('yt-navigate-start'));
+      if(action==='dispose')disposeVideoMenu();
+    },action);
+    assert.equal(await page.evaluate(()=>creatorFixture.requests[0].signal.aborted),true,action);
+    await page.evaluate(()=>creatorFixture.complete(0));await page.waitForTimeout(30);
+    assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[],action);
+    assert.equal(await page.locator('[data-ytms-video-menu]').count(),0);
+  }
+});
+
+test('partially identified collaborations expose verified creator and explicit remaining handle choices',async t => {
+  const page=await open(t,{sheet:true,settings:{menuGroupChannelTools:false}});
+  await creatorFixture(page,{status:'multiple',channels:[{channelId:'UCabcdefghijklmnopqrstuv',name:'Alpha creator'}],handles:[
+    {handle:'@beta',url:'https://www.youtube.com/@beta',name:'Beta creator'},
+  ]});
+  await show(page);
+  const action=page.locator('[data-ytms-menu-action="channelAge"]');
+  assert.equal(await action.getAttribute('aria-haspopup'),'menu');
+  await action.click();
+  assert.equal(await page.getByRole('menuitem',{name:'Filter uploads from Alpha creator',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:/^Look up @beta/}).click();
+  await page.waitForFunction(()=>creatorFixture.lookups.length===1);
+  assert.equal(await page.evaluate(()=>creatorFixture.lookups[0].url),'https://www.youtube.com/@beta');
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+  await page.getByRole('menuitem',{name:'Back',exact:true}).click();
+  assert.equal(await page.evaluate(()=>creatorFixture.requests[0].signal.aborted),true);
+});
+
+test('one verified creator with an unassociated handle retains direct settings without a network request',async t => {
+  const page=await open(t,{sheet:true,settings:{menuGroupChannelTools:false}});
+  await creatorFixture(page,{status:'unique',channels:[{channelId:'UCabcdefghijklmnopqrstuv',name:'Alpha creator'}],handles:[
+    {handle:'@alpha',url:'https://www.youtube.com/@alpha',name:'Alpha creator'},
+  ]});
+  await show(page);
+  await page.getByRole('menuitem',{name:'Filter channel uploads',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.selectedChannelIds),['UCabcdefghijklmnopqrstuv']);
+  assert.deepEqual(await page.evaluate(()=>creatorFixture.lookups),[]);
 });

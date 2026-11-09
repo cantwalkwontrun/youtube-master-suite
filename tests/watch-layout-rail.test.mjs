@@ -110,6 +110,7 @@ function createHarness() {
   visiblePopupFrame.closest = () => watchFlexy;
 
   const context = {
+    CONFIG: { collapseEmptySidebar: true },
     AUXILIARY_RAIL_SURFACE_SELECTOR:
       "#sponsorBlockPopupContainer,#sponsorBlockPopupContainer iframe",
     CHAT_SURFACE_SELECTOR: "chat",
@@ -168,6 +169,19 @@ function createHarness() {
     watchFlexy,
   };
 }
+
+test("disabling empty-sidebar collapse releases only the owned empty-rail marker", () => {
+  const harness = createHarness();
+  harness.visiblePopupFrame.hidden = true;
+  harness.context.reconcileSecondaryRailState();
+  assert.equal(harness.attributes.get("data-ywlc-empty-secondary-rail"), "1");
+  harness.context.CONFIG.collapseEmptySidebar = false;
+  harness.context.reconcileSecondaryRailState();
+  assert.equal(harness.attributes.has("data-ywlc-empty-secondary-rail"), false);
+  const writes = harness.attributeWrites.length;
+  harness.context.reconcileSecondaryRailState();
+  assert.equal(harness.attributeWrites.length, writes, "stable disabled state is silent");
+});
 
 function createRailSurface(harness, tagName, options = {}) {
   const attributes = new Map();
@@ -287,6 +301,8 @@ function getMutationConstants() {
     PLAYLIST_PANEL_SELECTOR,
     QUEUE_ITEM_MUTATION_ATTRIBUTES,
     QUEUE_ITEM_SELECTOR,
+    QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE,
+    QUEUE_THUMBNAIL_FALLBACK_CSS_PROPERTY,
     RAIL_MUTATION_TARGET_SELECTOR,
     SURFACE_STATE_MUTATION_ATTRIBUTES,
   })`);
@@ -318,19 +334,28 @@ function createThumbnailHarness() {
     applyQueueThumbnailFallback: (item) => applied.push(item),
   };
   for (const name of [
+    "clearQueueThumbnailFallback",
     "getQueueThumbnailFallbackObserver",
     "unobserveRemovedQueueItems",
   ]) {
     vm.runInNewContext(extractFunction(WATCH_LAYOUT_SOURCE, name), context);
   }
   const observer = context.getQueueThumbnailFallbackObserver();
-  const createItem = (connected = true) => ({
-    nodeType: 1,
-    isConnected: connected,
-    closest: () => connected ? {} : null,
-    matches: (selector) => selector === context.QUEUE_ITEM_SELECTOR,
-    querySelectorAll: () => [],
-  });
+  const createItem = (connected = true) => {
+    const attributes = new Map([[context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE, "1"], ["class", "native-thumbnail"]]);
+    const styles = new Map([[context.QUEUE_THUMBNAIL_FALLBACK_CSS_PROPERTY, "synthetic-owned-image"], ["background-image", "synthetic-native-image"]]);
+    const thumbnail = { attributes, styles, removeAttribute: name => attributes.delete(name),
+      style: { removeProperty: name => styles.delete(name) } };
+    return {
+      nodeType: 1,
+      isConnected: connected,
+      closest: () => connected ? {} : null,
+      matches: (selector) => selector === context.QUEUE_ITEM_SELECTOR,
+      querySelectorAll: selector => selector === `[${context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE}="1"]` &&
+        attributes.has(context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE) ? [thumbnail] : [],
+      thumbnail,
+    };
+  };
   return {
     applied,
     context,
@@ -719,6 +744,30 @@ test("engagement panel visibility and insertion/removal trigger rail reconciliat
   }
 });
 
+test("thumbnail observation follows a native-adopted Watch queue and releases targets on reconciliation", () => {
+  const watchPanel = {}, nativePanel = {}, secondary = {}, columns = {};
+  secondary.parentElement = columns;
+  let watchRoute = true, watchChildren = [watchPanel], connectedPanels = [watchPanel, nativePanel];
+  const watch = {
+    querySelectorAll: () => watchChildren,
+    querySelector: () => secondary,
+  };
+  const context = { ...getMutationConstants(), isWatchPath: () => watchRoute,
+    document: { querySelectorAll: selector => selector === "ytd-watch-flexy" ? [watch] : connectedPanels } };
+  vm.runInNewContext(extractFunction(WATCH_LAYOUT_SOURCE, "getRailMutationTargets"), context);
+  assert.deepEqual(new Set(context.getRailMutationTargets()), new Set([watchPanel, nativePanel, secondary, columns]));
+  watchChildren = [];
+  assert.equal(context.getRailMutationTargets().includes(watchPanel), true,
+    "An existing panel remains observed when the native miniplayer adopts it");
+  connectedPanels = [nativePanel];
+  assert.equal(context.getRailMutationTargets().includes(watchPanel), false,
+    "Reconciliation releases a panel removed from the document");
+  connectedPanels.push(watchPanel);
+  assert.equal(context.getRailMutationTargets().includes(watchPanel), true);
+  watchRoute = false;
+  assert.equal(context.getRailMutationTargets().length, 0, "Home retains no Watch thumbnail observation");
+});
+
 test("detached non-intersecting queue rows are unobserved without loading thumbnails", () => {
   const harness = createThumbnailHarness();
   const item = harness.createItem(false);
@@ -728,6 +777,9 @@ test("detached non-intersecting queue rows are unobserved without loading thumbn
   assert.equal(harness.observed.size, 0);
   assert.equal(harness.pendingQueueThumbnailItems.size, 0);
   assert.equal(harness.applied.length, 0);
+  assert.equal(item.thumbnail.attributes.has(harness.context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE), false);
+  assert.deepEqual([...item.thumbnail.styles], [["background-image", "synthetic-native-image"]]);
+  assert.equal(item.thumbnail.attributes.get("class"), "native-thumbnail");
 });
 
 test("connected offscreen rows remain observed and visible rows receive one fallback", () => {
@@ -736,6 +788,7 @@ test("connected offscreen rows remain observed and visible rows receive one fall
   harness.observer.observe(item);
   harness.deliver([{ target: item, isIntersecting: false }]);
   assert.equal(harness.observed.has(item), true);
+  assert.equal(item.thumbnail.attributes.get(harness.context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE), "1");
   harness.deliver([{ target: item, isIntersecting: true }]);
   assert.equal(harness.observed.size, 0);
   assert.deepEqual(harness.applied, [item]);
@@ -758,6 +811,12 @@ test("removed rows and removed panels release observed and pending queue items",
   });
   assert.deepEqual([...harness.observed], [movedRow]);
   assert.deepEqual([...harness.pendingQueueThumbnailItems], [movedRow]);
+  for (const row of [removedRow, nestedRow]) {
+    assert.equal(row.thumbnail.attributes.has(harness.context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE), false);
+    assert.deepEqual([...row.thumbnail.styles], [["background-image", "synthetic-native-image"]]);
+  }
+  assert.equal(movedRow.thumbnail.attributes.get(harness.context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE), "1",
+    "A row still owned by a queue panel retains its fallback during native reordering");
 });
 
 test("the rail mutation callback unregisters removed offscreen queue rows", () => {
@@ -783,4 +842,6 @@ test("the rail mutation callback unregisters removed offscreen queue rows", () =
   callback([{ type: "childList", target: {}, addedNodes: [], removedNodes: [item] }]);
   assert.equal(harness.observed.size, 0);
   assert.equal(harness.pendingQueueThumbnailItems.size, 0);
+  assert.equal(item.thumbnail.attributes.has(harness.context.QUEUE_THUMBNAIL_FALLBACK_ATTRIBUTE), false);
+  assert.deepEqual([...item.thumbnail.styles], [["background-image", "synthetic-native-image"]]);
 });

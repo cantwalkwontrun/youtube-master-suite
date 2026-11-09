@@ -6,6 +6,8 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
   const units = ["days", "weeks", "months", "years"];
   let current = [];
   let enabledRules = new Map();
+  const resolvedHandles = new Map();
+  let resolvedCards = new WeakMap();
 
   function normaliseChannelId(input) {
     if (typeof input !== "string") return null;
@@ -144,10 +146,14 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
       try {
         if (typeof node?.componentProps?.data === "function") componentData = node.componentProps.data();
       } catch { /* A detached current component retains the existing DOM/legacy fallback. */ }
-      for (const value of [node?.data, node?.__data?.data, controller?.data, controller?.__data?.data, componentData]) {
+      for (const read of [() => node?.data, () => node?.__data?.data, () => controller?.data, () => controller?.__data?.data, () => componentData]) {
+        let value;
+        try { value = read(); } catch { continue; }
         if (!value || typeof value !== "object") continue;
         found.push(value);
-        for (const candidate of [value.videoRenderer, value.compactVideoRenderer, value.gridVideoRenderer, value.content?.videoRenderer, value.content?.richItemRenderer?.content?.videoRenderer, value.lockupViewModel]) {
+        for (const readCandidate of [() => value.videoRenderer, () => value.compactVideoRenderer, () => value.gridVideoRenderer, () => value.content?.videoRenderer, () => value.content?.richItemRenderer?.content?.videoRenderer, () => value.lockupViewModel]) {
+          let candidate;
+          try { candidate = readCandidate(); } catch { continue; }
           if (candidate && typeof candidate === "object") found.push(candidate);
         }
       }
@@ -161,22 +167,67 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
     return Array.isArray(rows) ? rows.slice(0, 4).flatMap(row => Array.isArray(row?.metadataParts) ? row.metadataParts.slice(0, 5) : []) : [];
   }
 
-  function channelFromRecords(card, data) {
+  function metadataRows(record) {
+    const rows = record?.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows
+      || record?.metadata?.contentMetadataViewModel?.metadataRows;
+    return Array.isArray(rows) ? rows.slice(0, 4) : [];
+  }
+
+  function collaboratorItems(record) {
+    const stack = record.metadata?.lockupMetadataViewModel?.image?.avatarStackViewModel;
+    const items = stack?.rendererContext?.commandContext?.onTap?.innertubeCommand?.showDialogCommand
+      ?.panelLoadingStrategy?.inlineContent?.dialogViewModel?.customContent?.listViewModel?.listItems;
+    if (!Array.isArray(stack?.avatars) || stack.avatars.length < 2 || stack.avatars.length > 10 ||
+        !Array.isArray(items) || items.length < 2 || items.length > 10) return [];
+    const creators = items.map(item => item?.listItemViewModel);
+    return creators.every(creator => normaliseChannelId(creator?.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId))
+      ? creators : [];
+  }
+
+  const bylineSelector = [
+    "#channel-name a[href]", "#byline a[href]", "ytd-channel-name a[href]",
+    ".yt-content-metadata-view-model__metadata-text a[href]",
+    ".yt-content-metadata-view-model__metadata-row a[href]",
+    ".ytContentMetadataViewModelMetadataText a[href]",
+  ].join(",");
+
+  function handleFromUrl(value) {
+    if (typeof value !== 'string' || value.length > 1024) return null;
+    try {
+      const url = new URL(value, 'https://www.youtube.com');
+      if (url.origin !== 'https://www.youtube.com' || url.username || url.password || url.search || url.hash) return null;
+      const match = /^\/@([^/]+)\/?$/.exec(url.pathname);
+      if (!match) return null;
+      const handle = decodeURIComponent(match[1]);
+      if (!handle || handle.length > 100 || /[\s\u0000-\u001f\u007f<>?&#%/\\@]/u.test(handle)) return null;
+      return { handle: `@${handle}`, url: `https://www.youtube.com/@${encodeURIComponent(handle)}` };
+    } catch { return null; }
+  }
+
+  function channelCandidatesFromRecords(card, data) {
     const candidates = new Map();
-    function add(id, name) {
+    const groups = [], domGroups = new Map();
+    const token = command => normaliseChannelId(command?.browseEndpoint?.browseId) ||
+      handleFromUrl(command?.browseEndpoint?.canonicalBaseUrl || command?.commandMetadata?.webCommandMetadata?.url || command?.urlEndpoint?.url)?.url;
+    function group(values) {
+      const unique = [...new Set(values.filter(Boolean))];
+      if (unique.length > 1) groups.push(unique);
+    }
+    function add(id, name, priority = 1) {
       const channelId = normaliseChannelId(id);
       if (!channelId) return;
-      candidates.set(channelId, candidates.get(channelId) || label(name));
+      const named = label(name), existing = candidates.get(channelId);
+      if (!existing || (named && (!existing.name || priority > existing.priority))) candidates.set(channelId, { channelId, name: named, priority });
     }
-    const bylineSelector = [
-      "#channel-name a[href]", "#byline a[href]", "ytd-channel-name a[href]",
-      ".yt-content-metadata-view-model__metadata-text a[href]",
-      ".yt-content-metadata-view-model__metadata-row a[href]",
-      ".ytContentMetadataViewModelMetadataText a[href]",
-    ].join(",");
     for (const anchor of Array.from(card.querySelectorAll(bylineSelector)).slice(0, 20)) {
       const href = anchor.getAttribute("href") || "";
-      add(href.startsWith("/channel/") ? `https://www.youtube.com${href}` : href, anchor.textContent);
+      add(href.startsWith("/channel/") ? `https://www.youtube.com${href}` : href, anchor.textContent, 3);
+      const value = normaliseChannelId(href.startsWith('/channel/') ? `https://www.youtube.com${href}` : href) || handleFromUrl(href)?.url;
+      const container = anchor.closest?.('#channel-name, #byline, ytd-channel-name, .yt-content-metadata-view-model__metadata-row, .ytContentMetadataViewModelMetadataRow') || anchor.parentElement;
+      if (value && container && container !== card) {
+        const values = domGroups.get(container) || [];
+        values.push(value); domGroups.set(container, values);
+      }
     }
     for (const record of data) {
       // Current History lockups keep the owner endpoint on the avatar, while
@@ -184,25 +235,145 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
       const avatar = record.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel;
       add(avatar?.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId,
         text(metadataParts(record)[0]?.text));
+      // Current collaboration cards put both permanent creator endpoints in
+      // their avatar stack's inline channel-choice dialog, not in its images.
+      const collaborators = collaboratorItems(record);
+      group(collaborators.map(creator => token(creator.rendererContext.commandContext.onTap.innertubeCommand)));
+      for (const creator of collaborators) add(creator.rendererContext.commandContext.onTap.innertubeCommand.browseEndpoint.browseId, text(creator.title), 5);
       for (const byline of [record.ownerText, record.shortBylineText, record.longBylineText]) {
+        group((Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []).map(run => token(run?.navigationEndpoint)));
         for (const run of Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []) {
-          add(run?.navigationEndpoint?.browseEndpoint?.browseId, run?.text);
+          add(run?.navigationEndpoint?.browseEndpoint?.browseId, run?.text, 4);
         }
       }
+      for (const row of metadataRows(record)) group((Array.isArray(row?.metadataParts) ? row.metadataParts.slice(0, 5) : [])
+        .flatMap(part => Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : [])
+        .map(run => token(run?.onTap?.innertubeCommand || run?.onTap)));
       for (const part of metadataParts(record)) {
         for (const run of Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : []) {
           const command = run?.onTap?.innertubeCommand || run?.onTap;
-          add(command?.browseEndpoint?.browseId, text(part.text));
+          const content = text(part.text);
+          const hasRange = Number.isInteger(run?.startIndex) && Number.isInteger(run?.length) &&
+            run.startIndex >= 0 && run.length > 0 && run.startIndex + run.length <= content.length;
+          add(command?.browseEndpoint?.browseId, hasRange ? content.slice(run.startIndex, run.startIndex + run.length) : content, hasRange ? 4 : 2);
         }
       }
     }
-    if (candidates.size !== 1) return null;
-    const [channelId, name] = candidates.entries().next().value;
-    return { channelId, name: name || channelId };
+    for (const values of domGroups.values()) group(values);
+    return { channels: [...candidates.values()].map(({ channelId, name }) => ({ channelId, name: name || channelId })), groups };
+  }
+
+  function channelFromRecords(card, data) {
+    const identity = identityFromRecords(card, data);
+    return identity.status === 'unique' ? identity.channels[0] : null;
   }
 
   function channelFromCard(card) {
     return card?.querySelectorAll ? channelFromRecords(card, records(card)) : null;
+  }
+
+  function channelCandidatesFromCard(card) {
+    const identity = channelIdentityFromCard(card);
+    return identity.status === 'conflict' ? [] : identity.channels;
+  }
+
+  function handlesFromRecords(card, data) {
+    if (!card?.querySelectorAll) return [];
+    const candidates = new Map(), identified = new Set();
+    function add(value, name, id) {
+      const candidate = handleFromUrl(value);
+      if (!candidate) return;
+      if (normaliseChannelId(id)) { identified.add(candidate.url); return; }
+      const existing = candidates.get(candidate.url);
+      if (!existing || (!existing.name && label(name))) candidates.set(candidate.url, { ...candidate, name: label(name) });
+    }
+    function endpoint(command, name) {
+      if (!command || typeof command !== 'object') return;
+      const id = command.browseEndpoint?.browseId;
+      add(command.browseEndpoint?.canonicalBaseUrl, name, id);
+      add(command.commandMetadata?.webCommandMetadata?.url, name, id);
+      add(command.urlEndpoint?.url, name, id);
+    }
+    for (const anchor of Array.from(card.querySelectorAll(bylineSelector)).slice(0, 20)) add(anchor.getAttribute('href'), anchor.textContent);
+    for (const record of data) {
+      const avatar = record.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel;
+      endpoint(avatar?.rendererContext?.commandContext?.onTap?.innertubeCommand, text(metadataParts(record)[0]?.text));
+      for (const creator of collaboratorItems(record)) endpoint(creator.rendererContext.commandContext.onTap.innertubeCommand,text(creator.title));
+      for (const byline of [record.ownerText, record.shortBylineText, record.longBylineText]) {
+        for (const run of Array.isArray(byline?.runs) ? byline.runs.slice(0, 5) : []) endpoint(run?.navigationEndpoint, run?.text);
+      }
+      for (const part of metadataParts(record)) {
+        const content = text(part.text);
+        for (const run of Array.isArray(part?.text?.commandRuns) ? part.text.commandRuns.slice(0, 5) : []) {
+          const hasRange = Number.isInteger(run?.startIndex) && Number.isInteger(run?.length) &&
+            run.startIndex >= 0 && run.length > 0 && run.startIndex + run.length <= content.length;
+          endpoint(run?.onTap?.innertubeCommand || run?.onTap, hasRange ? content.slice(run.startIndex, run.startIndex + run.length) : content);
+        }
+      }
+    }
+    return [...candidates.values()].filter(candidate => !identified.has(candidate.url)).slice(0, 10)
+      .map(candidate => ({ ...candidate, name: candidate.name || candidate.handle }));
+  }
+
+  function freshResolution(url) {
+    const entry = resolvedHandles.get(url);
+    if (!entry) return null;
+    const timestamp = Number(now());
+    if (!Number.isFinite(timestamp) || entry.expires <= timestamp) { resolvedHandles.delete(url); return null; }
+    return entry.channel;
+  }
+
+  function identityFromRecords(card, data) {
+    const found = channelCandidatesFromRecords(card, data), rawHandles = handlesFromRecords(card, data);
+    const channels = new Map(found.channels.map(channel => [channel.channelId, channel]));
+    const handles = [];
+    for (const candidate of rawHandles) {
+      const channel = freshResolution(candidate.url);
+      if (channel) channels.set(channel.channelId, { channelId: channel.channelId, name: candidate.name || channel.name });
+      else handles.push(candidate);
+    }
+    const values = [...channels.values()];
+    let status = values.length === 0 ? 'missing' : values.length === 1 ? 'unique' : 'conflict';
+    if (values.length > 0 && values.length <= 10 && found.groups.some(group => {
+      const ids = new Set(group.map(value => normaliseChannelId(value) || freshResolution(value)?.channelId).filter(Boolean));
+      const unresolvedCreator = handles.some(handle => group.includes(handle.url));
+      return values.every(channel => ids.has(channel.channelId)) && (ids.size > 1 || unresolvedCreator);
+    })) status = 'multiple';
+    if (values.length > 10) return { status:'conflict', channels:[], handles:[] };
+    return { status, channels:values, handles };
+  }
+
+  function channelIdentityFromCard(card) {
+    return card?.querySelectorAll ? identityFromRecords(card, records(card)) : { status:'missing',channels:[],handles:[] };
+  }
+
+  function handleCandidatesFromCard(card) {
+    return channelIdentityFromCard(card).handles;
+  }
+
+  function rememberResolvedChannel(card, candidate, channel, expectedVideoId) {
+    const url = handleFromUrl(candidate?.url), id = normaliseChannelId(channel?.channelId);
+    const videoId = videoIdFromCard(card);
+    if (!url || !id || !videoId || (expectedVideoId !== undefined && expectedVideoId !== videoId) ||
+        channel?.url !== url.url || channel?.handle !== url.handle) return { ok:false,error:'The selected channel or video changed. Reopen its menu and try again.' };
+    const available = handlesFromRecords(card, records(card));
+    if (!available.some(handle => handle.url === url.url && handle.handle === url.handle)) return { ok:false,error:'The selected creator is no longer present on this video.' };
+    const timestamp = Number(now());
+    if (!Number.isFinite(timestamp)) return { ok:false,error:'Channel lookup could not be retained. Please try again.' };
+    const value = { channelId:id,name:label(channel.name) || available.find(handle => handle.url === url.url).name,handle:url.handle,url:url.url };
+    const expires = timestamp + 600000;
+    resolvedCards.set(card, { videoId,url:url.url,channel:value,expires });
+    resolvedHandles.delete(url.url);
+    resolvedHandles.set(url.url, { channel:value,expires });
+    while (resolvedHandles.size > 32) resolvedHandles.delete(resolvedHandles.keys().next().value);
+    return { ok:true,channel:{ ...value } };
+  }
+
+  function isResolvedChannel(card, url, channelId, expectedVideoId) {
+    const binding = resolvedCards.get(card), candidate = handleFromUrl(url), timestamp = Number(now());
+    if (!binding || !candidate || binding.url !== candidate.url || binding.channel.channelId !== channelId ||
+        !Number.isFinite(timestamp) || binding.expires <= timestamp || binding.videoId !== expectedVideoId || videoIdFromCard(card) !== expectedVideoId) return false;
+    return handlesFromRecords(card, records(card)).some(handle => handle.url === candidate.url);
   }
 
   function videoIdFromCard(card) {
@@ -318,14 +489,15 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
     if (!enabledRules.size || !card?.querySelectorAll) return null;
     // Renderers can be recycled between calls; share this snapshot only here.
     const data = records(card);
-    const owner = channelFromRecords(card, data);
-    const rule = owner && enabledRules.get(owner.channelId);
-    if (!rule) return null;
+    const identity = identityFromRecords(card, data);
+    if (!['unique', 'multiple'].includes(identity.status)) return null;
+    const rules = identity.channels.map(channel => enabledRules.get(channel.channelId)).filter(Boolean);
+    if (!rules.length) return null;
     // Suite-owned blocks are not YouTube recommendation-feedback history.
     // Deliberately hide all uploads, including undated/live cards, but only
     // on the feed surfaces selected by the caller.
-    if (rule.blocked) return "Channel hidden";
-    return isOlderThanRule(card, rule, data) ? "Channel age" : null;
+    if (rules.some(rule => rule.blocked)) return "Channel hidden";
+    return rules.some(rule => isOlderThanRule(card, rule, data)) ? "Channel age" : null;
   }
 
   function isCardTooOld(card) {
@@ -333,5 +505,5 @@ export function createChannelAgeService(getStorage, now = () => Date.now()) {
   }
 
   read();
-  return { key, normaliseChannelId, validateRules, read, save, getRules, hasEnabledRules, channelFromCard, videoIdFromCard, compareAgeLimits, cardFilterReason, isCardTooOld };
+  return { key, normaliseChannelId, validateRules, read, save, getRules, hasEnabledRules, channelFromCard, channelCandidatesFromCard, handleCandidatesFromCard, channelIdentityFromCard, rememberResolvedChannel, rememberLookup:rememberResolvedChannel, isResolvedChannel, videoIdFromCard, compareAgeLimits, cardFilterReason, isCardTooOld };
 }

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyMasterMetadata } from "./verify-userscript-metadata.mjs";
 
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +74,8 @@ function verifyInstalledSource(manifest, installedSource) {
     manifest.registeredModules,
     "Installed source module registration count differs from the release manifest",
   );
+  assert.equal(verifyMasterMetadata(installedSource).version, manifest.version,
+    "Installed metadata version differs from the release manifest");
 
   return installedHash;
 }
@@ -91,7 +94,27 @@ function runSelfTests() {
     /Usage: node verify-installed-master\.mjs/,
   );
 
-  const validSource = 'suite.registerModule("fixture");\n';
+  const validSource = `// ==UserScript==
+// @name YouTube Master Suite
+// @namespace youtube.master-suite
+// @version 0.0.0
+// @description Synthetic installed-source fixture
+// @author Citizen
+// @license GNU GPLv3
+// @updateURL none
+// @downloadURL none
+// @match https://www.youtube.com/*
+// @match https://consent.youtube.com/*
+// @run-at document-start
+// @sandbox raw
+// @grant GM_getValue
+// @grant GM_setValue
+// @grant GM_addValueChangeListener
+// @grant GM_removeValueChangeListener
+// @noframes
+// ==/UserScript==
+suite.registerModule("fixture");
+`;
   const fixtureManifest = {
     schemaVersion: 1,
     name: "YouTube Master Suite",
@@ -112,6 +135,12 @@ function runSelfTests() {
     /Installed source hash differs from the release manifest/,
     "Installed-source corruption must be rejected",
   );
+  const expandedPermissions = validSource.replace("// @noframes", "// @grant GM_xmlhttpRequest\n// @noframes");
+  assert.throws(() => verifyInstalledSource({
+    ...fixtureManifest, sha256: sha256(expandedPermissions),
+    bytes: Buffer.byteLength(expandedPermissions, "utf8"), characters: expandedPermissions.length,
+  }, expandedPermissions), /Master grants/,
+  "A matching manifest must not authorise unapproved installed permissions");
   console.log("Verified installed-source corruption safeguards");
 }
 

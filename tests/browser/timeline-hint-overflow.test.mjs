@@ -1,3 +1,4 @@
+import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
@@ -28,7 +29,7 @@ async function fixture(t, { mode = 'large', clipStyle = '', tipStyle = '', scrol
   await context.addInitScript(mode => localStorage.setItem('yt-master-suite.settings.v1', JSON.stringify({version:1,values:{timelinePreviewSize:mode,theatreMode:false}})), mode);
   const page = await context.newPage();
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
-    route.fulfill({contentType:'text/html',body:base.replace('</head>',css+'</head>').replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup).replace('</body>',`<script>${suite}</script></body>`)}) : route.abort());
+    route.fulfill({contentType:'text/html',body:base.replace('</head>',css+'</head>').replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup).replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page, manifest.registeredModules, {timeoutMs:10000});
   await page.evaluate(({ clipStyle, tipStyle, scroll }) => {

@@ -254,10 +254,10 @@ test("Interface setting saves queue-only logo visibility without disabling DeArr
   const toggle = page.locator('#ytms-showDeArrowQueueButton');
   assert.equal(await toggle.isChecked(), true);
   await toggle.uncheck();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.showDeArrowQueueButton, KEY), undefined,
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showDeArrowQueueButton, KEY), undefined,
     "Draft changes must not be written before Save");
   await page.locator('#ytms-save-preview').click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.showDeArrowQueueButton, KEY), false);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showDeArrowQueueButton, KEY), false);
   await page.reload();
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000 });
   await page.evaluate(() => fixture.installDeArrow());

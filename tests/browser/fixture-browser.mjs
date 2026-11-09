@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { chromium, firefox } from "playwright";
+import { installFixtureGMStorage } from "./fixture-gm-storage.mjs";
 
 const INSTALLED_BROWSERS = {
   chrome: { folders: ["Google", "Chrome", "Application"], executable: "chrome.exe", product: "Google Chrome", engine: "chromium" },
@@ -69,7 +70,7 @@ function ownedTestDirectories(name) {
 
 async function launch(browserType, options, name) {
   const owned = ownedTestDirectories(name);
-  if (!owned) return browserType.launch(options);
+  if (!owned) return installFixtureGMStorage(await browserType.launch(options));
   const context = await browserType.launchPersistentContext(owned.profile, {
     ...options, artifactsDir: owned.artifacts, acceptDownloads: false,
   });
@@ -82,7 +83,7 @@ async function launch(browserType, options, name) {
   // isolated too; each test still creates and intercepts its own fresh context.
   try {
     await context.route("**/*", route => route.abort());
-    return browser;
+    return installFixtureGMStorage(browser);
   } catch (error) {
     try { await browser.close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Fixture launch and cleanup failed"); }

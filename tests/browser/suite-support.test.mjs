@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { createSuiteSettings } from '../../sources/suite-settings.mjs';
+import { createMenuLayout } from '../../sources/menu-layout.mjs';
 import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
@@ -38,13 +39,13 @@ async function importBackup(page, value) {
   await page.locator('#ytms-import-backup').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)) });
 }
 async function stored(page) {
-  return page.evaluate(([a, b, c]) => [localStorage.getItem(a), localStorage.getItem(b), localStorage.getItem(c)], [KEY, FILTER_KEY, CORNER_KEY]);
+  return page.evaluate(([a, b, c]) => [fixtureStorage.getItem(a), fixtureStorage.getItem(b), fixtureStorage.getItem(c)], [KEY, FILTER_KEY, CORNER_KEY]);
 }
 
 test('full restore permits and explains channel-order-only changes', async t => {
   const page = await openFixture(t);
   const other = { ...channel, channelId: 'UC' + 'b'.repeat(22), name: 'Second channel' };
-  await page.evaluate(({ key, rules }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules })),
+  await page.evaluate(({ key, rules }) => fixtureStorage.setItem(key, JSON.stringify({ version: 1, rules })),
     { key: FILTER_KEY, rules: [channel, other] });
   await importBackup(page, envelope({}, [other, channel]));
   await page.locator('#ytms-backup-preview').waitFor({ state: 'visible' });
@@ -111,7 +112,7 @@ test('restore refuses unsaved drafts and storage changes made after preview', as
   await page.locator('#ytms-settings-button').click(); await page.locator('#ytms-tab-support').click();
   assert.equal(await page.locator('#ytms-backup-preview').isHidden(), true);
   await importBackup(page, envelope()); await page.locator('#ytms-confirm-restore').check();
-  await page.evaluate(key => localStorage.setItem(key, 'bottom-left'), CORNER_KEY);
+  await page.evaluate(key => fixtureStorage.setItem(key, 'bottom-left'), CORNER_KEY);
   await page.locator('#ytms-restore-backup').click();
   assert.match(await page.locator('#ytms-backup-status').innerText(), /changed/i);
   assert.equal((await stored(page))[2], 'bottom-left');
@@ -201,4 +202,18 @@ test('an old clipboard request cannot update or focus a reopened settings panel'
   await page.locator('#ytms-copy-support').click();
   await page.waitForFunction(() => document.querySelector('#ytms-support-status').textContent.includes('Report copied'));
   assert.equal(await page.evaluate(() => window.copiedReport), await page.locator('#ytms-support-report').inputValue());
+});
+
+// Language: en-GB. Nested menu changes must be readable before an import is confirmed.
+test('backup preview describes custom submenu names and hidden actions without object placeholders',async t=>{
+  const page=await openFixture(t); const menus=createMenuLayout(); const layout=menus.fromPreferences(defaults);
+  layout.nodes.push({id:'submenu-research',name:'Research & notes',parent:'root'});
+  const share=layout.nodes.find(node=>node.id==='share');share.parent='submenu-research';share.visible=false;
+  await importBackup(page,envelope({menuLayout:layout}));
+  const preview=page.locator('#ytms-backup-preview');await preview.waitFor({state:'visible'});
+  await preview.getByText('Review setting changes',{exact:true}).click();
+  const text=await preview.innerText();assert.match(text,/Research & notes/);assert.match(text,/Share \(hidden\)/);
+  assert.doesNotMatch(text,/\[object Object\]/);
+  await page.locator('#ytms-confirm-restore').check();await page.locator('#ytms-restore-backup').click();
+  assert.deepEqual(JSON.parse((await stored(page))[0]).values.menuLayout,layout);
 });

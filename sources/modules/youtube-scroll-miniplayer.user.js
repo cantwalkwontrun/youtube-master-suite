@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Scroll Miniplayer
 // @namespace    Citizen.youtube.scroll-miniplayer
-// @version      5.29
+// @version      5.33
 // @description  Floats the active YouTube player with compact queue context, YouTube-style controls, and synchronised corner selection across open windows.
 // @author       Citizen
 // @updateURL    none
@@ -169,7 +169,8 @@
       : "top-right";
 
     try {
-      const storedCorner = localStorage.getItem(CORNER_STORAGE_KEY);
+      const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+      const storedCorner = storage.getItem(CORNER_STORAGE_KEY);
       return isValidCorner(storedCorner) ? storedCorner : defaultCorner;
     } catch {
       return defaultCorner;
@@ -180,7 +181,8 @@
     if (!isValidCorner(corner)) return false;
 
     try {
-      localStorage.setItem(CORNER_STORAGE_KEY, corner);
+      const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+      storage.setItem(CORNER_STORAGE_KEY, corner);
       return true;
     } catch {
       return false;
@@ -498,19 +500,25 @@
   function canFloatPlayer() {
     if (!CONFIG.enabled || !isEligiblePath() || isFullscreen() || isNativeMiniplayerVisible()) return false;
 
-    const video = getPlayerVideo();
+    const player = getPlayer();
+    // Native ownership survives hidden/zero-size activation transitions.
+    // Taking its player during that interval causes competing resize loops.
+    if (!player || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
+
+    const video = player.querySelector(VIDEO_SELECTOR);
     if (!video || video.ended) return false;
 
-    const player = getPlayer();
-    return Boolean(player && !player.classList.contains("ended-mode"));
+    return !player.classList.contains("ended-mode");
   }
 
   function buildCss() {
     const defaultHeight = Math.round(CONFIG.width / CONFIG.aspectRatio);
 
+    // Only the direct body child is floated by this module. Native adoption
+    // must release these overrides synchronously, before observer cleanup.
     return `
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen),
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen),
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
         position: fixed !important;
         top: var(--ytsmp-top, 68px) !important;
         right: var(--ytsmp-right, auto) !important;
@@ -531,21 +539,21 @@
           transform ${CONFIG.enterTransitionMs}ms ease-out !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
         opacity: 1 !important;
         transform: translateZ(0) scale(1) !important;
       }
 
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) {
         opacity: 0 !important;
         pointer-events: none !important;
         transform: translateZ(0) scale(0.985) !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content,
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content,
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) video.html5-main-video,
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-iv-video-content {
         top: 0 !important;
         left: 0 !important;
         width: var(--ytsmp-width, ${CONFIG.width}px) !important;
@@ -553,24 +561,24 @@
         margin-left: 0 !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-chrome-bottom {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-chrome-bottom {
         left: 12px !important;
         width: calc(100% - 24px) !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-gradient-bottom {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-gradient-bottom {
         height: 96px !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-ce-element,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-paid-content-overlay {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-ce-element,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-paid-content-overlay {
         display: none !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu,
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
-      body.${EXITING_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu,
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-playlist-menu,
+      body.${EXITING_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .ytp-queue-menu {
         display: none !important;
         opacity: 0 !important;
         pointer-events: none !important;
@@ -581,9 +589,9 @@
         display: none !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID},
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID},
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID},
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID},
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} {
         appearance: none !important;
         align-items: center !important;
         background: rgba(0, 0, 0, 0.72) !important;
@@ -604,9 +612,9 @@
         z-index: 2147483647 !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} svg,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID} svg,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} svg {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} svg,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID} svg,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS} svg {
         display: block !important;
         fill: currentColor !important;
         height: 18px !important;
@@ -614,7 +622,7 @@
         width: 18px !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID} {
         opacity: 0 !important;
         position: absolute !important;
         right: 8px !important;
@@ -622,7 +630,7 @@
         transition: background-color 100ms ease-out, opacity 120ms ease-out, transform 80ms ease-out !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID} {
         align-items: center !important;
         display: flex !important;
         flex-direction: row-reverse !important;
@@ -635,7 +643,7 @@
         z-index: 2147483647 !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_MENU_ID} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_MENU_ID} {
         align-items: center !important;
         display: flex !important;
         gap: 4px !important;
@@ -648,7 +656,7 @@
         visibility: hidden !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}[data-open="1"] #${CORNER_MENU_ID} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}[data-open="1"] #${CORNER_MENU_ID} {
         max-width: 92px !important;
         opacity: 1 !important;
         pointer-events: auto !important;
@@ -657,28 +665,28 @@
         visibility: visible !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CLOSE_BUTTON_ID},
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CORNER_CONTROL_ID},
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}:focus-within {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CLOSE_BUTTON_ID},
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen):hover #${CORNER_CONTROL_ID},
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_CONTROL_ID}:focus-within {
         opacity: 1 !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:hover,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:hover,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:hover {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:hover,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:hover,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:hover {
         background: rgba(0, 0, 0, 0.9) !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:active,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:active,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:active {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:active,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:active,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:active {
         transform: scale(0.92) !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:focus-visible,
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:focus-visible {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CLOSE_BUTTON_ID}:focus-visible,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${CORNER_BUTTON_ID}:focus-visible,
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) .${CORNER_OPTION_CLASS}:focus-visible {
         outline: 2px solid #fff !important;
         outline-offset: 2px !important;
       }
@@ -687,7 +695,7 @@
         display: none !important;
       }
 
-      body.${ACTIVE_CLASS} ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${QUEUE_INFO_ID} {
+      body.${ACTIVE_CLASS} > ${MOVIE_PLAYER_SELECTOR}:not(.ytp-fullscreen) #${QUEUE_INFO_ID} {
         align-items: center !important;
         background: rgba(18, 18, 18, 0.88) !important;
         border-radius: 6px !important;
@@ -735,6 +743,37 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
+  function getRequestedCustomWidth() {
+    return Number.isInteger(CONFIG.customWidth) && CONFIG.customWidth >= 320 && CONFIG.customWidth <= 1200
+      ? CONFIG.customWidth
+      : CONFIG.width;
+  }
+
+  function getAppliedScrollMiniplayerSize() {
+    return {
+      mode: CONFIG.sizeMode === "fixed" ? "custom" : "auto",
+      width: getRequestedCustomWidth(),
+    };
+  }
+
+  function setScrollMiniplayerSize(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        !["auto", "custom"].includes(value.mode) || !Number.isInteger(value.width) ||
+        value.width < 320 || value.width > 1200) return false;
+
+    const sizeMode = value.mode === "custom" ? "fixed" : "dynamic";
+    if (CONFIG.sizeMode === sizeMode && getRequestedCustomWidth() === value.width) return true;
+    // Retain the automatic preferred width. A custom request is independent of
+    // the rendered size, which may be smaller while the viewport is cramped.
+    CONFIG.sizeMode = sizeMode;
+    CONFIG.customWidth = value.width;
+    if (isBodyActive()) {
+      setBodyBoxVars();
+      dispatchResize();
+    }
+    return true;
+  }
+
   function setBodyBoxVars() {
     const body = document.body;
     if (!body) return;
@@ -743,12 +782,15 @@
       ? getRemainingColumnBox()
       : null;
     const availableWidth = Math.max(160, innerWidth - CONFIG.edgeOffsetPx * 2);
-    const availableHeight = Math.max(90, innerHeight - getMastheadHeight() - CONFIG.mastheadGapPx - CONFIG.edgeOffsetPx);
+    const availableHeight = Math.max(CONFIG.sizeMode === "fixed" ? 1 : 90,
+      innerHeight - getMastheadHeight() - CONFIG.mastheadGapPx - CONFIG.edgeOffsetPx);
     const isPortraitViewport = innerHeight > innerWidth;
     let width;
 
     if (CONFIG.sizeMode === "fixed") {
-      width = Math.min(CONFIG.width, availableWidth);
+      const rightInset = remainingColumnBox ? remainingColumnBox.right : CONFIG.edgeOffsetPx;
+      const fittingWidth = Math.max(1, innerWidth - rightInset - CONFIG.edgeOffsetPx);
+      width = Math.min(getRequestedCustomWidth(), availableWidth, fittingWidth);
     } else if (CONFIG.sizeMode === "column") {
       width = Math.min(remainingColumnBox ? remainingColumnBox.width : CONFIG.width, availableWidth);
     } else {
@@ -851,9 +893,10 @@
   }
 
   function movePlayerToTopLevel(player) {
+    if (!player || !document.body || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
+
     clearPlayerRestoreRetries();
     clearPlayerOrphanFinaliseTimer();
-    if (!player || !document.body) return false;
 
     if (
       floatedPlayer &&
@@ -1991,7 +2034,7 @@
 
   window.addEventListener("scroll", scheduleScrollSync, { passive: true });
 
-  window.addEventListener("storage", (event) => {
+  const handleStoredCorner = (event) => {
     if (
       event.key !== CORNER_STORAGE_KEY ||
       !isValidCorner(event.newValue) ||
@@ -2010,7 +2053,9 @@
       setBodyBoxVars();
       dispatchResize();
     }
-  });
+  };
+  if (typeof suite === "undefined") window.addEventListener("storage", handleStoredCorner);
+  else suite.storage.subscribe(handleStoredCorner);
 
   function handleFullscreenChange() {
     setActive(false);
@@ -2079,5 +2124,7 @@
   // does not have the master's private suite object.
   if (typeof suite !== "undefined") {
     suite.getAppliedScrollMiniplayerCorner = () => currentCorner;
+    suite.getAppliedScrollMiniplayerSize = getAppliedScrollMiniplayerSize;
+    suite.setScrollMiniplayerSize = setScrollMiniplayerSize;
   }
 })();

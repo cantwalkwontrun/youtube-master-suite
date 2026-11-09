@@ -47,7 +47,7 @@ async function open(t, { rules = [rule()], route = "/" } = {}) {
   assert.equal(await page.locator("html").getAttribute("lang"), "en-GB");
   await page.evaluate(({ id, otherId }) => {
     window.ageFixture = {
-      add(name, { channel = id, date = "2 weeks ago", live = false, ambiguous = false, queue = false } = {}) {
+      add(name, { channel = id, date = "2 weeks ago", live = false, ambiguous = false, collaboration = false, queue = false } = {}) {
         const card = document.createElement("ytd-rich-item-renderer");
         card.id = name;
         const media = document.createElement("ytd-rich-grid-media");
@@ -61,8 +61,14 @@ async function open(t, { rules = [rule()], route = "/" } = {}) {
         byline.textContent = "Fixture channel";
         owner.append(byline);
         if (ambiguous) {
+          // Independent native and DOM owners disagree. Two links co-listed
+          // within one byline are a collaboration, covered separately below.
+          media.data = { ownerText:{ runs:[{ text:'Conflicting owner',navigationEndpoint:{ browseEndpoint:{ browseId:otherId } } }] } };
+        }
+        if (collaboration) {
           const second = byline.cloneNode(true);
           second.href = `/channel/${otherId}`;
+          second.textContent = 'Other creator';
           owner.append(second);
         }
         const metadata = document.createElement("div");
@@ -148,6 +154,25 @@ test("each channel has an independent age limit while uncertain, live and ambigu
     await hidden(page, name, false);
     assert.equal(await page.locator(`#${name}`).isVisible(), true, name);
   }
+});
+
+test('co-listed creators match only explicitly enabled rules while conflicting owners stay visible', async t => {
+  const page = await open(t,{ rules:[] });
+  await page.evaluate(() => {
+    ageFixture.add('collaboration-old',{ collaboration:true });
+    ageFixture.add('collaboration-recent',{ collaboration:true,date:'1 day ago' });
+    ageFixture.add('ordinary-first');
+    ageFixture.add('conflicting-owners',{ ambiguous:true });
+  });
+  for (const id of ['collaboration-old','collaboration-recent','ordinary-first','conflicting-owners']) await hidden(page,id,false);
+  assert.equal(await page.evaluate(rule => ageFixture.save([rule]).ok,rule(OTHER_ID)),true);
+  await hidden(page,'collaboration-old',true);
+  for (const id of ['collaboration-recent','ordinary-first','conflicting-owners']) await hidden(page,id,false);
+  assert.equal(await page.evaluate(rule => ageFixture.save([{ ...rule,blocked:true }]).ok,rule(OTHER_ID)),true);
+  await hidden(page,'collaboration-recent',true);
+  await hidden(page,'conflicting-owners',false);
+  assert.equal(await page.evaluate(rule => ageFixture.save([{ ...rule,blocked:true,enabled:false }]).ok,rule(OTHER_ID)),true);
+  await hidden(page,'collaboration-old',false); await hidden(page,'collaboration-recent',false);
 });
 
 test("recycled channel hrefs and date text nodes are reassessed in both directions", async t => {

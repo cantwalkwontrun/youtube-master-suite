@@ -3,18 +3,18 @@
   "modules": {
     "commentCleaner": {
       "path": "sources/modules/youtube-comment-cleaner.user.js",
-      "version": "1.29",
-      "sha256": "b9b0ffc85b19a81d823352dbde52fe38bde34e5bf63b698f3e7eb17c77caf42a"
+      "version": "1.30",
+      "sha256": "821f51b7ad5d8b039ca58981edbf553e9f80fde753fd52531ab1541f0d7d626b"
     },
     "feedUiCleaner": {
       "path": "sources/modules/youtube-feed-ui-cleaner.user.js",
-      "version": "2.20",
-      "sha256": "6e963bfc79aec3c4c80b21e4f157f279a51c780619edbdeac824d366a777ec40"
+      "version": "2.23",
+      "sha256": "9571f1efdbf5afdc19c3fd1ac1233bdda7879690a2ca4815e564f4c3e6deb52f"
     },
     "miniplayerButtonRestorer": {
       "path": "sources/modules/youtube-miniplayer-button-restorer.user.js",
-      "version": "1.16",
-      "sha256": "1c002708874c007b9deb3f87b2e1194b8dee92eb5dc8bc2d30ef1813f9f12d53"
+      "version": "1.18",
+      "sha256": "8b9b78f67e0d9ed1bbb160c35842cb73b9f2348e2c65f6ac8175bd46f1f646e2"
     },
     "pageCoherence": {
       "path": "sources/modules/youtube-page-coherence.user.js",
@@ -23,23 +23,23 @@
     },
     "playerPreferencesLite": {
       "path": "sources/modules/youtube-player-preferences-lite.user.js",
-      "version": "1.120",
-      "sha256": "39cf6dfab91972f5db97189a696d948917d57d7b5f577ff5576fa6c70b2d3c44"
+      "version": "1.122",
+      "sha256": "beff1381eb9a1c55e6d7409b98d66205bc722ff392bcddaae30819bd6965f6aa"
     },
     "scrollMiniplayer": {
       "path": "sources/modules/youtube-scroll-miniplayer.user.js",
-      "version": "5.29",
-      "sha256": "fe96ab7a1b47bd0c11a5d0fbe86daa7f14c23f06242dab52f796fed0775050b1"
+      "version": "5.33",
+      "sha256": "9db4bbfbcbed61358cc5df8ea5743a869d497a8ae0fa7808520b487e54347e90"
     },
     "suiteSettings": {
       "path": "sources/modules/youtube-suite-settings.user.js",
-      "version": "1.49",
-      "sha256": "fdf710812870c242aa52946a91c61fddcfc484b58882653a450c4310406ef15b"
+      "version": "1.58",
+      "sha256": "fdff94216c29ed39b866e9e2a17da7636623822af8e9dbcb6e8ce10597412375"
     },
     "watchLayoutCleaner": {
       "path": "sources/modules/youtube-watch-layout-cleaner.user.js",
-      "version": "1.63",
-      "sha256": "476010cc0c629fe906eb2c389c5b9e70631d3c7cbf1ad02bf5449f98687f2036"
+      "version": "1.75",
+      "sha256": "5d3a056528200be3d06ff469da1ed8731cd8936c936bc4ff01c01861962a72b7"
     }
   }
 }

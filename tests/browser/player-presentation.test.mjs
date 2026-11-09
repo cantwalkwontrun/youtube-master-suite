@@ -181,6 +181,104 @@ test('a later extension replacement is not overwritten on disposal', async t => 
     disposePresentation(); return c.computeIsInlinePreviewEnabled === other;
   }), true);
 });
+
+test('disable previews recomputes native eligibility and restores it without touching the queue player', async t => {
+  const page = await open(t, { disableVideoPreviews: true }, `(() => {
+    for(const host of document.querySelectorAll('ytd-app,ytd-rich-grid-renderer')) {
+      const c=host.polymerController,data={isInlinePreviewEnabled:true}; c.miniplayerIsActive=false;
+      c.__dataHasAccessor={isInlinePreviewEnabled:true}; c._getProperty=name=>data[name];
+      c._setProperty=(name,value)=>{data[name]=value; audit.dispatches.push([host.localName,value]);};
+      Object.defineProperty(c,'isInlinePreviewEnabled',{get:()=>data.isInlinePreviewEnabled,set:()=>{}});
+    }
+  })()`);
+  const disabled=await snapshot(page);
+  assert.equal(disabled.app,false); assert.equal(disabled.grid,false); assert.equal(disabled.active,false);
+  assert.equal(disabled.sameVideo,true); assert.deepEqual(disabled.mediaEvents,[]); assert.equal(disabled.clicks,0);
+  await page.evaluate(()=>disposePresentation());
+  const restored=await snapshot(page); assert.equal(restored.app,true); assert.equal(restored.grid,true);
+  assert.equal(restored.sameVideo,true); assert.deepEqual(restored.mediaEvents,[]);
+});
+
+test('disable previews follows supported browse and search hooks but releases them on Watch', async t => {
+  const page=await open(t,{disableVideoPreviews:true},`(() => {
+    for(const host of document.querySelectorAll('ytd-app,ytd-rich-grid-renderer')) host.polymerController.miniplayerIsActive=false;
+  })()`);
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-navigate-start')); history.pushState({},'', '/results?search_query=fixture');
+    const search=document.createElement('ytd-search'); search.style.cssText='display:block;width:300px;height:100px';
+    const original=function(active,state){return !active||[5,2,0].includes(state);};
+    search.polymerController={miniplayerIsActive:false,miniplayerPlaybackState:1,isInlinePreviewEnabled:true,computeIsInlinePreviewEnabled:original};
+    search.originalCompute=original; document.querySelector('ytd-app').append(search);
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+  });
+  await settle(page);
+  assert.equal((await snapshot(page)).app,false);
+  assert.equal(await page.evaluate(()=>document.querySelector('ytd-search').polymerController.isInlinePreviewEnabled),false);
+  await page.evaluate(()=>{window.dispatchEvent(new Event('yt-navigate-start'));history.pushState({},'','/watch?v=aaaaaaaaaaa');window.dispatchEvent(new Event('yt-navigate-finish'));});
+  await settle(page);
+  assert.equal((await snapshot(page)).app,true);
+  assert.equal(await page.evaluate(()=>{
+    const search=document.querySelector('ytd-search');return search.polymerController.computeIsInlinePreviewEnabled===search.originalCompute;
+  }),true);
+  assert.deepEqual((await snapshot(page)).mediaEvents,[]);
+});
+
+test('disable previews respects native opt-out, foreign replacements and unknown contracts', async t => {
+  const page=await open(t,{disableVideoPreviews:true},`(() => {
+    document.querySelector('ytd-app').polymerController.miniplayerIsActive=false;
+  })()`);
+  assert.equal(await page.evaluate(()=>{
+    const app=document.querySelector('ytd-app'),controller=app.polymerController;
+    window.foreignPreviewHook=function(a,b,c){return !a&&!c;}; controller.computeIsInlinePreviewEnabled=foreignPreviewHook;
+    window.dispatchEvent(new Event('yt-page-data-updated')); return true;
+  }),true);
+  await settle(page);
+  assert.equal(await page.evaluate(()=>document.querySelector('ytd-app').polymerController.computeIsInlinePreviewEnabled===foreignPreviewHook),true);
+  await page.evaluate(()=>disposePresentation());
+  assert.equal(await page.evaluate(()=>document.querySelector('ytd-app').polymerController.computeIsInlinePreviewEnabled===foreignPreviewHook),true);
+});
+
+test('an already disabled native inline-playback preference is not wrapped by disable previews', async t => {
+  const page=await open(t,{disableVideoPreviews:true},`document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled=true`);
+  assert.equal(await page.evaluate(()=>{
+    const host=document.querySelector('ytd-app');return host.polymerController.computeIsInlinePreviewEnabled===host.originalCompute;
+  }),true);
+  assert.deepEqual((await snapshot(page)).mediaEvents,[]);
+});
+
+test('pagehide keeps native preview hooks suspended despite a late navigation finish', async t => {
+  const page=await open(t,{keepHoverPreviews:true});
+  assert.equal((await snapshot(page)).app,true);
+  await page.evaluate(()=>{window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('yt-navigate-finish'));window.dispatchEvent(new Event('yt-page-data-updated'));});
+  await settle(page); assert.equal((await snapshot(page)).app,false);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pageshow')));
+  await settle(page); assert.equal((await snapshot(page)).app,true);
+  assert.deepEqual((await snapshot(page)).mediaEvents,[]);
+});
+
+test('initial pageshow does not replace native SPA navigation completion for preview hooks', async t => {
+  const page=await open(t,{keepHoverPreviews:true});
+  await page.evaluate(()=>{window.dispatchEvent(new Event('yt-navigate-start'));window.dispatchEvent(new Event('pageshow'));});
+  await settle(page); assert.equal((await snapshot(page)).app,false);
+  await page.evaluate(()=>window.dispatchEvent(new Event('yt-navigate-finish')));
+  await settle(page); assert.equal((await snapshot(page)).app,true);
+});
+
+test('disable previews requires no polling, DOM observer or repeated work for media and caption churn', async t => {
+  const page=await open(t,{disableVideoPreviews:true},`(() => {
+    for(const host of document.querySelectorAll('ytd-app,ytd-rich-grid-renderer')) host.polymerController.miniplayerIsActive=false;
+    window.setInterval=()=>{throw Error('Unexpected preview polling');};
+    window.MutationObserver=class{constructor(){throw Error('Unexpected preview observer');}};
+  })()`);
+  const before=await page.evaluate(()=>audit.dispatches.length);
+  await page.evaluate(()=>{
+    const captions=document.createElement('div');captions.className='ytp-caption-window-container';document.querySelector('#movie_player').append(captions);
+    for(let i=0;i<100;i++){captions.append(document.createElement('span'));document.querySelector('video').dispatchEvent(new Event('timeupdate',{bubbles:true}));}
+  });
+  await settle(page);
+  assert.equal(await page.evaluate(()=>audit.dispatches.length),before);
+  assert.equal((await snapshot(page)).clicks,0); assert.deepEqual((await snapshot(page)).mediaEvents,[]);
+});
 for (const setup of [
   `document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled = true`,
   `delete document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled`,
@@ -218,6 +316,54 @@ test('a blocked timer click is not retried on every media update', async t => {
   const page = await open(t, { timeDisplayMode: 'elapsed' }, `document.querySelector('.ytp-time-wrapper').addEventListener('click',e=>e.stopImmediatePropagation(),true)`);
   await page.evaluate(() => { for(let i=0;i<20;i++) document.querySelector('video').dispatchEvent(new Event('timeupdate')); });
   await settle(page); assert.equal((await snapshot(page)).text, '-15:04'); assert.equal((await snapshot(page)).clicks, 0);
+});
+for (const nativeIdentity of [true, false]) test(`a reused timer retries after a new SPA video (${nativeIdentity ? 'native identity' : 'watch URL fallback'})`, async t => {
+  const page = await open(t, { timeDisplayMode: 'elapsed' }, `
+    history.replaceState({}, '', '/watch?v=aaaaaaaaaaa');
+    window.timerVideoId = 'aaaaaaaaaaa';
+    ${nativeIdentity ? "document.querySelector('#movie_player').getVideoData = () => ({video_id: timerVideoId});" : ''}
+    window.blockTimer = e => e.stopImmediatePropagation();
+    document.querySelector('.ytp-time-wrapper').addEventListener('click', blockTimer, true);
+  `);
+  assert.equal((await snapshot(page)).text, '-15:04');
+  await page.evaluate(() => {
+    document.querySelector('.ytp-time-wrapper').removeEventListener('click', blockTimer, true);
+    window.dispatchEvent(new Event('yt-navigate-start'));
+    history.pushState({}, '', '/watch?v=bbbbbbbbbbb');
+    timerVideoId = 'bbbbbbbbbbb';
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+    document.querySelector('video').dispatchEvent(new Event('loadedmetadata'));
+  });
+  await settle(page);
+  const result = await snapshot(page);
+  assert.equal(result.text, '0:09'); assert.equal(result.clicks, 1);
+  assert.equal(result.sameVideo, true); assert.equal(result.sameWrapper, true); assert.deepEqual(result.mediaEvents, []);
+});
+test('same-video navigation and temporarily missing identity do not retry a blocked timer', async t => {
+  const page = await open(t, { timeDisplayMode: 'elapsed' }, `
+    history.replaceState({}, '', '/watch?v=aaaaaaaaaaa');
+    document.querySelector('#movie_player').getVideoData = () => ({video_id: 'aaaaaaaaaaa'});
+    window.blockTimer = e => e.stopImmediatePropagation();
+    document.querySelector('.ytp-time-wrapper').addEventListener('click', blockTimer, true);
+  `);
+  await page.evaluate(() => document.querySelector('.ytp-time-wrapper').removeEventListener('click', blockTimer, true));
+  for (const url of ['/watch?v=aaaaaaaaaaa&t=10', '/', '/results?search_query=fixture']) {
+    await page.evaluate(url => {
+      window.dispatchEvent(new Event('yt-navigate-start'));
+      history.pushState({}, '', url);
+      window.dispatchEvent(new Event('yt-navigate-finish'));
+      document.querySelector('video').dispatchEvent(new Event('loadedmetadata'));
+      window.dispatchEvent(new Event('yt-page-data-updated'));
+    }, url);
+    await settle(page);
+  }
+  await page.evaluate(() => {
+    delete document.querySelector('#movie_player').getVideoData;
+    window.dispatchEvent(new Event('pagehide')); window.dispatchEvent(new Event('pageshow'));
+    for (let i = 0; i < 20; i++) document.querySelector('video').dispatchEvent(new Event('timeupdate'));
+  });
+  await settle(page);
+  assert.equal((await snapshot(page)).text, '-15:04'); assert.equal((await snapshot(page)).clicks, 0);
 });
 test('preview policy and timer toggles preserve a genuinely advancing miniplayer clock', { timeout: 15000 }, async t => {
   const page = await open(t, { keepHoverPreviews: true, timeDisplayMode: 'elapsed' });

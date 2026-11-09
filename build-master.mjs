@@ -3,6 +3,14 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuiteSettings } from "./sources/suite-settings.mjs";
+import { createMenuLayout } from "./sources/menu-layout.mjs";
+import { createMenuEditor } from "./sources/menu-editor.mjs";
+import { createChannelLookup } from "./sources/channel-lookup.mjs";
+import { createFeatureCatalogue } from "./sources/feature-catalogue.mjs";
+import { installPlayerControls } from "./sources/player-controls.mjs";
+import { installDiscoveryControls } from "./sources/discovery-controls.mjs";
+import { installLayoutControls } from "./sources/layout-controls.mjs";
+import { installCompactNativeQueue } from "./sources/compact-native-queue.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
 import { createChannelAgeService } from "./sources/channel-age.mjs";
 import { createChannelAgeDialog } from "./sources/channel-age-dialog.mjs";
@@ -12,8 +20,14 @@ import { createSettingsSupportPanel } from "./sources/settings-support-panel.mjs
 import { installVideoMenu } from "./sources/video-menu.mjs";
 import { rejectYouTubeOptionalCookies } from "./sources/youtube-cookie-consent.mjs";
 import { installPlayerPresentation } from "./sources/player-presentation.mjs";
+import { createPlayheadMarker } from "./sources/playhead-marker.mjs";
+import { createSuiteUpdates } from "./sources/suite-updates.mjs";
+import { createSettingsExtraControls } from "./sources/settings-extra-controls.mjs";
+import { createIsolatedStorage } from "./sources/isolated-storage.mjs";
+import { initialiseIsolatedStorage } from "./sources/storage-bootstrap.mjs";
+import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.60";
+const MASTER_VERSION = "1.2.76";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -447,7 +461,7 @@ const modules = [
   {
     id: "suiteSettings",
     label: "Suite Settings",
-    phase: "document-idle",
+    phase: "document-start",
   },
 ];
 
@@ -1599,11 +1613,15 @@ const output = `// ==UserScript==
 // @match        https://www.youtube.com/*
 // @match        https://consent.youtube.com/*
 // @run-at       document-start
-// @grant        none
+// @sandbox      raw
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @noframes
 // ==/UserScript==
 
-(() => {
+(async () => {
   "use strict";
 
   const rejectYouTubeOptionalCookies = ${rejectYouTubeOptionalCookies.toString()};
@@ -2293,27 +2311,93 @@ ${runtimeMutationCoverageHelpers}
     return true;
   }
 
+  const createFeatureCatalogue = ${createFeatureCatalogue.toString()};
+  const createMenuLayout = ${createMenuLayout.toString()};
+  const menuLayout = createMenuLayout();
   const createSuiteSettings = ${createSuiteSettings.toString()};
   const createChannelAgeService = ${createChannelAgeService.toString()};
+  let storage;
+  try {
+    const storageApis = (${scopeStorageApis.toString()})({
+      info: typeof GM_info === 'object' ? GM_info : null,
+      getValue: typeof GM_getValue === 'function' ? GM_getValue : null,
+      setValue: typeof GM_setValue === 'function' ? GM_setValue : null,
+      addValueChangeListener: typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null,
+      removeValueChangeListener: typeof GM_removeValueChangeListener === 'function' ? GM_removeValueChangeListener : null,
+    });
+    storage = await (${initialiseIsolatedStorage.toString()})({
+      createAdapter: ${createIsolatedStorage.toString()},
+      adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
+      locks: navigator.locks,
+    });
+  } catch {
+    // Never initialise with defaults or silently revert to page persistence.
+    // A generic notice contains no saved values, keys, URLs or account details.
+    const showStorageFailure = () => {
+      if (!document.body || document.getElementById('ytms-storage-error')) return;
+      const notice = document.createElement('div');
+      notice.id = 'ytms-storage-error'; notice.setAttribute('role', 'alert');
+      notice.textContent = 'YouTube Master Suite could not access Tampermonkey storage. Existing site settings were left unchanged. Check the script permissions or reinstall the saved rollback version.';
+      notice.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;padding:12px;background:#321b1b;color:#fff;font:14px sans-serif;border:1px solid #b55;border-radius:6px';
+      document.body.append(notice);
+    };
+    if (document.body) showStorageFailure();
+    else document.addEventListener('DOMContentLoaded', showStorageFailure, { once: true });
+    return;
+  }
   const suite = {
     version: MASTER_VERSION,
+    storage,
     SharedMutationObserver,
     addWindowListener,
     registerModule,
     reportModuleError,
     removeStyle,
     setStyle,
-    settings: createSuiteSettings(() => window.localStorage, () => document.documentElement.hasAttribute("dark")),
-    channelAge: createChannelAgeService(() => window.localStorage),
+    settings: createSuiteSettings(() => storage, () => Boolean(document.documentElement?.hasAttribute("dark")), createFeatureCatalogue(), menuLayout),
+    menuLayout,
+    createMenuEditor: ${createMenuEditor.toString()},
+    channelAge: createChannelAgeService(() => storage),
     createChannelAgeDialog: ${createChannelAgeDialog.toString()},
     installVideoMenu: ${installVideoMenu.toString()},
     installPlayerPresentation: ${installPlayerPresentation.toString()},
     settingsAssets: ${JSON.stringify(settingsAssets)},
     createSettingsDialog: ${createSettingsDialog.toString()},
     createSettingsSupportPanel: ${createSettingsSupportPanel.toString()},
+    createSettingsExtraControls: ${createSettingsExtraControls.toString()},
   };
-  suite.backup = (${createSuiteBackup.toString()})(() => window.localStorage, suite.settings, suite.channelAge);
+  suite.channelLookup = (${createChannelLookup.toString()})({ fetch: (...args) => window.fetch(...args), origin: location.origin });
+  suite.backup = (${createSuiteBackup.toString()})(() => storage, suite.settings, suite.channelAge);
   suite.support = (${createSuiteSupport.toString()})(document, MASTER_VERSION, STYLE_ORDER);
+  suite.playheadMarker = (${createPlayheadMarker.toString()})({ document, window, getStorage: () => storage, subscribeStorage: storage.subscribe });
+  suite.updates = (${createSuiteUpdates.toString()})({
+    getStorage: () => storage, installedVersion: MASTER_VERSION,
+    defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
+    fetch: (...args) => window.fetch(...args),
+  });
+
+  let nativeQueueLayoutStarted = false;
+  suite.startNativeQueueLayout = () => {
+    if (nativeQueueLayoutStarted) return;
+    nativeQueueLayoutStarted = true;
+    try {
+      (${installCompactNativeQueue.toString()})({ document, window,
+        enabled: suite.settings.initial.compactNativeQueue,
+        MutationObserver: SharedMutationObserver,
+        reportError: error => reportModuleError('suiteSettings', 'native queue layout', error) });
+    } catch (error) { reportModuleError('suiteSettings', 'native queue layout', error); }
+  };
+  let featureControlsStarted = false;
+  suite.startFeatureControls = () => {
+    if (featureControlsStarted) return;
+    featureControlsStarted = true;
+    const options = { document, window, preferences: suite.settings.initial,
+      MutationObserver: SharedMutationObserver,
+      reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}]) {
+      try { install(options); } catch { options.reportError(); }
+    }
+  };
 
   installDiagnostics();
 ${moduleInitialisers}

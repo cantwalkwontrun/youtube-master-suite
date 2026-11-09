@@ -1,9 +1,13 @@
+import { createFeatureCatalogue } from './feature-catalogue.mjs';
+import { createMenuLayout } from './menu-layout.mjs';
+
 // Self-contained factory: the builder embeds it in the single-file userscript.
 // No values from storage are used as HTML, selectors, URLs or arbitrary CSS.
-export function createSuiteSettings(getStorage, isDarkTheme) {
+export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createFeatureCatalogue(), menuLayouts = createMenuLayout()) {
   const key = "yt-master-suite.settings.v1";
   const cornerKey = "yt-master-suite.scroll-miniplayer.corner.v1";
   const defaults = Object.freeze({
+    ...catalogue.defaults,
     colourMode: "default", palette: "teal-coral", viewerColour: "#82A3E6", ownerColour: "#FF9F1C",
     compactComments: true, hideCommentControls: true,
     hideShorts: true, hideWatchedVideos: true, hideLiveVideos: false, hideUpcomingStreams: true,
@@ -13,24 +17,27 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
     keepHoverPreviews: false, timeDisplayMode: "native",
     wheelVolume: true, wheelStep: "5", hideRelated: true, hideChat: true, hideInfoCards: true,
     hideEndScreens: true, fullscreenComments: true, disableTitleHashtagLinks: false, miniplayerEnabled: true,
-    corner: "top-right", queueInfo: true,
+    corner: "top-right", queueInfo: true, miniplayerSizeMode: "auto", miniplayerWidth: 720,
     headerSettingsIcon: "colour", playerSettingsIcon: "monochrome",
     showRydTooltipBar: false,
     showDeArrowTitleButton: false,
     showDeArrowQueueButton: true,
     menuShowDownload: false, menuGroupChannelTools: true, menuShowAgeLimit: true,
     menuShowNotInterested: true, menuShowDontRecommend: true, menuShowReport: true,
+    menuLayout: null,
     menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "share",
       "notInterested", "channelAge", "dontRecommend", "report", "channelTools"]),
   });
   const choices = Object.freeze({
+    ...catalogue.choices,
     colourMode: ["default", "preset", "custom", "off"],
     palette: ["teal-coral", "lavender-gold", "cyan-rose"],
-    watchedThreshold: ["80", "90", "95", "100"], wheelStep: ["1", "2", "5", "10"],
+    watchedThreshold: ["5", "10", "25", "50", "75", "80", "90", "95", "100"], wheelStep: ["1", "2", "5", "10"],
     preferredVideoQuality: ["off", "highest", "tiny", "small", "medium", "large", "hd720", "hd1080", "hd1440", "hd2160"],
     timelinePreviewSize: ["auto", "small", "medium", "large", "native"],
     timeDisplayMode: ["native", "elapsed", "remaining"],
     corner: ["top-right", "bottom-right", "bottom-left", "top-left"],
+    miniplayerSizeMode: ["auto", "custom"],
     headerSettingsIcon: ["off", "colour", "monochrome"], playerSettingsIcon: ["off", "colour", "monochrome"],
   });
   const palettes = Object.freeze({
@@ -59,6 +66,8 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
       const value = input[name];
       if (typeof fallback === "boolean") {
         if (typeof value === "boolean") result[name] = value;
+      } else if (name === "miniplayerWidth") {
+        if (Number.isInteger(value) && value >= 320 && value <= 1200) result[name] = value;
       } else if (name === "menuItemOrder") {
         if (Array.isArray(value) && value.length <= defaults.menuItemOrder.length) {
           // Adopt the revised default without overwriting explicitly rearranged menus.
@@ -66,10 +75,16 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
           const order = [...new Set(value.filter(item => typeof item === "string" && defaults.menuItemOrder.includes(item)))];
           result[name] = [...order, ...defaults.menuItemOrder.filter(item => !order.includes(item))];
         }
+      } else if (name === "menuLayout") {
+        result[name] = value === null ? null : menuLayouts.validate(value);
       } else if (name === "viewerColour" || name === "ownerColour") {
         result[name] = normaliseHex(value) || fallback;
       } else if (choices[name]?.includes(value)) result[name] = value;
     }
+    // Resolve opposing presentation choices deterministically, including imports.
+    if (result.relatedBelowPlayer) result.hideRelated = false;
+    if (result.disableVideoPreviews) result.keepHoverPreviews = false;
+    if (result.hideAllComments) result.fullscreenComments = false;
     // Recover a corrupted or manually edited record without hiding all access.
     if (result.headerSettingsIcon === "off" && result.playerSettingsIcon === "off") result.headerSettingsIcon = defaults.headerSettingsIcon;
     return result;
@@ -91,6 +106,11 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
   }
   const initialValues = read();
   Object.freeze(initialValues.menuItemOrder);
+  if (initialValues.menuLayout) {
+    initialValues.menuLayout.nodes.forEach(Object.freeze);
+    Object.freeze(initialValues.menuLayout.nodes);
+    Object.freeze(initialValues.menuLayout);
+  }
   const initial = Object.freeze(initialValues);
   // Reads deliberately fail open, but an editor must never turn an unknown or
   // damaged saved record into a valid-looking new one by silently discarding it.
@@ -107,9 +127,13 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
         const fallback = defaults[name];
         if (typeof fallback === "boolean") {
           if (typeof value !== "boolean") return false;
+        } else if (name === "miniplayerWidth") {
+          if (!Number.isInteger(value) || value < 320 || value > 1200) return false;
         } else if (name === "menuItemOrder") {
           if (!Array.isArray(value) || value.length > defaults.menuItemOrder.length ||
               new Set(value).size !== value.length || value.some(item => !defaults.menuItemOrder.includes(item))) return false;
+        } else if (name === "menuLayout") {
+          if (value !== null && !menuLayouts.validate(value)) return false;
         } else if (name === "viewerColour" || name === "ownerColour") {
           if (!normaliseHex(value)) return false;
         } else if (!choices[name]?.includes(value)) return false;
@@ -118,11 +142,15 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
     } catch { return false; }
   }
   function save(input) {
+    if (input && Object.hasOwn(input, 'menuLayout') && input.menuLayout !== null && !menuLayouts.validate(input.menuLayout)) {
+      return { ok: false, error: "The video menu layout is invalid. Check submenu names, placement and nesting before saving." };
+    }
     if (input?.headerSettingsIcon === "off" && input?.playerSettingsIcon === "off") {
       return { ok: false, error: "Keep at least one settings button enabled." };
     }
     const values = validate(input);
     const desired = JSON.stringify({ version: 1, values });
+    if (desired.length > 8192) return { ok: false, error: "Saved settings would exceed the supported size. Shorten submenu names or remove unused submenus." };
     let storage, previous;
     try {
       storage = getStorage(); previous = storage.getItem(key);
@@ -165,11 +193,21 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
       };
     }
     if (id === "feedUiCleaner") return {
+      ...Object.fromEntries(["hideHomeCategories", "hideNotifications", "hideVoiceSearch", "hideCreateButton", "hideSidebarSections", "hideGuideFooter", "hideFeedShelves", "hideFeedNudges", "hideHistoryAuxActions"].map(name => [name, values[name]])),
+      tightenFeedGrid: values.compactFeedSpacing,
+      showTemporaryRevealControl: values.showTemporaryRevealControl,
       filterProfiles: Object.fromEntries(Object.entries(config.filterProfiles).map(([route, profile]) => [route, {
         ...profile, mixes: values.hideMixes, membersOnly: values.hideMembersOnly, podcasts: values.hidePodcasts,
       }])),
     };
     if (id === "playerPreferencesLite") return {
+      convertShortsToWatch: values.redirectShorts, hideMerchShelf: values.hideMerchandise,
+      disableVideoPreviews: values.disableVideoPreviews,
+      useStandardMastheadLogo: values.useStandardMastheadLogo, hidePayToWatchCards: values.hidePayToWatchCards,
+      showAutoplayUpNextCard: values.showAutoplayUpNextCard, enableCleanVideoUrlCopy: values.enableCleanVideoUrlCopy,
+      requireRightMouseButtonForWheelVolume: values.requireRightMouseButtonForWheelVolume,
+      hideMetadataTeaserCarousel: values.hideVideoMetadata, hideInfoPanel: values.hideInfoPanels, hideAskButton: values.hideAskPanels,
+      ...Object.fromEntries(["hideShareButton", "hideThanksButton", "hideJoinButton", "hideInlineSaveButton", "hideStatementBanners", "hideBrandVideoShelf", "hideHashtags", "collapseDescriptionBlankRows", "hideStructuredDescription"].map(name => [name, values[name]])),
       hideShorts: values.hideShorts, hideWatchedVideos: values.hideWatchedVideos,
       hideLiveVideos: values.hideLiveVideos, hideUpcomingStreams: values.hideUpcomingStreams,
       watchedVideoThresholdPercent: Number(values.watchedThreshold),
@@ -186,15 +224,23 @@ export function createSuiteSettings(getStorage, isDarkTheme) {
       showRydTooltipBar: values.showRydTooltipBar,
       showDeArrowTitleButton: values.showDeArrowTitleButton,
       feedFilterProfiles: Object.fromEntries(Object.entries(config.feedFilterProfiles).map(([route, profile]) => [route, {
-        ...profile, watchedVideos: route === "history" ? false : values.hideWatchedVideos,
+        ...profile, ...(Object.hasOwn(profile, 'payToWatchCards') ? { payToWatchCards: values.hidePayToWatchCards } : {}),
+        watchedVideos: route === "history" ? false : values.hideWatchedVideos,
       }])),
     };
-    if (id === "scrollMiniplayer") return { enabled: values.miniplayerEnabled, showCompactQueueInfo: values.queueInfo };
+    if (id === "scrollMiniplayer") return {
+      enabled: values.miniplayerEnabled, showCompactQueueInfo: values.queueInfo,
+      sizeMode: values.miniplayerSizeMode === "custom" ? "fixed" : "dynamic", customWidth: values.miniplayerWidth,
+    };
     if (id === "watchLayoutCleaner") return {
+      collapseEmptySidebar: values.collapseEmptySidebar,
       relatedVideosHideBreakpointPx: values.hideRelated ? config.relatedVideosHideBreakpointPx : 0,
       showDeArrowQueueButton: values.showDeArrowQueueButton,
     };
+    if (id === "miniplayerButtonRestorer") return { enabled: values.restoreMiniplayerButton };
     return {};
   }
-  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder });
+  const isValidMenuLayout = value => value === null || menuLayouts.validate(value) !== null;
+  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
+    isValidMenuLayout, features: catalogue.definitions });
 }

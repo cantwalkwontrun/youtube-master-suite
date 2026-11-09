@@ -132,7 +132,7 @@ for (const sheet of [false, true]) {
     assert.equal(await page.locator('dialog[open]').count(), 1, 'Only the main settings modal is open');
     assert.equal(await page.getByLabel('Channel ID or channel URL', { exact: true }).inputValue(), 'UCabcdefghijklmnopqrstuv');
     assert.equal(await page.getByLabel('Channel name', { exact: true }).inputValue(), 'Daily news');
-    assert.equal(await page.evaluate(() => localStorage.getItem('yt-master-suite.channel-age.v1')), null);
+    assert.equal(await page.evaluate(() => fixtureStorage.getItem('yt-master-suite.channel-age.v1')), null);
     assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     await page.locator('#ytms-age-cancel').click();
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), false, 'Context-menu Cancel dismisses its settings window');
@@ -159,7 +159,7 @@ for (const sheet of [false, true]) {
       assert.equal(await page.getByLabel('Channel ID or channel URL', { exact: true }).inputValue(), 'UCabcdefghijklmnopqrstuv', tag);
       await page.locator('#ytms-age-cancel').click();
       assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
-      assert.equal(await page.evaluate(() => localStorage.getItem('yt-master-suite.channel-age.v1')), null);
+      assert.equal(await page.evaluate(() => fixtureStorage.getItem('yt-master-suite.channel-age.v1')), null);
     }
     const unrelatedRule = { channelId: 'UCABCDEFGHIJKLMNOPQRSTUV', name: 'Other channel',
       maxAge: 2, unit: 'months', enabled: true, blocked: false };
@@ -180,7 +180,7 @@ for (const sheet of [false, true]) {
       previous.remove(); contents.append(card);
       menuIntegration.originalCardNodes = [...card.childNodes];
       menuIntegration.originalVideo = document.querySelector('#movie_player video');
-      localStorage.setItem('yt-master-suite.channel-age.v1', JSON.stringify({ version: 1, rules: [rule] }));
+      fixtureStorage.setItem('yt-master-suite.channel-age.v1', JSON.stringify({ version: 1, rules: [rule] }));
       window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));
       document.dispatchEvent(new CustomEvent('yt-navigate-finish', { bubbles: true }));
     }, unrelatedRule);
@@ -195,7 +195,7 @@ for (const sheet of [false, true]) {
     await page.locator('#ytms-age-save').click();
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true, 'Validation failure keeps the contextual editor open');
     assert.equal(await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true }).inputValue(), '0');
-    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('yt-master-suite.channel-age.v1')).rules), [unrelatedRule]);
+    assert.deepEqual(await page.evaluate(() => JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules), [unrelatedRule]);
     await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true }).fill('1');
     await page.locator('#ytms-age-save').click();
     await page.locator('#ytms-age-dialog').waitFor({ state: 'hidden' });
@@ -211,12 +211,106 @@ for (const sheet of [false, true]) {
     await confirmation.getByRole('button', { name: 'Undo', exact: true }).click();
     await confirmation.waitFor({ state: 'detached' });
     await page.locator('#integration-trigger').waitFor({ state: 'visible' });
-    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('yt-master-suite.channel-age.v1')).rules), [unrelatedRule]);
+    assert.deepEqual(await page.evaluate(() => JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules), [unrelatedRule]);
     assert.equal(await page.evaluate(() => menuIntegration.originalCardNodes.every(node =>
       node.parentElement === document.getElementById('integration-card')) &&
       document.querySelector('#movie_player video') === menuIntegration.originalVideo), true);
     assert.equal(await page.locator('#integration-card').getAttribute('data-ytms-channel-filter-confirmation'), null);
     assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
+    // A cached injected row must remain callable after the SPA reset above,
+    // including native clients that do not emit another popup-opened event.
+    await page.evaluate(() => {
+      menuIntegration.dispatchedIds = [];
+      document.querySelector('ytd-app').resolveCommand = endpoint => {
+        const command = endpoint?.signalServiceEndpoint?.actions?.[0]?.addToPlaylistCommand;
+        menuIntegration.dispatchedIds.push(command?.videoIds || [command?.videoId]);
+        return true;
+      };
+    });
+    await page.locator('#integration-trigger').click();
+    await page.locator('[data-ytms-video-menu="1"]').waitFor();
+    await page.getByRole('menuitem', { name:'Play next in queue',exact:true }).click();
+    assert.deepEqual(await page.evaluate(() => menuIntegration.dispatchedIds), [['bbbbbbbbbbb']],
+      'Play next must dispatch its native queue command after navigation');
+    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue'],
+      'the owned placeholder must not fall through to native activation');
+
+    // Collaboration choice must survive the real contextual editor and Undo.
+    await page.evaluate(() => {
+      const card = document.getElementById('integration-card');
+      const text = {content:'Daily news and Second creator',commandRuns:[
+        {startIndex:0,length:10,onTap:{innertubeCommand:{browseEndpoint:{browseId:'UCabcdefghijklmnopqrstuv'}}}},
+        {startIndex:15,length:14,onTap:{innertubeCommand:{browseEndpoint:{browseId:'UCABCDEFGHIJKLMNOPQRSTUV'}}}},
+      ]};
+      card.componentProps = {data:()=>({metadata:{lockupMetadataViewModel:{metadata:{contentMetadataViewModel:{
+        metadataRows:[{metadataParts:[{text}]}]},
+      }}}})};
+      const byline = card.querySelector('#channel-name'); byline.replaceChildren();
+      for (const [id,name] of [['UCabcdefghijklmnopqrstuv','Daily news'],['UCABCDEFGHIJKLMNOPQRSTUV','Second creator']]) {
+        const link = document.createElement('a');link.href='/channel/'+id;link.textContent=name;byline.append(link);
+      }
+    });
+    await page.locator('#integration-trigger').click();
+    await page.locator('[data-ytms-video-menu="1"]').waitFor();
+    await page.getByRole('menuitem',{name:'Channel tools',exact:true}).click();
+    await page.getByRole('menuitem',{name:/^Filter channel uploads/}).click();
+    await page.getByRole('menuitem',{name:'Filter uploads from Second creator',exact:true}).click();
+    await page.locator('#ytms-age-dialog').waitFor();
+    assert.equal(await page.getByLabel('Channel ID or channel URL',{exact:true}).inputValue(),'UCABCDEFGHIJKLMNOPQRSTUV');
+    await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age',{exact:true}).fill('3');
+    await page.locator('#ytms-age-save').click();
+    await page.locator('#ytms-age-dialog').waitFor({state:'hidden'});
+    const collaborationConfirmation = page.locator('#integration-card > .ytms-channel-filter-confirmation');
+    await collaborationConfirmation.waitFor();
+    assert.match(await collaborationConfirmation.textContent(),/Hide uploads older than 3 months\./);
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules),
+      [{...unrelatedRule,maxAge:3}]);
+    await collaborationConfirmation.getByRole('button',{name:'Undo',exact:true}).click();
+    await collaborationConfirmation.waitFor({state:'detached'});
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules),[unrelatedRule]);
+
+
+    // Handle-only cards use the actual public-page parser and private association.
+    let lookupRequests = 0;
+    await page.route(url => url.origin === 'https://www.youtube.com' && url.pathname === '/@lookup-fixture',route => {
+      lookupRequests++;
+      return route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:
+        '<!doctype html><html lang="en-GB"><head><meta itemprop="identifier" content="UCabcdefghijklmnopqrstuv">'+
+        '<link rel="canonical" href="https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv">'+
+        '<meta property="og:title" content="Fixture lookup creator"></head><body>'+
+        '<script>window.lookupScriptExecuted=true</script></body></html>'});
+    });
+    await page.evaluate(() => {
+      const card=document.getElementById('integration-card');
+      card.componentProps={data:()=>({})};
+      const byline=card.querySelector('#channel-name');byline.replaceChildren();
+      const link=document.createElement('a');link.href='/@lookup-fixture';link.textContent='Lookup creator';byline.append(link);
+    });
+    await page.locator('#integration-trigger').click();
+    await page.locator('[data-ytms-video-menu="1"]').waitFor();
+    assert.equal(lookupRequests,0,'Opening a handle-only menu must not fetch a channel page');
+    await page.getByRole('menuitem',{name:'Channel tools',exact:true}).click();
+    await page.getByRole('menuitem',{name:/^Look up channel ID/}).click();
+    await page.locator('#ytms-age-dialog').waitFor();
+    assert.equal(lookupRequests,1);
+    assert.equal(await page.evaluate(()=>window.lookupScriptExecuted),undefined,'Fetched channel HTML must remain inert');
+    assert.equal(await page.locator('.ytms-age-fields:visible').getByLabel('Channel ID or channel URL',{exact:true}).inputValue(),'UCabcdefghijklmnopqrstuv');
+    const lookupFields=page.locator('.ytms-age-fields:visible');
+    await lookupFields.getByLabel('Maximum age',{exact:true}).fill('4');
+    await lookupFields.getByLabel('Unit',{exact:true}).selectOption('weeks');
+    await page.locator('#ytms-age-save').click();
+    await page.locator('#ytms-age-dialog').waitFor({state:'hidden'});
+    const lookupConfirmation=page.locator('#integration-card > .ytms-channel-filter-confirmation');
+    await lookupConfirmation.waitFor();
+    assert.match(await lookupConfirmation.textContent(),/Hide uploads older than 4 weeks\./);
+    const lookupRules=await page.evaluate(()=>JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules);
+    assert.deepEqual(lookupRules.find(rule=>rule.channelId==='UCABCDEFGHIJKLMNOPQRSTUV'),unrelatedRule);
+    assert.deepEqual(lookupRules.filter(rule=>rule.channelId==='UCabcdefghijklmnopqrstuv').map(({maxAge,unit})=>({maxAge,unit})),
+      [{maxAge:4,unit:'weeks'}]);
+    await lookupConfirmation.getByRole('button',{name:'Undo',exact:true}).click();
+    await lookupConfirmation.waitFor({state:'detached'});
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules),[unrelatedRule]);
+
     assert.equal(await page.locator('html').getAttribute('data-yt-master-runtime-errors'), null);
   });
  }

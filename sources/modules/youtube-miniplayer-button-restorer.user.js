@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Miniplayer Button Restorer
 // @namespace    Citizen.youtube.miniplayer-button-restorer
-// @version      1.16
+// @version      1.18
 // @description  Restores a Miniplayer button to YouTube watch and live player controls, falling back to the native miniplayer shortcut when needed.
 // @author       Citizen
 // @updateURL    none
@@ -19,11 +19,13 @@
   const TOOLTIP_ID = "tmk-miniplayer-tooltip";
   const STYLE_ID = "tmk-miniplayer-style";
   const CONFIG = {
+    enabled: true,
     iconPx: 36,
     pollInterval: 250,
     pollMaxMs: 20000,
     navRetryDelays: [300, 900, 1800, 3500],
   };
+  if (!CONFIG.enabled) return;
 
   const PLAYER_SELECTORS = ["#movie_player", ".html5-video-player"];
   const RIGHT_CONTROLS_SELECTOR = ".ytp-right-controls";
@@ -96,9 +98,12 @@
         max-width:calc(100% - 16px) !important;
         padding:5px 9px !important;
         border-radius:2px !important;
-        background:rgba(0, 0, 0, 0.9) !important;
-        color:#eee !important;
-        font:500 12px/1.2 Roboto, Arial, sans-serif !important;
+        background:rgba(28, 28, 28, 0.9) !important;
+        color:inherit !important;
+        font-family:inherit !important;
+        font-size:118% !important;
+        font-weight:500 !important;
+        line-height:15px !important;
         text-shadow:none !important;
         pointer-events:none !important;
       }
@@ -114,6 +119,22 @@
         color:inherit !important;
         font:400 12px/14px Roboto, Arial, sans-serif !important;
         text-align:center !important;
+      }
+      .ytp-big-mode #${TOOLTIP_ID}{line-height:22px !important;}
+      .ytp-delhi-modern #${TOOLTIP_ID}{
+        border-radius:8px !important;
+        background:var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important;
+        -webkit-backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+        backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+        text-shadow:0 0 2px #000 !important;
+      }
+      .ytp-delhi-modern #${TOOLTIP_ID} kbd{
+        border-color:rgba(255, 255, 255, 0.3) !important;
+        border-radius:4px !important;
+        min-width:11px !important;
+        height:auto !important;
+        color:#fff !important;
+        font:inherit !important;
       }
     `;
   }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createSuiteSettings } from "../sources/suite-settings.mjs";
+import { createMenuLayout } from "../sources/menu-layout.mjs";
 
 function fixture(seed = {}) {
   const data = new Map(Object.entries(seed));
@@ -11,6 +12,74 @@ function fixture(seed = {}) {
   };
   return { storage, data, settings: createSuiteSettings(() => storage, () => true) };
 }
+
+test('custom submenu settings preserve legacy preferences and detached immutable running snapshots', () => {
+  const { settings, storage, data } = fixture({ 'yt-master-suite.settings.v1': JSON.stringify({ version: 1,
+    values: { menuItemOrder: ['share', 'playNext'], menuGroupChannelTools: false, hideChat: false } }) });
+  assert.equal(settings.initial.menuLayout, null);
+  const layout = createMenuLayout().fromPreferences(settings.read());
+  layout.nodes.push({ id: 'submenu-sharing', name: 'Sharing', parent: 'root' });
+  layout.nodes.find(node => node.id === 'share').parent = 'submenu-sharing';
+  assert.equal(settings.save({ ...settings.read(), menuLayout: layout }).ok, true);
+  const saved = data.get(settings.key);
+  layout.nodes.at(-1).name = 'Unsaved';
+  const next = createSuiteSettings(() => storage, () => true);
+  assert.equal(next.initial.menuLayout.nodes.at(-1).name, 'Sharing');
+  assert.equal(next.initial.hideChat, false);
+  assert.equal(next.initial.menuGroupChannelTools, false);
+  assert.equal(next.initial.menuItemOrder[0], 'share');
+  assert.ok(Object.isFrozen(next.initial.menuLayout));
+  assert.ok(Object.isFrozen(next.initial.menuLayout.nodes));
+  assert.ok(next.initial.menuLayout.nodes.every(Object.isFrozen));
+  const draft = next.read(); draft.menuLayout.nodes.at(-1).name = 'Draft';
+  assert.equal(data.get(settings.key), saved);
+  assert.equal(next.initial.menuLayout.nodes.at(-1).name, 'Sharing');
+});
+
+test('invalid custom submenu drafts and damaged stored layouts cannot silently discard data', () => {
+  const { settings, data } = fixture();
+  const invalid = createMenuLayout().fromPreferences({});
+  invalid.nodes.find(node => node.id === 'channelTools').parent = 'channelTools';
+  assert.equal(settings.save({ ...settings.defaults, menuLayout: invalid }).ok, false);
+  assert.equal(data.has(settings.key), false);
+  const raw = JSON.stringify({ version: 1, values: { menuLayout: invalid, hideChat: false } });
+  data.set(settings.key, raw);
+  assert.equal(settings.read().menuLayout, null);
+  assert.equal(settings.read().hideChat, false);
+  assert.equal(settings.save({ ...settings.read(), hideChat: true }).ok, false);
+  assert.equal(data.get(settings.key), raw);
+});
+
+test('the maximum supported submenu layout stays within the existing saved-settings limit', () => {
+  const { settings, data } = fixture();
+  const layout = createMenuLayout().fromPreferences({});
+  layout.nodes.find(node => node.id === 'channelTools').name = '"'.repeat(40);
+  for (let index = 0; index < 7; index += 1) layout.nodes.push({ id: `submenu-${String(index).repeat(24)}`, name: '"'.repeat(40), parent: 'root' });
+  const result = settings.save({ ...settings.defaults, menuLayout: layout });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(data.get(settings.key).length <= 8192);
+  assert.deepEqual(settings.read().menuLayout, layout);
+});
+
+test('custom miniplayer width is bounded, persisted and mapped without replacing automatic defaults', () => {
+  const { settings, storage, data } = fixture();
+  assert.equal(settings.initial.miniplayerSizeMode, 'auto');
+  assert.equal(settings.initial.miniplayerWidth, 720);
+  for (const width of [320, 720, 1200]) {
+    assert.equal(settings.save({ ...settings.defaults, miniplayerSizeMode: 'custom', miniplayerWidth: width }).ok, true);
+    const next = createSuiteSettings(() => storage, () => true);
+    assert.deepEqual(next.overrides('scrollMiniplayer', {}), {
+      enabled: true, showCompactQueueInfo: true, sizeMode: 'fixed', customWidth: width,
+    });
+  }
+  for (const width of [319, 1201, 720.5, NaN, Infinity, '720', null, '100vw']) {
+    assert.equal(settings.validate({ miniplayerWidth: width }).miniplayerWidth, 720);
+  }
+  const damaged = JSON.stringify({ version: 1, values: { miniplayerWidth: '900' } });
+  data.set(settings.key, damaged);
+  assert.equal(settings.save(settings.defaults).ok, false);
+  assert.equal(data.get(settings.key), damaged);
+});
 
 test('presentation preferences preserve defaults, validate choices and map to the player', () => {
   const { settings, storage } = fixture();
@@ -235,7 +304,7 @@ test("RYD tooltip-bar preference validates booleans and applies only to the relo
   assert.equal(reloaded.overrides("playerPreferencesLite", { feedFilterProfiles: {} }).showRydTooltipBar, true);
   assert.equal(reloaded.initial.showDeArrowTitleButton, false);
   assert.deepEqual(reloaded.overrides("watchLayoutCleaner", { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true,
+    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true, collapseEmptySidebar: true,
   });
 });
 
@@ -264,7 +333,7 @@ test("DeArrow title-icon preference accepts only booleans and stays separate fro
   const reloaded = createSuiteSettings(() => storage, () => true);
   assert.equal(reloaded.overrides("playerPreferencesLite", { feedFilterProfiles: {} }).showDeArrowTitleButton, true);
   assert.deepEqual(reloaded.overrides("watchLayoutCleaner", { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: false,
+    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: false, collapseEmptySidebar: true,
   });
 });
 
@@ -280,7 +349,7 @@ test("DeArrow queue-logo preferences default on and migrate older records withou
   assert.equal(settings.initial.hideRelated, false);
   assert.equal(settings.initial.queueInfo, false);
   assert.deepEqual(settings.overrides("watchLayoutCleaner", { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 0, showDeArrowQueueButton: true,
+    relatedVideosHideBreakpointPx: 0, showDeArrowQueueButton: true, collapseEmptySidebar: true,
   });
 });
 
@@ -306,9 +375,9 @@ test("hiding the DeArrow queue logo persists for reload and maps only to layout 
   assert.equal(record.values.showDeArrowQueueButton, false);
   const reloaded = createSuiteSettings(() => storage, () => true);
   assert.deepEqual(reloaded.overrides("watchLayoutCleaner", { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: false,
+    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: false, collapseEmptySidebar: true,
   });
-  assert.deepEqual(reloaded.overrides("scrollMiniplayer", {}), { enabled: true, showCompactQueueInfo: true });
+  assert.deepEqual(reloaded.overrides("scrollMiniplayer", {}), { enabled: true, showCompactQueueInfo: true, sizeMode: 'dynamic', customWidth: 720 });
   assert.deepEqual(reloaded.overrides("pageCoherence", {}), {});
   assert.deepEqual(Array.from(data.keys()), [settings.key, "yt-master-suite.scroll-miniplayer.corner.v1"]);
 });
@@ -357,7 +426,7 @@ test('live chat button preference persists independently of chat visibility and 
     ...original, enableLiveChatButton: false, hideChat: false,
   });
   assert.deepEqual(next.overrides('watchLayoutCleaner', { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true,
+    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true, collapseEmptySidebar: true,
   });
   assert.deepEqual(next.overrides('pageCoherence', {}), {});
   assert.equal(next.save({ ...next.read(), liveChatButton: next.defaults.liveChatButton }).ok, true);
@@ -424,7 +493,7 @@ test('saved quality preference changes only the next Player Preferences snapshot
   assert.deepEqual(next.overrides('playerPreferencesLite', config), {
     ...original, preferredVideoQuality: 'hd1080', disableTitleHashtagLinks: true,
   });
-  assert.deepEqual(next.overrides('scrollMiniplayer', {}), { enabled: true, showCompactQueueInfo: true });
+  assert.deepEqual(next.overrides('scrollMiniplayer', {}), { enabled: true, showCompactQueueInfo: true, sizeMode: 'dynamic', customWidth: 720 });
   assert.deepEqual(next.overrides('pageCoherence', {}), {});
 });
 
@@ -452,7 +521,7 @@ test("title hashtag-link choice persists for reload without changing DeArrow or 
   const next = createSuiteSettings(() => storage, () => true);
   assert.deepEqual(next.overrides('playerPreferencesLite', config), { ...before, disableTitleHashtagLinks: true });
   assert.deepEqual(next.overrides('watchLayoutCleaner', { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true,
+    relatedVideosHideBreakpointPx: 1400, showDeArrowQueueButton: true, collapseEmptySidebar: true,
   });
   assert.deepEqual(next.overrides('pageCoherence', {}), {});
 });
@@ -551,12 +620,14 @@ test("every exposed feature toggle maps to existing configuration without touchi
   assert.equal(player.watchedVideoThresholdPercent, 95);
   assert.equal(player.wheelVolumeStep, 2);
   assert.equal(player.feedFilterProfiles.home.watchedVideos, false);
-  assert.deepEqual(next.overrides("scrollMiniplayer", {}), { enabled: false, showCompactQueueInfo: false });
+  assert.deepEqual(next.overrides("scrollMiniplayer", {}), { enabled: false, showCompactQueueInfo: false, sizeMode: 'dynamic', customWidth: 720 });
   assert.deepEqual(next.overrides("feedUiCleaner", { filterProfiles: { home: { mixes: true, membersOnly: true, podcasts: true } } }), {
+    hideHomeCategories: false, hideNotifications: false, hideVoiceSearch: false, hideCreateButton: false,
+    hideSidebarSections: false, hideGuideFooter: false, hideFeedShelves: false, hideFeedNudges: false, hideHistoryAuxActions: false, tightenFeedGrid: false, showTemporaryRevealControl: false,
     filterProfiles: { home: { mixes: false, membersOnly: false, podcasts: false } },
   });
   assert.deepEqual(next.overrides("watchLayoutCleaner", { relatedVideosHideBreakpointPx: 1400 }), {
-    relatedVideosHideBreakpointPx: 0, showDeArrowQueueButton: false,
+    relatedVideosHideBreakpointPx: 0, showDeArrowQueueButton: false, collapseEmptySidebar: false,
   });
   assert.deepEqual(next.overrides("pageCoherence", {}), {});
 });

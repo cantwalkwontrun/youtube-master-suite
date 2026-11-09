@@ -1,11 +1,14 @@
 // Language: en-GB. Self-contained factory embedded in the userscript.
 // Uses narrow native presentation hooks; never changes a media source or clock.
-export function installPlayerPresentation({ document, window, keepHoverPreviews = false, timeDisplayMode = 'native' }) {
-  if (!keepHoverPreviews && !['elapsed', 'remaining'].includes(timeDisplayMode)) return () => {};
+export function installPlayerPresentation({ document, window, keepHoverPreviews = false, disableVideoPreviews = false, timeDisplayMode = 'native' }) {
+  if (!keepHoverPreviews && !disableVideoPreviews && !['elapsed', 'remaining'].includes(timeDisplayMode)) return () => {};
   const patches = new Map();
   const attemptedTimes = new WeakMap();
-  let suspended = false, frame = 0, disposed = false, previewDirty = false, navigationPending = false;
+  let suspended = false, pageSuspended = false, frame = 0, disposed = false, previewDirty = false, navigationPending = false;
   const home = () => ['/', '/feed/recommended'].includes(window.location.pathname);
+  const browseOrSearch = () => home() || window.location.pathname === '/results' ||
+    window.location.pathname.startsWith('/feed/') || /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)(?:\/|$)/.test(window.location.pathname);
+  const previewRoute = () => disableVideoPreviews ? browseOrSearch() : keepHoverPreviews && home();
   function visible(element) {
     if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false;
     const style = window.getComputedStyle(element);
@@ -42,14 +45,17 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
     patches.clear();
   }
   function syncPreviews() {
-    if (!keepHoverPreviews || !home() || suspended || document.hidden) { restorePreviews(); return; }
+    if (!previewRoute() || suspended || document.hidden) { restorePreviews(); return; }
     const apps = [...document.querySelectorAll('ytd-app')].filter(visible);
     if (apps.length !== 1) { restorePreviews(); return; }
     const appController = apps[0].polymerController || apps[0];
-    // Honour YouTube's explicit Inline playback preference. Never falsify the
-    // global miniplayer state or turn an opted-out user's previews back on.
+    // An existing native opt-out already prevents previews. Do not wrap it or
+    // falsify the global miniplayer state for either presentation preference.
     if (appController.isInlinePreviewDisabled !== false) { restorePreviews(); return; }
-    const hosts = [apps[0], ...apps[0].querySelectorAll('ytd-browse ytd-rich-grid-renderer')].filter(visible);
+    const selector = disableVideoPreviews
+      ? 'ytd-browse ytd-rich-grid-renderer, ytd-search, ytd-search ytd-rich-grid-renderer'
+      : 'ytd-browse ytd-rich-grid-renderer';
+    const hosts = [apps[0], ...apps[0].querySelectorAll(selector)].filter(visible);
     const controllers = new Set(hosts.map(host => host.polymerController || host));
     for (const [controller, record] of patches) {
       if (!controllers.has(controller)) {
@@ -90,10 +96,13 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
       } catch { continue; }
       const record = { host, controller, original, descriptor, app, wrapper: null };
       record.wrapper = function (...args) {
-        // Override only the miniplayer-related input to this pure presentation
-        // computation. All other native eligibility and failure checks remain.
-        if (this === controller && !disposed && !suspended && home() && !document.hidden && host.isConnected &&
-            appController.isInlinePreviewDisabled === false && args[0] === true) args[0] = false;
+        // Disabling is a native eligibility decision, not a hidden playing
+        // preview. The enable preference changes only its miniplayer input.
+        if (this === controller && !disposed && !suspended && previewRoute() && !document.hidden && host.isConnected &&
+            appController.isInlinePreviewDisabled === false) {
+          if (disableVideoPreviews) return false;
+          if (args[0] === true) args[0] = false;
+        }
         return original.apply(this, args);
       };
       try {
@@ -105,13 +114,23 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
       } catch { /* Unknown or protected native components remain untouched. */ }
     }
   }
+  function timeVideoId(player) {
+    try {
+      const id = player.getVideoData?.()?.video_id;
+      if (/^[a-zA-Z0-9_-]{11}$/.test(id || '')) return id;
+    } catch { /* A changing native player can expose its identity later. */ }
+    if (window.location.pathname !== '/watch') return '';
+    const id = new window.URLSearchParams(window.location.search).get('v');
+    return /^[a-zA-Z0-9_-]{11}$/.test(id || '') ? id : '';
+  }
   function syncTime() {
     if (!['elapsed', 'remaining'].includes(timeDisplayMode) || suspended || document.hidden) return;
     const players = [...document.querySelectorAll('#movie_player')].filter(player => visible(player) &&
       !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
     if (players.length !== 1) return;
     const player = players[0];
-    if (player.matches('.ad-showing, .ad-interrupting') || !player.querySelector('video')) return;
+    const video = player.querySelector('video');
+    if (player.matches('.ad-showing, .ad-interrupting') || !video) return;
     const displays = [...player.querySelectorAll('.ytp-time-display')].filter(visible);
     if (displays.length !== 1 || displays[0].classList.contains('ytp-live')) return;
     const wrappers = displays[0].querySelectorAll('.ytp-time-wrapper.ytp-time-wrapper-delhi');
@@ -123,11 +142,14 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
         !/^\d{1,6}:\d{2}(?::\d{2})?$/.test(duration || '') || !/[1-9]/.test(duration)) return;
     const remaining = /^[-−]/.test(current);
     if (remaining === (timeDisplayMode === 'remaining')) { attemptedTimes.delete(wrapper); return; }
-    // One request per mismatched native state. A blocked/no-op click must not
-    // cause a click loop on every timeupdate or keep polling while paused.
+    // One request per mismatched state and video. YouTube can reuse this timer
+    // for another video after a blocked click. Missing identity and incidental
+    // navigation must not restart attempts on every timeupdate or while paused.
     const signature = `${timeDisplayMode}:${remaining}`;
-    if (attemptedTimes.get(wrapper) === signature) return;
-    attemptedTimes.set(wrapper, signature);
+    const videoId = timeVideoId(player), attempt = attemptedTimes.get(wrapper);
+    if (attempt?.signature === signature && attempt.video === video &&
+        (!videoId || attempt.videoId === videoId)) return;
+    attemptedTimes.set(wrapper, { signature, video, videoId });
     wrapper.click();
   }
   function sync() {
@@ -145,16 +167,22 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; restorePreviews();
   }
-  function resume() { if (!navigationPending) { suspended = false; schedule(); } }
+  function resume() { if (!disposed && !pageSuspended && !navigationPending) { suspended = false; schedule(); } }
   function navigateStart() { navigationPending = true; suspend(); }
   function navigateFinish() { navigationPending = false; resume(); }
+  function pageHide() { pageSuspended = true; suspend(); }
+  function pageShow() {
+    const restoring = pageSuspended; pageSuspended = false;
+    if (restoring) navigationPending = false;
+    resume();
+  }
   function pointer(event) {
     if (suspended || disposed) return;
     const target = event.target?.closest ? event.target : event.target?.parentElement;
     // pointerover precedes native mouseenter; no synthetic hover or click is
-    // generated, and newly stamped/recycled Home cards need no polling.
-    if (keepHoverPreviews && home() && target?.closest('ytd-browse ytd-rich-grid-renderer')) {
-      const card = target.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, yt-lockup-view-model') || target;
+    // generated, and newly stamped/recycled cards need no polling.
+    if (previewRoute() && target?.closest(disableVideoPreviews ? 'ytd-browse, ytd-search' : 'ytd-browse ytd-rich-grid-renderer')) {
+      const card = target.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, yt-lockup-view-model') || target;
       if (!card.contains(event.relatedTarget)) syncPreviews();
     }
     if (timeDisplayMode !== 'native' && target?.closest('#movie_player .ytp-time-display')) syncTime();
@@ -168,8 +196,8 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
   function listen(target, type, handler) { target.addEventListener(type, handler, true); listeners.push([target, type, handler]); }
   listen(document, 'pointerover', pointer);
   if (timeDisplayMode !== 'native') for (const type of ['timeupdate', 'loadedmetadata', 'durationchange']) listen(document, type, media);
-  for (const type of ['yt-navigate-start', 'pagehide']) listen(window, type, navigateStart);
-  for (const type of ['yt-navigate-finish', 'pageshow']) listen(window, type, navigateFinish);
+  listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
+  listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
   listen(window, 'yt-page-data-updated', resume);
   listen(document, 'visibilitychange', visibility);
   schedule();

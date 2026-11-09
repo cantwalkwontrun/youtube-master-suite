@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.49
+// @version      1.58
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3
 // @match        https://www.youtube.com/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        none
 // @noframes
 // ==/UserScript==
@@ -31,6 +31,10 @@
   let playerTooltip = null;
   let playerTarget = null;
   let watchedPlayerBranch = [];
+  let watchedThemeRoot = null;
+  let watchedDocumentRoot = null;
+  let watchedBody = null;
+  let savedReconciliationPending = false;
 
   suite.openChannelAgeSettings = (channel, context) => {
     if (suspended) return;
@@ -42,7 +46,6 @@
       suite.reportModuleError('suiteSettings', 'open channel upload filters', error);
     }
   };
-  suite.installVideoMenu(suite);
 
   function createPanel() {
     const dialog = suite.createSettingsDialog(document);
@@ -56,7 +59,7 @@
         ['hideShorts', 'Hide Shorts'], ['hideWatchedVideos', 'Hide watched videos'],
         ['hideLiveVideos', 'Hide live videos'], ['hideUpcomingStreams', 'Hide upcoming streams and premieres'],
         ['hideMixes', 'Hide mixes'], ['hidePodcasts', 'Hide podcasts'], ['hideMembersOnly', 'Hide members-only videos'],
-        ['watchedThreshold', 'Watched threshold', ['80', '90', '95', '100'], value => `${value}%`],
+        ['watchedThreshold', 'Watched threshold', ['5', '10', '25', '50', '75', '80', '90', '95', '100'], value => `${value}%`],
         ['keepHoverPreviews', 'Keep hover previews with miniplayer'],
       ],
       player: [
@@ -80,6 +83,7 @@
       ],
       miniplayer: [
         ['miniplayerEnabled', 'Scroll miniplayer'],
+        ['miniplayerSizeMode', 'Miniplayer size', ['auto', 'custom'], value => value === 'auto' ? 'Automatic' : 'Custom width'],
         ['corner', 'Preferred corner', ['top-right', 'bottom-right', 'bottom-left', 'top-left'], value => value.replace('-', ' ')],
         ['queueInfo', 'Show compact title and queue information'],
       ],
@@ -89,12 +93,6 @@
         ['showRydTooltipBar', 'Show Return YouTube Dislike tooltip bar'],
         ['showDeArrowTitleButton', 'Show DeArrow icon beside video title'],
         ['showDeArrowQueueButton', 'Show DeArrow logo in queues'],
-        ['menuShowDownload', 'Show Download in video menus'],
-        ['menuGroupChannelTools', 'Group channel tools in a submenu'],
-        ['menuShowAgeLimit', 'Show Filter channel uploads action'],
-        ['menuShowNotInterested', 'Show Not interested'],
-        ['menuShowDontRecommend', 'Show Don’t recommend channel'],
-        ['menuShowReport', 'Show Report'],
       ],
     };
     const DESCRIPTIONS = {
@@ -124,6 +122,7 @@
       fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Player-only fullscreen is unchanged.',
       disableTitleHashtagLinks: 'Keep hashtag text as ordinary title text without opening hashtag pages. Preserves YouTube’s title nodes and DeArrow replacements. Applies after reload.',
       miniplayerEnabled: 'Float the watch player into a corner when it scrolls out of view.',
+      miniplayerSizeMode: 'Automatic keeps the existing adaptive size. Custom uses your chosen width, reduced only when needed to fit the window. Preview changes immediately; Save keeps them.',
       corner: 'Choose the floating player’s corner. This also synchronises with other open YouTube windows.',
       queueInfo: 'Show the current title and queue position at the top of the floating player.',
       headerSettingsIcon: 'Choose the icon beside your profile button. Available on feed and watch pages.',
@@ -138,8 +137,16 @@
       menuShowDontRecommend: 'Keep YouTube’s Don’t recommend channel action available, separately or inside Channel tools.',
       menuShowReport: 'Keep YouTube’s Report action available, separately or inside Channel tools. A report is never submitted automatically.',
     };
+    const featureByKey = new Map(settings.features.map(feature => [feature.key, feature]));
+    for (const feature of settings.features) {
+      (GROUPS[feature.tab] ||= []).push([feature.key, feature.label, feature.options?.map(option => option[0]),
+        value => feature.options?.find(option => option[0] === value)?.[1] || value]);
+      DESCRIPTIONS[feature.key] = feature.description;
+    }
     let saved = settings.read();
     let draft = { ...saved };
+    let menuEditor = null;
+    let lastValidMiniplayerWidth = draft.miniplayerWidth;
     let externalConflict = false;
     let pickerTarget = null;
     let pickerTrigger = null;
@@ -148,7 +155,7 @@
     let channelManager = null;
     let channelFooterHost = null;
 
-    let supportPanel = null;
+    let supportPanel = null, extraControls = null;
     const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
     const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
     const searchInput = document.createElement('input');
@@ -191,6 +198,7 @@
       dialog.querySelector('.content').scrollTop = 0;
       if (id === 'channels') renderChannelRules();
       if (id === 'support') supportPanel?.refresh();
+      extraControls?.selectTab(id);
       if (focus) $(`tab-${id}`).focus();
     }
     for (const id of tabIds) {
@@ -210,6 +218,19 @@
     const menuDetails = document.createElement('details'); menuDetails.id = 'ytms-video-menu-settings';
     const menuSummary = document.createElement('summary'); menuSummary.textContent = 'Video context menu';
     menuDetails.append(menuSummary); $('section-interface').append(menuDetails);
+    const featureSections = new Map();
+    function featureDestination(feature) {
+      const key = feature.tab + ':' + feature.section;
+      if (!featureSections.has(key)) {
+        const details = document.createElement('details'); details.className = 'feature-group';
+        const summary = document.createElement('summary'); summary.textContent = feature.section;
+        const note = document.createElement('p'); note.className = 'section-note';
+        note.textContent = 'Save changes and reload YouTube to apply these options.';
+        details.append(summary, note); $('section-' + feature.tab).append(details);
+        featureSections.set(key, details);
+      }
+      return featureSections.get(key);
+    }
     for (const [group, rows] of Object.entries(GROUPS)) {
       for (const [key, labelText, choices, format] of rows) {
         const row = document.createElement('div'); row.className = 'row';
@@ -222,9 +243,14 @@
           for (const value of choices) { const option = document.createElement('option'); option.value = value; option.textContent = format(value); input.append(option); }
         } else { input.type = 'checkbox'; input.className = 'switch'; input.setAttribute('role', 'switch'); }
         row.append(label, input);
-        if (group === 'interface' && key.startsWith('menu')) menuDetails.append(row);
+        if (featureByKey.has(key)) featureDestination(featureByKey.get(key)).append(row);
+        else if (group === 'interface' && key.startsWith('menu')) menuDetails.append(row);
         else $(`section-${group}`).insertBefore(row, group === 'interface' ? menuDetails : null);
-        input.addEventListener('change', () => { draft[key] = choices ? input.value : input.checked; updateColours(); });
+        input.addEventListener('change', () => {
+          draft[key] = choices ? input.value : input.checked;
+          resolveDraftOpposites([key]);
+          syncFeatureDependencies(); updateColours();
+        });
       }
     }
     const ageRow = document.createElement('div'); ageRow.className = 'row';
@@ -279,48 +305,64 @@
       channelManager.open(channel, context);
     }
 
-    const menuOrder = document.createElement('section'); menuOrder.className = 'menu-order';
-    const menuOrderHeading = document.createElement('h3'); menuOrderHeading.textContent = 'Video context menu order';
-    const menuOrderNote = document.createElement('p'); menuOrderNote.className = 'section-note';
-    menuOrderNote.id = 'ytms-menu-order-description';
-    menuOrderNote.textContent = 'Use the arrows to arrange recognised video actions. Hidden or unavailable actions are skipped. Grouped actions keep their relative order inside Channel tools; other YouTube items are left available.';
-    const menuOrderList = document.createElement('ol'); menuOrderList.id = 'ytms-menu-order';
-    menuOrderList.setAttribute('aria-label', 'Video context menu order'); menuOrderList.setAttribute('aria-describedby', menuOrderNote.id);
-    const menuLabels = {
-      playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
-      savePlaylist: 'Save to playlist', download: 'Download', share: 'Share', notInterested: 'Not interested',
-      dontRecommend: 'Don’t recommend channel', report: 'Report', channelAge: 'Filter channel uploads', channelTools: 'Channel tools submenu',
-    };
-    function renderMenuOrder(focusId, focusDirection) {
-      menuOrderList.replaceChildren();
-      const order = draft.menuItemOrder;
-      for (const [index, id] of order.entries()) {
-        const item = document.createElement('li'); item.dataset.menuItem = id;
-        const label = document.createElement('span'); label.textContent = menuLabels[id];
-        item.append(label);
-        for (const [direction, text, offset] of [['up', '↑', -1], ['down', '↓', 1]]) {
-          const move = document.createElement('button'); move.type = 'button'; move.className = 'menu-order-move';
-          move.dataset.direction = direction; move.textContent = text;
-          move.setAttribute('aria-label', `Move ${menuLabels[id]} ${direction}`);
-          move.disabled = index + offset < 0 || index + offset >= order.length;
-          move.addEventListener('click', () => {
-            const next = [...draft.menuItemOrder];
-            [next[index], next[index + offset]] = [next[index + offset], next[index]];
-            draft.menuItemOrder = next; markDraftChanged(); renderMenuOrder(id, direction);
-          });
-          item.append(move);
+    menuEditor = suite.createMenuEditor(document, suite.menuLayout, {
+      getPreferences: () => draft,
+      setLayout: layout => {
+        if (JSON.stringify(layout) === JSON.stringify(suite.menuLayout.fromPreferences(saved))) {
+          for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+            draft[key] = key === 'menuLayout' ? suite.menuLayout.clone(saved[key]) : Array.isArray(saved[key]) ? [...saved[key]] : saved[key];
+          }
+        } else draft.menuLayout = suite.menuLayout.clone(layout);
+      },
+      onChange: () => markDraftChanged(),
+      onReset: () => {
+        for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+          draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
         }
-        menuOrderList.append(item);
-        if (id === focusId) {
-          const preferred = item.querySelector(`[data-direction="${focusDirection}"]`);
-          (preferred?.disabled ? item.querySelector('button:not(:disabled)') : preferred)?.focus();
-        }
-      }
-    }
-    menuOrder.append(menuOrderHeading, menuOrderNote, menuOrderList); menuDetails.append(menuOrder);
+        markDraftChanged();
+      },
+    });
+    const menuOrderHeading = menuEditor.heading, menuOrderNote = menuEditor.description;
+    const menuLabels = suite.menuLayout.labels;
+    menuDetails.append(menuEditor.element);
     const miniplayerNote = document.createElement('p'); miniplayerNote.className = 'section-note';
-    miniplayerNote.textContent = 'Size remains automatic and adapts to the available window space.';
+    miniplayerNote.textContent = 'The player keeps its proportions and stays inside the window. Cancel restores the saved size.';
+    const sizeRow = document.createElement('div'); sizeRow.className = 'row'; sizeRow.id = 'ytms-miniplayer-width-row';
+    const sizeLabel = document.createElement('label'); sizeLabel.htmlFor = 'ytms-miniplayerWidth'; sizeLabel.textContent = 'Custom width';
+    const sizeHelp = document.createElement('span'); sizeHelp.className = 'description'; sizeHelp.id = 'ytms-miniplayer-width-description';
+    sizeHelp.textContent = '320–1200 pixels. Your requested width is remembered when a smaller window requires a temporary reduction.';
+    sizeLabel.append(sizeHelp);
+    const sizeControls = document.createElement('div'); sizeControls.className = 'miniplayer-size-controls';
+    const sizeRange = document.createElement('input'); sizeRange.type = 'range'; sizeRange.min = '320'; sizeRange.max = '1200'; sizeRange.step = '1';
+    sizeRange.id = 'ytms-miniplayer-width-slider'; sizeRange.setAttribute('aria-label', 'Custom miniplayer width');
+    const sizeNumber = document.createElement('input'); sizeNumber.type = 'number'; sizeNumber.min = '320'; sizeNumber.max = '1200'; sizeNumber.step = '1';
+    sizeNumber.id = 'ytms-miniplayerWidth'; sizeNumber.setAttribute('aria-describedby', sizeHelp.id);
+    const sizeUnit = document.createElement('span'); sizeUnit.textContent = 'px';
+    sizeControls.append(sizeRange, sizeNumber, sizeUnit); sizeRow.append(sizeLabel, sizeControls);
+    $('miniplayerSizeMode').closest('.row').after(sizeRow);
     $('section-miniplayer').append(miniplayerNote);
+    function validSizeWidth(value) { return Number.isInteger(value) && value >= 320 && value <= 1200; }
+    function applyMiniplayerSize(values) {
+      if (validSizeWidth(values.miniplayerWidth)) suite.setScrollMiniplayerSize?.({ mode: values.miniplayerSizeMode, width: values.miniplayerWidth });
+    }
+    function updateSizeControls() {
+      const custom = draft.miniplayerSizeMode === 'custom';
+      if (validSizeWidth(draft.miniplayerWidth)) lastValidMiniplayerWidth = draft.miniplayerWidth;
+      else if (!custom) {
+        draft.miniplayerWidth = lastValidMiniplayerWidth;
+        sizeNumber.value = String(draft.miniplayerWidth);
+      }
+      sizeRow.hidden = !custom;
+      const invalid = custom && !validSizeWidth(draft.miniplayerWidth);
+      sizeNumber.setAttribute('aria-invalid', String(invalid));
+      if (validSizeWidth(draft.miniplayerWidth)) sizeRange.value = String(draft.miniplayerWidth);
+      if (!invalid) applyMiniplayerSize(draft);
+    }
+    for (const input of [sizeRange, sizeNumber]) input.addEventListener('input', () => {
+      draft.miniplayerWidth = input.value === '' ? NaN : Number(input.value);
+      if (input === sizeRange) sizeNumber.value = sizeRange.value;
+      updateSizeControls(); markDraftChanged();
+    });
     const accessNote = document.createElement('p'); accessNote.className = 'section-note';
     accessNote.textContent = 'Keep at least one button enabled. With the header button off, open a video to access settings. Changes apply after reload.';
     $('section-interface').append(accessNote);
@@ -349,6 +391,7 @@
     const author = document.createElement('p'); author.textContent = 'Created by Citizen';
     const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
     credits.append(logo, heading, author, version); $('section-credits').append(credits);
+    extraControls = suite.createSettingsExtraControls(document, window, suite, dialog);
     const normaliseHex = settings.normaliseHex;
     function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
     function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -361,27 +404,34 @@
     function samePreferences(left, right) {
       return Object.keys(DEFAULTS).every(key => {
         const value = left[key], other = right[key];
+        if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
         return Array.isArray(value) && Array.isArray(other)
           ? value.length === other.length && value.every((item, index) => item === other[index])
           : value === other;
       });
     }
     function primaryActionState() {
-      const invalid = draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value));
+      const invalid = (menuEditor && !menuEditor.isValid()) || (draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value))) ||
+        (draft.miniplayerSizeMode === 'custom' && !validSizeWidth(draft.miniplayerWidth));
       const inaccessible = draft.headerSettingsIcon === 'off' && draft.playerSettingsIcon === 'off';
       // Unlike most preferences, the floating player's corner may already
       // have been applied live by its control or a storage event. A settings
       // save on this same page does not apply it; use the actual module value
       // when available, retaining the startup baseline if it is unavailable.
       let appliedCorner = settings.initial.corner;
+      let appliedSize = { miniplayerSizeMode: settings.initial.miniplayerSizeMode, miniplayerWidth: settings.initial.miniplayerWidth };
       try {
         const currentCorner = suite.getAppliedScrollMiniplayerCorner?.();
         if (['top-right', 'bottom-right', 'bottom-left', 'top-left'].includes(currentCorner)) appliedCorner = currentCorner;
+        const size = suite.getAppliedScrollMiniplayerSize?.();
+        if (size && ['auto', 'custom'].includes(size.mode) && validSizeWidth(size.width)) {
+          appliedSize = { miniplayerSizeMode: size.mode, miniplayerWidth: size.width };
+        }
       } catch { /* A failed module must not break settings. */ }
       return {
         invalid, inaccessible,
         dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-        pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner }),
+        pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner, ...appliedSize }),
       };
     }
     function updatePrimaryAction() {
@@ -431,6 +481,7 @@
       if (element.hidden !== hidden) element.hidden = hidden;
     }
     function updateColours() {
+      updateSizeControls();
       const custom = draft.colourMode === 'custom';
       setHidden($('custom-colours'), !custom); setHidden($('palette-row'), draft.colourMode !== 'preset');
       const pair = colours(); const preview = $('comment-preview');
@@ -452,6 +503,24 @@
         return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05) < 4.5;
       }));
     }
+    function resolveDraftOpposites(keys) {
+      const opposites = { relatedBelowPlayer: 'hideRelated', hideRelated: 'relatedBelowPlayer',
+        disableVideoPreviews: 'keepHoverPreviews', keepHoverPreviews: 'disableVideoPreviews',
+        hideAllComments: 'fullscreenComments', fullscreenComments: 'hideAllComments' };
+      for (const key of keys) if (draft[key] && opposites[key]) {
+        draft[opposites[key]] = false;
+        if ($(opposites[key])) $(opposites[key]).checked = false;
+      }
+    }
+    function syncFeatureDependencies() {
+      const dependencies = { snapshotFormat: draft.snapshotButton, snapshotQuality: draft.snapshotButton && draft.snapshotFormat === 'jpeg',
+        lowViewThreshold: draft.hideFeedLowViews, theatreHideHeader: draft.fullWindowTheatre,
+        shortsHideMetadata: !draft.redirectShorts, shortsHideActions: !draft.redirectShorts,
+        shortsHideRelated: !draft.redirectShorts, shortsHideMusic: !draft.redirectShorts, shortsHideRemix: !draft.redirectShorts };
+      for (const [key, enabled] of Object.entries(dependencies)) {
+        const input = $(key); if (input) input.disabled = !enabled;
+      }
+    }
     function populate(keys) {
       const selected = keys ? new Set(keys) : null;
       for (const [key, value] of Object.entries(draft)) {
@@ -466,8 +535,9 @@
         $(`${name}-hex`).value = draft[`${name}Colour`];
         $(`${name}-hex`).setAttribute('aria-invalid', 'false'); $(`${name}-error`).hidden = true;
       }
+      if (!selected || [...selected].some(key => key.startsWith('menu'))) menuEditor.refresh();
       updateColours();
-      if (!selected || selected.has('menuItemOrder')) renderMenuOrder();
+      syncFeatureDependencies();
     }
     function closePicker(restoreFocus = true) {
       $('colour-picker').hidden = true;
@@ -518,6 +588,7 @@
       saved = settings.read(); draft = { ...saved };
       externalConflict = false;
       supportPanel?.reset();
+      extraControls.open();
       menuDetails.open = false;
       channelEntry = 'settings'; channelNotice.hidden = true; channelManager.reset({ defer: true });
       $('settings-status').hidden = true;
@@ -531,6 +602,8 @@
 
     for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
     dialog.addEventListener('close', () => {
+      applyMiniplayerSize(settings.read());
+      extraControls.close();
       closePicker(false); resetSearch(); channelEntry = 'settings'; channelManager.reset({ defer: true });
     });
     dialog.addEventListener('keydown', event => {
@@ -551,6 +624,7 @@
     dialog.addEventListener('change', markDraftChanged);
     function restoreDraftDefaults(keys, message) {
       for (const key of keys) draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
+      resolveDraftOpposites(keys);
       markDraftChanged(); closePicker(false); populate(keys);
       if (externalConflict) { showConflictNotice(); return; }
       const state = primaryActionState();
@@ -561,10 +635,11 @@
     }
     $('restore-section-defaults').addEventListener('click', () => {
       const keys = currentTab === 'comments'
-        ? ['colourMode', 'palette', 'viewerColour', 'ownerColour', 'compactComments', 'hideCommentControls']
+        ? ['colourMode', 'palette', 'viewerColour', 'ownerColour', 'compactComments', 'hideCommentControls', ...(GROUPS.comments || []).map(([key]) => key)]
         : (GROUPS[currentTab] || []).map(([key]) => key);
       if (!keys.length) return;
-      if (currentTab === 'interface') keys.push('menuItemOrder');
+      if (currentTab === 'interface') keys.push(...Object.keys(DEFAULTS).filter(key => key.startsWith('menu')));
+      if (currentTab === 'miniplayer') keys.push('miniplayerWidth');
       restoreDraftDefaults(keys, `${$(`tab-${currentTab}`).textContent} defaults restored in this draft. Save to apply. Saved channel filters are unchanged.`);
     });
     $('restore-defaults').addEventListener('click', () => {
@@ -620,8 +695,12 @@
         addSearchEntry(group, key, label, DESCRIPTIONS[key] || '', choices ? choices.map(format).join(' ') : '');
       }
     }
-    addSearchEntry('interface', 'menu-order', 'Video context menu order', menuOrderNote.textContent,
+    addSearchEntry('interface', 'menu-order', 'Video context menu editor', menuOrderNote.textContent,
       Object.values(menuLabels).join(' '));
+    const menuSearchActions = { menuShowDownload:'download', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
+    const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
+    for (const key of Object.keys(menuSearchActions)) addSearchEntry('interface', key, menuSearchLabels[key], DESCRIPTIONS[key]);
+
     addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
       'channels block age restrictions');
     addSearchEntry('support', 'backup-heading', 'Full backup and restore',
@@ -632,6 +711,9 @@
       addSearchEntry('extensions', `extension-${extension.id}`, extension.name, extension.description, extension.note);
     }
     addSearchEntry('credits', 'credits-logo', 'YouTube Master Suite credits', 'Author, version and licence.', 'about');
+    addSearchEntry('miniplayer', 'miniplayerSizeMode', 'Custom miniplayer width', sizeHelp.textContent, 'size resize automatic');
+    addSearchEntry('player', 'playhead-marker-heading', 'Playback marker image', 'Choose a local image to replace the red playback dot.', 'playhead picture scrubber');
+    addSearchEntry('credits', 'updates-heading', 'Check for script updates', 'Check a release source and open Tampermonkey to install an update.', 'latest version install');
     function showSearch() {
       const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
       searchClear.hidden = !searchInput.value;
@@ -666,11 +748,17 @@
           let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
           if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
           if (entry.target === 'menu-order') target = menuOrderHeading;
+          if (Object.hasOwn(menuSearchActions, entry.target)) target = menuEditor.focusAction(menuSearchActions[entry.target]);
           if (entry.target === 'credits-logo') target = heading;
           if (entry.tab === 'extensions') target = target?.querySelector('h4') || target;
           // Custom colour controls are conditional; do not change the user's
           // draft just to expose one. Take them to the controlling selector.
           if (!target || target.closest('[hidden]')) target = entry.tab === 'comments' ? $('colour-mode') : $(`tab-${entry.tab}`);
+          const controller = { snapshotFormat: 'snapshotButton', snapshotQuality: draft.snapshotButton ? 'snapshotFormat' : 'snapshotButton',
+            lowViewThreshold: 'hideFeedLowViews', theatreHideHeader: 'fullWindowTheatre', shortsHideMetadata: 'redirectShorts',
+            shortsHideActions: 'redirectShorts', shortsHideRelated: 'redirectShorts', shortsHideMusic: 'redirectShorts', shortsHideRemix: 'redirectShorts' };
+          if (target.disabled && controller[entry.target]) target = $(controller[entry.target]) || target;
+          for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
           if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
           target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
         });
@@ -865,6 +953,13 @@
   function installButton() {
     frame = 0;
     if (suspended) return;
+    const root = document.documentElement;
+    if (root !== watchedThemeRoot) {
+      themeObserver.disconnect();
+      watchedThemeRoot = root;
+      if (root) themeObserver.observe(root, { attributes: true, attributeFilter: ["dark"] });
+      syncTheme();
+    }
     const masthead = settings.initial.headerSettingsIcon === 'off' ? null : document.querySelector("ytd-masthead");
     const app = document.querySelector("ytd-app");
     const mastheadContainer = app?.querySelector('#masthead-container') || null;
@@ -878,9 +973,10 @@
     const pageManager = app?.querySelector('ytd-page-manager, #page-manager');
     if (pageManager) playerBranch.add(pageManager);
     const branch = Array.from(playerBranch);
-    if (!discoveryActive || app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
+    if (!discoveryActive || root !== watchedDocumentRoot || document.body !== watchedBody ||
+      app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
       branch.length !== watchedPlayerBranch.length || branch.some((node, index) => node !== watchedPlayerBranch[index])) {
-      const registrations = [[document.documentElement, { childList: true }]];
+      const registrations = [[root || document, { childList: true }]];
       if (document.body) registrations.push([document.body, { childList: true }]);
       if (app) registrations.push([app, { childList: true }]);
       if (mastheadContainer) registrations.push([mastheadContainer, { childList: true }]);
@@ -888,6 +984,7 @@
       for (const node of branch) registrations.push([node, { childList: true, ...(node === target?.controls ? { subtree: true } : {}) }]);
       discovery.replaceRegistrations(registrations);
       watchedApp = app; watchedMasthead = masthead;
+      watchedDocumentRoot = root; watchedBody = document.body;
       watchedMastheadContainer = mastheadContainer; discoveryActive = true;
       watchedPlayerBranch = branch;
     }
@@ -935,14 +1032,15 @@
   function start() {
     suspended = false;
     watchedApp = null; watchedMasthead = null;
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["dark"] });
-    syncTheme(); installButton();
+    watchedThemeRoot = undefined;
+    installButton();
   }
   function stop() {
     suspended = true;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     discovery.disconnect(); themeObserver.disconnect();
+    watchedThemeRoot = null;
     discoveryActive = false;
     hidePlayerTooltip();
     document.getElementById(DIALOG_ID)?.close();
@@ -954,8 +1052,22 @@
   window.addEventListener("yt-navigate-finish", scheduleInstall);
   window.addEventListener("yt-page-data-updated", scheduleInstall);
   window.addEventListener('yt-master-channel-age-changed', () => panel?.updateChannels());
-  window.addEventListener('storage', event => {
-    if (event.key === null || event.key === settings.key || event.key === 'yt-master-suite.scroll-miniplayer.corner.v1') panel?.reconcileSaved();
+  function scheduleSavedReconciliation() {
+    if (savedReconciliationPending) return;
+    savedReconciliationPending = true;
+    // Storage consumers apply live corner/size changes in the same delivery.
+    // Reconcile after those consumers, regardless of module startup order.
+    queueMicrotask(() => {
+      savedReconciliationPending = false;
+      panel?.reconcileSaved();
+    });
+  }
+  suite.storage.subscribe(event => {
+    if ((event.key === null || event.key === settings.key) && !document.getElementById(DIALOG_ID)?.open) {
+      const values = settings.read();
+      suite.setScrollMiniplayerSize?.({ mode: values.miniplayerSizeMode, width: values.miniplayerWidth });
+    }
+    if (event.key === null || event.key === settings.key || event.key === 'yt-master-suite.scroll-miniplayer.corner.v1') scheduleSavedReconciliation();
     if (event.key === null || event.key === suite.channelAge.key) window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));
   });
   document.addEventListener('loadedmetadata', event => { if (event.target?.matches?.('video.html5-main-video')) scheduleInstall(); }, true);
@@ -963,5 +1075,15 @@
   window.addEventListener('resize', refreshPlayerTooltip);
   window.addEventListener('blur', hidePlayerTooltip);
   start();
+  // Start access controls and native sizing without waiting for parsed content.
+  // Optional controls still wait for parsed content and validated preferences.
+  suite.startNativeQueueLayout();
+  suite.installVideoMenu(suite);
+  const startOptionalControls = () => {
+    suite.playheadMarker.start();
+    suite.startFeatureControls();
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startOptionalControls, { once: true });
+  else queueMicrotask(startOptionalControls);
 })();
 

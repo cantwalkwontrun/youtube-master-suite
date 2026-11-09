@@ -8,6 +8,21 @@ export function installVideoMenu(suite) {
   const rowSelector = 'ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
   const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
   const order = [...new Set([...(Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder.filter(id => defaultOrder.includes(id)) : []), ...defaultOrder])];
+  const legacyVisible = id => id === 'download' ? preferences.menuShowDownload === true :
+    id === 'channelAge' ? preferences.menuShowAgeLimit !== false :
+    id === 'notInterested' ? preferences.menuShowNotInterested !== false :
+    id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
+    id === 'report' ? preferences.menuShowReport !== false : true;
+  let layout;
+  try { layout = suite.menuLayout?.fromPreferences(preferences); } catch { /* A missing helper retains the legacy layout. */ }
+  if (!layout) layout = { version:1, nodes:order.map(id => id === 'channelTools'
+    ? { id, name:'Channel tools', parent:'root' }
+    : { id, parent:preferences.menuGroupChannelTools !== false && ['channelAge','dontRecommend','report'].includes(id) ? 'channelTools' : 'root', visible:legacyVisible(id) }) };
+  const layoutNodes = layout.nodes;
+  const layoutById = new Map(layoutNodes.map(node => [node.id,node]));
+  const rank = id => layoutNodes.findIndex(node => node.id === id);
+  const creatorPage = '@creators';
+  const nextPath = 'M9 5l7 7-7 7-1.4-1.4 5.6-5.6-5.6-5.6L9 5z';
   const controller = element => element?.polymerController || element?.getPolymerController?.() || element;
   let trigger = null;
   let active = null;
@@ -18,6 +33,8 @@ export function installVideoMenu(suite) {
   let style = null;
   let disposed = false;
   let triggerReason = 'missing-trigger';
+  const pendingIcons = new Set();
+  let pendingIconObserver = null;
   const compatibilityStates = {
     idle: 'not-checked', disposed: 'not-checked', ready: 'recognised',
     'missing-trigger': 'not-applicable',
@@ -166,6 +183,7 @@ export function installVideoMenu(suite) {
       .ytms-video-menu-action svg { width: 24px; height: 24px; flex: 0 0 24px; fill: currentColor; }
       .ytms-video-menu-action small { display: block; white-space: normal; max-width: 240px; font-size: 12px; line-height: 16px; margin-top: 3px; }
       .ytms-video-menu-action[hidden] { display: none !important; }
+      .ytms-video-menu-message { padding:8px 16px;max-width:300px;font:400 12px/18px Roboto,Arial,sans-serif;overflow-wrap:anywhere; }
       [data-ytms-video-menu="1"]:focus { outline: none; }
       /* Native mouseover classes can outlive row movement; retain real hover and keyboard focus. */
       [data-ytms-video-menu="1"] .ytListItemViewModelHovered:not(:hover):not(:focus-within) { background-color: transparent !important; }
@@ -191,6 +209,50 @@ export function installVideoMenu(suite) {
     return button;
   }
 
+  function clearPendingIcons() {
+    pendingIconObserver?.disconnect(); pendingIconObserver = null;
+    for (const item of pendingIcons) item.svg.remove();
+    pendingIcons.clear();
+  }
+
+  function prunePendingIcons() {
+    for (const item of pendingIcons) {
+      let valid = false;
+      try {
+        const current = active;
+        const data = current?.popup.matches('yt-sheet-view-model') ? current.popup.componentProps?.data?.() : controller(current?.popup)?.data;
+        const items = current?.popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
+        valid = current && current.popup.contains(item.row) && item.svg.isConnected &&
+          items?.includes(item.model) && identify(item.model,current) === 'notInterested' &&
+          item.row.contains(item.svg) && ![...item.slot.children].some(child => child !== item.svg);
+      } catch { /* A changing native model releases our temporary icon. */ }
+      if (!valid) { item.svg.remove(); pendingIcons.delete(item); }
+    }
+    if (!pendingIcons.size) { pendingIconObserver?.disconnect(); pendingIconObserver = null; }
+  }
+
+  function pendingNativeIcon(row, id, model) {
+    // The native async SVG renderer clears this known slot on completion.
+    // Cover only the exact recognised Not interested action's empty slot;
+    // BlockTube/unknown actions and already supplied native glyphs stay native.
+    if (id !== 'notInterested') return;
+    const slot = row.querySelector('.ytListItemViewModelLeading .yt-icon-shape, yt-icon .yt-icon-shape');
+    if (!slot || slot.childElementCount) return;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
+    svg.setAttribute('data-ytms-menu-icon-fallback','notInterested');
+    svg.style.cssText = 'display:block;width:24px;height:24px;fill:currentColor;pointer-events:none';
+    const path = document.createElementNS(svg.namespaceURI,'path');
+    path.setAttribute('d','M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 1.8a7.2 7.2 0 0 1 5.72 11.58L7.62 6.28A7.17 7.17 0 0 1 12 4.8zm-5.72 2.82 10.1 10.1A7.2 7.2 0 0 1 6.28 7.62z');
+    svg.append(path); slot.append(svg);
+    pendingIcons.add({svg,slot,row,model});
+    if (!pendingIconObserver) pendingIconObserver = new MutationObserver(prunePendingIcons);
+    pendingIconObserver.observe(row,{childList:true,subtree:true,attributes:true,attributeFilter:['data-target-id']});
+    if (row.parentElement) pendingIconObserver.observe(row.parentElement,{childList:true});
+    const popup = row.closest('ytd-menu-popup-renderer,yt-sheet-view-model');
+    if (popup) pendingIconObserver.observe(popup,{childList:true});
+  }
+
   function focusable(row) {
     // Current sheets can put tabindex on a presentation wrapper as well as on
     // their real button. Focus the action, not its non-activating wrapper.
@@ -203,9 +265,10 @@ export function installVideoMenu(suite) {
   }
 
   function navigableRows(current) {
-    return [...current.parent.children].filter(row => row === current.back ? current.tools :
-      row === current.group ? !current.group.hidden :
-        current.entries.some(entry => entry.row === row && entry.enabled && (current.tools ? entry.grouped : !entry.grouped)))
+    return [...current.parent.children].filter(row => row === current.back ? current.stack.length > 0 :
+      current.entries.some(entry => entry.row === row && entry.enabled && entry.parent === current.page) ||
+      [...current.groups.values()].some(group => group.row === row && group.enabled && group.parent === current.page) ||
+      (current.page === creatorPage && current.creatorRows.includes(row)))
       .map(row => ({ row, target: focusable(row) })).filter(entry => entry.target);
   }
 
@@ -217,8 +280,9 @@ export function installVideoMenu(suite) {
   }
 
   function focusPage(current) {
-    const target = current.keyboard ? (current.tools ? current.back : current.group) : current.popup;
-    focusTarget(current, target === current.popup ? target : focusable(target));
+    const firstGroup = [...current.groups.values()].find(group => group.enabled && group.parent === current.page)?.row;
+    const target = current.keyboard ? (current.stack.length ? current.back : firstGroup || navigableRows(current)[0]?.row) : current.popup;
+    focusTarget(current, !target || target === current.popup ? current.popup : focusable(target));
   }
 
   function focused(event) {
@@ -275,27 +339,74 @@ export function installVideoMenu(suite) {
   }
 
   function restoreRow(row, saved) {
+    if (!saved.owned) return;
+    saved.owned = false;
+    // An external native/extension update supersedes our temporary hide.
+    if (row.style.getPropertyValue('display') !== 'none' || row.style.getPropertyPriority('display') !== 'important') return;
     if (saved.value) row.style.setProperty('display', saved.value, saved.priority);
     else row.style.removeProperty('display');
   }
 
-  function setPage(tools, focus = true) {
+  function appendInOrder(parent, nodes) {
+    // Native icon/rendering hosts keep their existing connection when their
+    // order is already correct. Insert only new or genuinely misplaced rows.
+    let next = null;
+    for (let index = nodes.length - 1; index >= 0; index--) {
+      const node = nodes[index];
+      if (node.parentNode !== parent || node.nextSibling !== next) parent.insertBefore(node, next);
+      next = node;
+    }
+  }
+
+  function hideRow(entry) {
+    const value = entry.row.style.getPropertyValue('display');
+    const priority = entry.row.style.getPropertyPriority('display');
+    if (value !== 'none' || priority !== 'important') {
+      entry.display.value = value; entry.display.priority = priority; entry.display.owned = true;
+      entry.row.style.setProperty('display','none','important');
+    }
+  }
+
+  function cancelLookup(current) {
+    current.lookupController?.abort(); current.lookupController = null;
+    for (const row of current.creatorRows) { row.disabled = false; row.removeAttribute('aria-busy'); }
+  }
+
+  function setPage(page, focus = true) {
     const current = active;
     if (!current || !current.popup.isConnected) return;
-    current.tools = tools;
+    cancelLookup(current);
+    current.page = page === false ? 'root' : page === true ? 'channelTools' : page;
+    current.tools = current.page === 'channelTools';
     for (const entry of current.entries) {
-      const show = entry.enabled && (tools ? entry.grouped : !entry.grouped);
-      if (show) restoreRow(entry.row, entry.display);
-      else entry.row.style.setProperty('display', 'none', 'important');
+      if (entry.enabled && entry.parent === current.page) restoreRow(entry.row,entry.display);
+      else hideRow(entry);
     }
-    current.back.hidden = !tools;
-    current.group.hidden = tools || !current.entries.some(entry => entry.enabled && entry.grouped);
-    current.group.setAttribute('aria-expanded', String(tools));
+    for (const group of current.groups.values()) {
+      group.row.hidden = !group.enabled || group.parent !== current.page;
+      group.row.setAttribute('aria-expanded',String(current.page === group.id || current.stack.includes(group.id)));
+    }
+    for (const row of current.creatorRows) row.hidden = current.page !== creatorPage;
+    if (current.lookupStatus) current.lookupStatus.hidden = current.page !== creatorPage;
+    current.back.hidden = current.stack.length === 0;
     refit();
     if (focus) focusPage(current);
   }
 
+  function enterPage(page) {
+    const current = active;
+    if (!current) return;
+    current.stack.push(current.page); setPage(page);
+  }
+
+  function goBack() {
+    const current = active;
+    if (!current) return;
+    setPage(current.stack.pop() || 'root');
+  }
+
   function reset() {
+    clearPendingIcons();
     if (waiting) {
       waiting.observer.disconnect();
       clearTimeout(waiting.timer);
@@ -311,17 +422,114 @@ export function installVideoMenu(suite) {
     const current = active;
     active = null;
     if (current.ownsTabIndex && current.popup.getAttribute('tabindex') === '-1') current.popup.removeAttribute('tabindex');
-    current.back.remove();
-    current.group.remove();
-    current.age?.remove();
+    cancelLookup(current);
+    for (const row of current.ownedRows) row.remove();
     for (const entry of current.entries) {
       if (!entry.custom) restoreRow(entry.row, entry.display);
     }
     // Only restore a still-owned, fully stamped list. Do not resurrect detached native rows.
     if (current.original.every(row => row.parentElement === current.parent)) {
-      current.parent.append(...current.original);
+      appendInOrder(current.parent, current.original);
     }
     if (current.popup.getAttribute('data-ytms-video-menu') === '1') current.popup.removeAttribute('data-ytms-video-menu');
+  }
+
+  function channelIdentity(card) {
+    try {
+      const service = suite.channelAge;
+      const identity = service?.channelIdentityFromCard?.(card);
+      if (identity && ['unique','multiple','missing','conflict'].includes(identity.status)) {
+        return { status:identity.status,
+          channels:identity.status === 'conflict' ? [] : (Array.isArray(identity.channels) ? identity.channels.slice(0,10) : []),
+          handles:identity.status === 'conflict' ? [] : (Array.isArray(identity.handles) ? identity.handles.slice(0,10) : []) };
+      }
+      const channel = service?.channelFromCard(card);
+      return { status:channel?.channelId ? 'unique' : 'missing',channels:channel?.channelId ? [channel] : [],handles:[] };
+    } catch { return {status:'missing',channels:[],handles:[]}; }
+  }
+
+  function validCurrent(current) {
+    if (disposed || active !== current || !current.card.isConnected || !visiblePopup(current.popup) ||
+        videoIdFromCard(current.card) !== current.videoId) return false;
+    try {
+      const data = current.popup.matches('yt-sheet-view-model') ? current.popup.componentProps?.data?.() : controller(current.popup)?.data;
+      const items = current.popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
+      return data === current.model && items === current.items;
+    } catch { return false; }
+  }
+
+  function openSelectedChannel(current, channelId) {
+    if (!validCurrent(current)) return;
+    const identity = channelIdentity(current.card);
+    const channel = identity.status !== 'conflict' && identity.channels.find(channel => channel.channelId === channelId);
+    if (!channel) return;
+    const context = {card:current.card,videoId:current.videoId,selectedChannelId:channel.channelId};
+    try { current.popup.closest('tp-yt-iron-dropdown')?.close?.(); } catch { /* Settings can open after native closure. */ }
+    reset(); trigger = null; triggerReason = 'missing-trigger';
+    suite.openChannelAgeSettings?.(channel,context);
+  }
+
+  function creatorOptions(current) {
+    if (!validCurrent(current)) return false;
+    const identity = channelIdentity(current.card);
+    if (identity.status === 'conflict') return false;
+    for (const row of current.creatorRows) { current.ownedRows.delete(row); row.remove(); }
+    current.creatorRows = [];
+    if (current.lookupStatus) { current.ownedRows.delete(current.lookupStatus); current.lookupStatus.remove(); }
+    const add = (action,label,note) => {
+      const row = customAction(action,label,nextPath);
+      if (note) { const small = document.createElement('small'); small.textContent = note; row.lastElementChild.append(small); }
+      current.creatorRows.push(row); current.ownedRows.add(row); current.parent.append(row);
+      return row;
+    };
+    identity.channels.forEach((channel,index) => {
+      const row = add('creator-'+index,'Filter uploads from '+(channel.name || channel.channelId),
+        identity.channels.filter(other => other.name === channel.name).length > 1 ? channel.channelId : '');
+      row.dataset.ytmsChannelId = channel.channelId;
+    });
+    // Known unique identities keep their direct action. A proven collaboration
+    // can explicitly resolve each remaining unrecognised creator handle.
+    if (!identity.channels.length || identity.status === 'multiple') {
+      identity.handles.forEach((candidate,index) => {
+        const row = add('lookup-'+index,'Look up '+candidate.handle,candidate.name && candidate.name !== candidate.handle ? candidate.name : '');
+        row.dataset.ytmsHandleUrl = candidate.url;
+      });
+    }
+    const status = document.createElement('div'); status.className = 'ytms-video-menu-message';
+    status.setAttribute('role','status'); current.lookupStatus = status; current.ownedRows.add(status); current.parent.append(status);
+    if (!current.creatorRows.length) status.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
+    return true;
+  }
+
+  async function lookupCreator(current, candidate) {
+    if (!validCurrent(current)) return;
+    const before = channelIdentity(current.card);
+    if (before.status === 'conflict' || !before.handles.some(handle => handle.url === candidate.url && handle.handle === candidate.handle)) return;
+    cancelLookup(current);
+    const request = new AbortController(); current.lookupController = request;
+    for (const row of current.creatorRows) if (row.dataset.ytmsHandleUrl) { row.disabled = true; row.setAttribute('aria-busy','true'); }
+    current.lookupStatus.textContent = 'Looking up '+candidate.handle+'…'; refit();
+    try {
+      if (typeof suite.channelLookup?.lookup !== 'function') throw new Error('Channel lookup is unavailable. Use Channels settings to add the ID manually.');
+      const result = await suite.channelLookup.lookup(candidate,{signal:request.signal});
+      if (request.signal.aborted || active !== current || current.lookupController !== request ||
+          current.page !== creatorPage || !validCurrent(current)) return;
+      if (!result?.ok) throw new Error(result?.error || 'The channel ID could not be found.');
+      const fresh = channelIdentity(current.card);
+      if (fresh.status === 'conflict' || !fresh.handles.some(handle => handle.url === candidate.url && handle.handle === candidate.handle)) {
+        throw new Error('The creator changed. Reopen the video menu and try again.');
+      }
+      if (!suite.channelLookup.isVerified?.(candidate,result.channel)) throw new Error('The channel lookup could not be verified.');
+      const remembered = suite.channelAge?.rememberResolvedChannel?.(current.card,candidate,result.channel,current.videoId);
+      if (!remembered?.ok) throw new Error(remembered?.error || 'The creator changed. Reopen the video menu and try again.');
+      openSelectedChannel(current,result.channel.channelId);
+    } catch (error) {
+      if (!request.signal.aborted && active === current && current.lookupController === request && validCurrent(current)) {
+        current.lookupStatus.textContent = typeof error?.message === 'string' ? error.message.slice(0,300) : 'The channel ID could not be found.';
+      }
+    } finally {
+      if (active === current && current.lookupController === request) { cancelLookup(current); refit(); }
+    }
   }
 
   function decorate(popup, selection) {
@@ -355,44 +563,64 @@ export function installVideoMenu(suite) {
     const ids = items.map(item => identify(item, selection));
     // Ambiguous duplicate recognised actions and mismatched native lists remain untouched.
     if (ids.some((id, index) => id && ids.indexOf(id) !== index)) return diagnostic('duplicate-actions');
-    let channel = null;
-    try { channel = suite.channelAge?.channelFromCard(selection.card) || null; } catch { /* A missing stable ID leaves manual settings available. */ }
+    const identity = channelIdentity(selection.card);
+    const channel = identity.channels.length === 1 && identity.status === 'unique' ? identity.channels[0] : null;
     ensureStyle();
-    const grouped = preferences.menuGroupChannelTools !== false;
-    const isEnabled = id => id === 'download' ? preferences.menuShowDownload === true :
-      id === 'notInterested' ? preferences.menuShowNotInterested !== false :
-      id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
-      id === 'report' ? preferences.menuShowReport !== false : true;
-    const entries = rows.map((row, index) => ({ row, id: ids[index], enabled: isEnabled(ids[index]),
-      grouped: grouped && ['dontRecommend', 'report'].includes(ids[index]),
-      display: { value: row.style.getPropertyValue('display'), priority: row.style.getPropertyPriority('display') } }));
+    const entries = rows.map((row,index) => {
+      const node = layoutById.get(ids[index]);
+      return { row,id:ids[index],enabled:node ? node.visible : true,parent:node?.parent || 'root',
+        display:{ value:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display') } };
+    });
+    entries.forEach((entry,index) => pendingNativeIcon(entry.row,entry.id,items[index]));
+    const ownedRows = new Set(), groups = new Map();
     let age = null;
-    if (preferences.menuShowAgeLimit !== false) {
-      age = customAction('channelAge', 'Filter channel uploads', 'M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm12 8v10H5V10h14zM5 6h14v2H5V6zm6 6v5h5v-2h-3v-3h-2z');
-      if (!channel?.channelId) {
-        age.setAttribute('aria-disabled', 'true');
-        const note = document.createElement('small');
-        note.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
-        age.lastElementChild.append(note);
+    const ageNode = layoutById.get('channelAge');
+    if (ageNode?.visible) {
+      age = customAction('channelAge','Filter channel uploads','M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm12 8v10H5V10h14zM5 6h14v2H5V6zm6 6v5h5v-2h-3v-3h-2z');
+      const note = document.createElement('small');
+      if (identity.status === 'conflict') {
+        age.setAttribute('aria-disabled','true'); note.textContent = 'Channel information disagrees; reopen the video menu or use Channels settings.';
+      } else if (identity.status === 'multiple') {
+        age.setAttribute('aria-haspopup','menu'); note.textContent = 'Choose which creator’s channel to filter.';
+      } else if (!channel && identity.handles.length) {
+        age.lastElementChild.firstChild.textContent = 'Look up channel ID';
+        note.textContent = 'Find the permanent ID from the creator’s public YouTube channel page.';
+      } else if (!channel) {
+        age.setAttribute('aria-disabled','true'); note.textContent = 'Channel ID unavailable; add it manually in Channels settings.';
       }
-      entries.push({ row: age, id: 'channelAge', enabled: true, grouped, custom: true, display: { value: '', priority: '' } });
+      if (note.textContent) age.lastElementChild.append(note);
+      ownedRows.add(age);
+      entries.push({row:age,id:'channelAge',enabled:true,parent:ageNode.parent,custom:true,display:{value:'',priority:''}});
     }
-    const group = customAction('channelTools', 'Channel tools', 'M9 5l7 7-7 7-1.4-1.4 5.6-5.6-5.6-5.6L9 5z');
-    group.setAttribute('aria-haspopup', 'menu');
-    const back = customAction('back', 'Back', 'M15 5l-7 7 7 7 1.4-1.4-5.6-5.6 5.6-5.6L15 5z');
-    // Keep unknown rows in their original slots; reorder only recognised action slots.
-    const sorted = entries.filter(entry => entry.id).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    for (const node of layoutNodes.filter(node => !Object.hasOwn(node,'visible'))) {
+      const row = customAction(node.id,node.name,nextPath);
+      row.setAttribute('aria-haspopup','menu'); ownedRows.add(row);
+      groups.set(node.id,{...node,row,enabled:false});
+    }
+    const groupEnabled = (id,seen = new Set()) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return entries.some(entry => entry.enabled && entry.parent === id) ||
+        [...groups.values()].some(group => group.parent === id && groupEnabled(group.id,new Set(seen)));
+    };
+    for (const group of groups.values()) group.enabled = groupEnabled(group.id);
+    const back = customAction('back','Back','M15 5l-7 7 7 7 1.4-1.4-5.6-5.6 5.6-5.6L15 5z');
+    ownedRows.add(back);
+    // Unknown rows keep their original native slots. Only recognised native
+    // rows are reordered; owned menu entries are inserted at their chosen rank.
+    const sorted = entries.filter(entry => !entry.custom && entry.id).sort((a,b) => rank(a.id)-rank(b.id));
     let index = 0;
-    const arranged = entries.map(entry => entry.id ? sorted[index++] : entry);
-    const groupRank = order.indexOf('channelTools');
-    const beforeGroup = arranged.findIndex(entry => entry.id && order.indexOf(entry.id) > groupRank);
-    const nodes = arranged.map(entry => entry.row);
-    nodes.splice(beforeGroup < 0 ? nodes.length : beforeGroup, 0, group);
-    active = { popup, parent, original: rows, entries, age, group, back, channel, card: selection.card, videoId: selection.videoId,
-      trigger: selection.button, tools: false, keyboard: selection.keyboard, interacted: false, redirectingFocus: false,
-      ownsTabIndex: !popup.hasAttribute('tabindex') };
-    if (active.ownsTabIndex) popup.setAttribute('tabindex', '-1');
-    parent.append(back, ...nodes);
+    const arranged = entries.filter(entry => !entry.custom).map(entry => entry.id ? sorted[index++] : entry);
+    for (const item of [...entries.filter(entry => entry.custom),...groups.values()].sort((a,b) => rank(a.id)-rank(b.id))) {
+      const before = arranged.findIndex(entry => entry.id && rank(entry.id)>rank(item.id));
+      arranged.splice(before<0 ? arranged.length : before,0,item);
+    }
+    active = { popup,parent,original:rows,entries,age,groups,back,channel,identity,ownedRows,
+      creatorRows:[],lookupStatus:null,lookupController:null,card:selection.card,videoId:selection.videoId,
+      model:data,items,trigger:selection.button,page:'root',stack:[],tools:false,
+      keyboard:selection.keyboard,interacted:false,redirectingFocus:false,ownsTabIndex:!popup.hasAttribute('tabindex') };
+    if (active.ownsTabIndex) popup.setAttribute('tabindex','-1');
+    appendInOrder(parent,[back,...arranged.map(entry => entry.row)]);
     popup.setAttribute('data-ytms-video-menu', '1');
     setPage(false, false);
     const focusedElement = document.activeElement;
@@ -448,6 +676,9 @@ export function installVideoMenu(suite) {
         if (decorate(popup, selection) && waiting === request) {
           request.observer.disconnect();
           clearTimeout(request.timer);
+          if (firstFrame) cancelAnimationFrame(firstFrame);
+          if (secondFrame) cancelAnimationFrame(secondFrame);
+          firstFrame = secondFrame = 0;
           waiting = null;
         }
       } catch { reset(); compatibility('unsupported'); }
@@ -470,10 +701,12 @@ export function installVideoMenu(suite) {
       }
     }, 1500) };
     waiting = request;
-    // Play next first rebinds the native model; the second frame sees its stamped rows.
+    // A microtask from the capture listener can run before the same trusted
+    // event reaches YouTube's target handler. Wait for that event to finish,
+    // then reconcile in one frame before paint; retain all binding checks.
     firstFrame = requestAnimationFrame(() => {
       firstFrame = 0;
-      secondFrame = requestAnimationFrame(attempt);
+      attempt();
     });
   }
 
@@ -500,15 +733,27 @@ export function installVideoMenu(suite) {
     if (!event.isTrusted) return;
     current.keyboard = event.detail === 0;
     current.interacted = true;
-    if (action === 'channelTools') setPage(true);
-    else if (action === 'back') setPage(false);
-    else if (action === 'channelAge' && current.channel?.channelId) {
-      let channel;
-      try { channel = suite.channelAge?.channelFromCard(current.card); } catch { return; }
-      if (!current.card.isConnected || videoIdFromCard(current.card) !== current.videoId || channel?.channelId !== current.channel.channelId) return;
-      try { current.popup.closest('tp-yt-iron-dropdown')?.close?.(); } catch { /* Settings can still open if the native dropdown has already closed. */ }
-      reset(); trigger = null; triggerReason = 'missing-trigger';
-      suite.openChannelAgeSettings?.(channel, { card: current.card, videoId: current.videoId });
+    if (action === 'back') goBack();
+    else if (current.groups.has(action)) {
+      const group = current.groups.get(action);
+      if (group.enabled && group.parent === current.page && validCurrent(current)) enterPage(action);
+    } else if (action === 'channelAge') {
+      if (!validCurrent(current) || event.target.closest('[aria-disabled="true"]')) return;
+      const identity = channelIdentity(current.card);
+      if (identity.status === 'conflict') return;
+      if (identity.status === 'unique' && identity.channels.length === 1) {
+        openSelectedChannel(current,identity.channels[0].channelId);
+      } else if (creatorOptions(current)) {
+        enterPage(creatorPage);
+        if (!identity.channels.length && identity.handles.length === 1) void lookupCreator(current,identity.handles[0]);
+      }
+    } else if (current.page === creatorPage && action?.startsWith('creator-')) {
+      const id = event.target.closest('[data-ytms-channel-id]')?.dataset.ytmsChannelId;
+      if (id) openSelectedChannel(current,id);
+    } else if (current.page === creatorPage && action?.startsWith('lookup-')) {
+      const url = event.target.closest('[data-ytms-handle-url]')?.dataset.ytmsHandleUrl;
+      const candidate = channelIdentity(current.card).handles.find(handle => handle.url === url);
+      if (candidate) void lookupCreator(current,candidate);
     }
   }
 
@@ -517,10 +762,12 @@ export function installVideoMenu(suite) {
     if (!current || !current.popup.contains(event.target) || !event.isTrusted) return;
     current.keyboard = true;
     current.interacted = true;
-    if ((event.key === 'ArrowRight' && event.target.closest?.('[data-ytms-menu-action="channelTools"]')) ||
-        ((event.key === 'ArrowLeft' || event.key === 'Escape') && current.tools)) {
-      event.preventDefault(); event.stopImmediatePropagation();
-      setPage(!current.tools); return;
+    const ownedAction = event.target.closest?.('[data-ytms-menu-action]')?.dataset.ytmsMenuAction;
+    if (event.key === 'ArrowRight' && current.groups.get(ownedAction)?.enabled) {
+      event.preventDefault(); event.stopImmediatePropagation(); enterPage(ownedAction); return;
+    }
+    if ((event.key === 'ArrowLeft' || event.key === 'Escape') && current.stack.length) {
+      event.preventDefault(); event.stopImmediatePropagation(); goBack(); return;
     }
     if (event.key === 'Escape') { reset(); trigger = null; triggerReason = 'missing-trigger'; return; }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;

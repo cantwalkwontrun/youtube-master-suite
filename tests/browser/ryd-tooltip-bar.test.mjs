@@ -208,16 +208,16 @@ test("RYD setting keeps drafts private and applies persisted show/hide choices a
   await page.evaluate(installRydFixture, {});
   await openInterface(page);
   const toggle = page.locator("#ytms-showRydTooltipBar");
-  const originalRecord = await page.evaluate(key => localStorage.getItem(key), KEY);
+  const originalRecord = await page.evaluate(key => fixtureStorage.getItem(key), KEY);
   await toggle.check();
   await assertBars(page, false);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), originalRecord);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), originalRecord);
   await page.locator("#ytms-cancel-panel").click();
   await openInterface(page);
   assert.equal(await toggle.isChecked(), false);
   await toggle.check();
   await page.locator("#ytms-save-preview").click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.showRydTooltipBar, KEY), true);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showRydTooltipBar, KEY), true);
   await assertBars(page, false);
   await page.reload();
   await healthy(page);
@@ -233,7 +233,7 @@ test("RYD setting keeps drafts private and applies persisted show/hide choices a
   assert.equal(await toggle.isChecked(), true);
   await toggle.uncheck();
   await page.locator("#ytms-save-preview").click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.showRydTooltipBar, KEY), false);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showRydTooltipBar, KEY), false);
   await assertBars(page, true);
   await page.reload();
   await healthy(page);

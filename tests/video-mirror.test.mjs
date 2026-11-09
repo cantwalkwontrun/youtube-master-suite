@@ -565,11 +565,11 @@ test("hover and focus show an accessible native-style tooltip with an H key badg
   assert.match(css, new RegExp(`#${TOOLTIP_ID} kbd \\{[\\s\\S]*?border: 1px solid`));
 });
 
-test("tooltip background and key badge use the compact dark native-style presentation", () => {
+test("tooltip background and key badge retain the legacy native presentation", () => {
   const css = createHarness().context.buildVideoMirrorCss();
   const tooltipCss = css.match(new RegExp(`#${TOOLTIP_ID} \\{([^}]+)\\}`))[1];
   const badgeCss = css.match(new RegExp(`#${TOOLTIP_ID} kbd \\{([^}]+)\\}`))[1];
-  assert.match(tooltipCss, /background: rgba\(0, 0, 0, 0\.9\) !important/);
+  assert.match(tooltipCss, /background: rgba\(28, 28, 28, 0\.9\) !important/);
   assert.match(badgeCss, /box-sizing: border-box !important/);
   assert.match(badgeCss, /height: 16px !important/);
   assert.match(badgeCss, /min-width: 14px !important/);

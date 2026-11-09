@@ -1,3 +1,4 @@
+import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
@@ -41,7 +42,7 @@ async function fixture(t, mode = 'auto', viewport = { width: 1920, height: 1080 
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
     route.fulfill({ contentType:'text/html', body:BASE.replace('</head>', CSS + '</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>' + MARKUP)
-      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}<script>${SUITE}</script></body>`) }) : route.abort());
+      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}<script>${wrapFixtureUserscript(SUITE)}</script></body>`) }) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs:10000, errors });
@@ -505,7 +506,7 @@ test('Player settings expose the size selector with normal save, revert and defa
   await control.selectOption('large'); assert.equal(await page.locator('#ytms-save-preview').isEnabled(),true);
   await control.selectOption('auto'); assert.equal(await page.locator('#ytms-save-preview').isDisabled(),true);
   await control.selectOption('medium'); await page.locator('#ytms-save-preview').click();
-  assert.equal(await page.evaluate(KEY=>JSON.parse(localStorage.getItem(KEY)).values.timelinePreviewSize,KEY),'medium');
+  assert.equal(await page.evaluate(KEY=>JSON.parse(fixtureStorage.getItem(KEY)).values.timelinePreviewSize,KEY),'medium');
 });
 
 test('transformed scroll players use visible dimensions, not their unscaled layout size', async t => {
@@ -610,7 +611,7 @@ test('scroll-miniplayer timestamp stays proportional and retains a readable back
 for (const mode of ['auto','small','medium','large']) {
   test(`${mode} preview is proportionate to the real scroll miniplayer and follows its resizing`, async t=>{
     const page=await fixture(t,mode,{width:1920,height:1080},{miniplayer:true});
-    const before=await page.evaluate(KEY=>({settings:localStorage.getItem(KEY),id:fixture.playerId,
+    const before=await page.evaluate(KEY=>({settings:fixtureStorage.getItem(KEY),id:fixture.playerId,
       time:document.querySelector('video').currentTime,paused:document.querySelector('video').paused}),KEY);
     await floatPlayer(page);
     const assertFloating=g=>{
@@ -632,7 +633,7 @@ for (const mode of ['auto','small','medium','large']) {
     const smaller=await geometry(page); assertFloating(smaller);
     assert.ok(smaller.player.width<original.player.width);
     assert.ok(smaller.image.width<original.image.width);
-    assert.deepEqual(await page.evaluate(KEY=>({settings:localStorage.getItem(KEY),id:fixture.playerId,
+    assert.deepEqual(await page.evaluate(KEY=>({settings:fixtureStorage.getItem(KEY),id:fixture.playerId,
       time:document.querySelector('video').currentTime,paused:document.querySelector('video').paused}),KEY),before);
   });
 }

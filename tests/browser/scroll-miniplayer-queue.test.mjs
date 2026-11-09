@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
 
 const MINIPLAYER = readFileSync(new URL("../../sources/modules/youtube-scroll-miniplayer.user.js", import.meta.url), "utf8");
+const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
+const MANIFEST = JSON.parse(readFileSync(new URL("../../release-manifest.json", import.meta.url), "utf8"));
 const FIXTURE = readFileSync(new URL("./watch-page.html", import.meta.url), "utf8");
 const WATCH_URL = "https://www.youtube.com/watch?v=aaaaaaaaaaa&list=fixture-queue";
 let browser;
@@ -11,10 +13,11 @@ let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); }, { timeout: 10000 });
 
-async function openFloatingFixture(t, viewport) {
+async function openFloatingFixture(t, viewport, { suite = false } = {}) {
   const context = await browser.newContext({ viewport, serviceWorkers: "block" });
   await context.route("**/*", route => route.request().url() === WATCH_URL
     ? route.fulfill({ contentType: "text/html", body: FIXTURE }) : route.abort());
+  if (suite) await context.addInitScript({ content: SUITE });
   const page = await context.newPage();
   page.setDefaultTimeout(7000);
   const errors = [];
@@ -24,6 +27,7 @@ async function openFloatingFixture(t, viewport) {
     finally { await context.close(); }
   });
   await page.goto(WATCH_URL);
+  if (suite) await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000, requireReady: true });
   await page.evaluate(() => {
     const playerHost = document.getElementById("player");
     const anchor = document.createElement("div");
@@ -51,7 +55,7 @@ async function openFloatingFixture(t, viewport) {
       link.append(title); item.append(link); panel.append(item);
     }
   });
-  await page.addScriptTag({ content: MINIPLAYER });
+  if (!suite) await page.addScriptTag({ content: MINIPLAYER });
   await page.evaluate(() => window.scrollTo(0, 800));
   await page.locator("#ytsmp-compact-queue-info").waitFor({ state: "visible" });
   return page;
@@ -88,6 +92,139 @@ async function assertTopStrip(page) {
   assert.equal(geometry.titleOverflow, "ellipsis");
   return geometry;
 }
+
+async function settlePlayerFrames(page) {
+  await page.evaluate(async () => {
+    for (let frame = 0; frame < 16; frame += 1) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+  });
+}
+
+for (const suite of [false, true]) {
+  for (const hiddenStyle of ["opacity:0", "display:none", "width:0;height:0"]) {
+    test(`hidden native miniplayer ownership prevents floating takeover (${hiddenStyle}, ${suite ? "complete Suite" : "source"})`, async t => {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
+      await context.route("**/*", route => route.request().url() === WATCH_URL
+        ? route.fulfill({ contentType: "text/html", body: FIXTURE }) : route.abort());
+      const page = await context.newPage();
+      page.setDefaultTimeout(7000);
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      t.after(async () => {
+        try { assert.deepEqual(errors, []); }
+        finally { await context.close(); }
+      });
+      await page.goto(WATCH_URL);
+      await page.evaluate(hiddenStyle => {
+        const host = document.getElementById("player");
+        const anchor = document.createElement("div");
+        anchor.id = "single-column-container";
+        host.before(anchor); anchor.append(host);
+        const native = document.createElement("ytd-miniplayer");
+        native.style.cssText = `display:block;position:fixed;right:16px;bottom:16px;width:400px;height:301px;${hiddenStyle}`;
+        const wrapper = document.createElement("ytd-miniplayer-player-container");
+        wrapper.style.cssText = "display:block;width:400px;height:225px";
+        const player = document.getElementById("movie_player");
+        const video = player.querySelector("video");
+        player.style.cssText = "width:400px;height:225px";
+        video.style.cssText = "width:400px;height:225px";
+        video.currentTime = 42;
+        wrapper.append(player); native.append(wrapper);
+        document.querySelector("ytd-app").append(native);
+        fixture.nativeMiniplayer = native; fixture.nativeWrapper = wrapper;
+        fixture.adoptedPlayer = player; fixture.adoptedVideo = video;
+        fixture.bodyAdoptions = 0;
+        // Count mutation records, not just the final owner: the broken path
+        // repeatedly steals and returns the player between animation frames.
+        new MutationObserver(records => {
+          fixture.bodyAdoptions += records.filter(record => [...record.addedNodes].includes(player)).length;
+        }).observe(document.body, { childList: true });
+        window.scrollTo(0, 800);
+      }, hiddenStyle);
+      await page.addScriptTag({ content: suite ? SUITE : MINIPLAYER });
+      if (suite) await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000, requireReady: true });
+      await settlePlayerFrames(page);
+      assert.deepEqual(await page.evaluate(() => ({
+        bodyAdoptions: fixture.bodyAdoptions,
+        nativeOwner: fixture.adoptedPlayer.parentElement === fixture.nativeWrapper,
+        active: document.body.classList.contains("ytsmp-scroll-miniplayer-active"),
+        time: fixture.adoptedVideo.currentTime,
+      })), { bodyAdoptions: 0, nativeOwner: true, active: false, time: 42 });
+      await page.evaluate(() => {
+        fixture.nativeMiniplayer.style.cssText = "display:block;position:fixed;right:16px;bottom:16px;width:400px;height:301px";
+        window.dispatchEvent(new Event("resize"));
+      });
+      await settlePlayerFrames(page);
+      assert.deepEqual(await page.evaluate(() => ({
+        bodyAdoptions: fixture.bodyAdoptions,
+        nativeOwner: fixture.adoptedPlayer.parentElement === fixture.nativeWrapper,
+        samePlayer: fixture.adoptedPlayer === document.getElementById("movie_player"),
+        sameVideo: fixture.adoptedPlayer.querySelector("video") === fixture.adoptedVideo,
+        width: fixture.adoptedPlayer.getBoundingClientRect().width,
+        videoWidth: fixture.adoptedVideo.getBoundingClientRect().width,
+        time: fixture.adoptedVideo.currentTime,
+      })), { bodyAdoptions: 0, nativeOwner: true, samePlayer: true, sameVideo: true, width: 400, videoWidth: 400, time: 42 });
+    });
+  }
+}
+
+for (const suite of [false, true]) test(`native miniplayer adoption releases floating geometry before native resize reads it (${suite ? "complete Suite" : "source"})`, async t => {
+  const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });
+  const immediate = await page.evaluate(() => {
+    const player = document.getElementById("movie_player");
+    const video = player.querySelector("video");
+    video.currentTime = 42;
+    const native = document.createElement("ytd-miniplayer");
+    native.style.cssText = "display:block;position:fixed;left:24px;top:80px;width:388px;height:266.25px;background:black";
+    document.querySelector("ytd-app").append(native);
+    native.append(player);
+    player.style.cssText = "position:relative;width:388px;height:218.25px;overflow:hidden";
+    video.style.cssText = "position:absolute;left:0;top:0;margin:0;width:388px;height:218.25px";
+    fixture.adoptedPlayer = player; fixture.adoptedVideo = video; fixture.nativeMiniplayer = native;
+    const bounds = element => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    // Model a native resize callback reading the player synchronously during
+    // adoption, before Suite mutation observers or animation frames can run.
+    fixture.nativeResizeMeasurement = bounds(player);
+    return {
+      stillActive: document.body.classList.contains("ytsmp-scroll-miniplayer-active"),
+      player: fixture.nativeResizeMeasurement, video: bounds(video), time: video.currentTime,
+    };
+  });
+  assert.equal(immediate.stillActive, true, "The assertion must precede asynchronous floating-state cleanup");
+  const expected = { x: 24, y: 80, width: 388, height: 218.25 };
+  assert.deepEqual(immediate.player, expected, "Native resize must see the adopted player's dimensions immediately");
+  assert.deepEqual(immediate.video, expected, "Native video dimensions must no longer inherit floating CSS");
+  assert.equal(immediate.time, 42);
+  await page.waitForFunction(() => !document.body.classList.contains("ytsmp-scroll-miniplayer-active") &&
+    !document.getElementById("ytsmp-close-button") && !document.getElementById("ytsmp-compact-queue-info"));
+  assert.deepEqual(await page.evaluate(() => ({
+    playerPreserved: document.getElementById("movie_player") === fixture.adoptedPlayer,
+    videoPreserved: fixture.adoptedPlayer.querySelector("video") === fixture.adoptedVideo,
+    nativeOwner: fixture.adoptedPlayer.parentElement === fixture.nativeMiniplayer,
+    time: fixture.adoptedVideo.currentTime,
+  })), { playerPreserved: true, videoPreserved: true, nativeOwner: true, time: 42 });
+  await page.evaluate(() => {
+    fixture.nativeMiniplayer.style.opacity = "0";
+    fixture.bodyReadoptions = 0;
+    new MutationObserver(records => {
+      fixture.bodyReadoptions += records.filter(record => [...record.addedNodes].includes(fixture.adoptedPlayer)).length;
+    }).observe(document.body, { childList: true });
+    window.dispatchEvent(new Event("yt-page-data-updated"));
+    window.dispatchEvent(new Event("scroll"));
+  });
+  await settlePlayerFrames(page);
+  assert.deepEqual(await page.evaluate(() => ({
+    bodyReadoptions: fixture.bodyReadoptions,
+    nativeOwner: fixture.adoptedPlayer.parentElement === fixture.nativeMiniplayer,
+    active: document.body.classList.contains("ytsmp-scroll-miniplayer-active"),
+    time: fixture.adoptedVideo.currentTime,
+  })), { bodyReadoptions: 0, nativeOwner: true, active: false, time: 42 },
+  "A temporarily hidden native host must keep the player after the floating handoff");
+});
 
 test("floating queue status remains above playback controls in all four corners", async t => {
   const page = await openFloatingFixture(t, { width: 1280, height: 900 });

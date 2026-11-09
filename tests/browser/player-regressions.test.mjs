@@ -25,7 +25,7 @@ async function openFixture(t, settings) {
     ? route.fulfill({ contentType: "text/html", body: FIXTURE })
     : route.abort());
   const content = settings === undefined ? SUITE :
-    `localStorage.setItem("yt-master-suite.settings.v1", ${JSON.stringify(JSON.stringify({ version: 1, values: settings }))});\n${SUITE}`;
+    `if (location.origin === "https://www.youtube.com") localStorage.setItem("yt-master-suite.settings.v1", ${JSON.stringify(JSON.stringify({ version: 1, values: settings }))});\n${SUITE}`;
   await context.addInitScript({ content });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);

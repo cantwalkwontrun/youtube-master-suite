@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Comment Cleaner
 // @namespace    Citizen.youtube.comment-cleaner
-// @version      1.29
+// @version      1.30
 // @description  Cleans YouTube comments, prevents stale comments across SPA navigation, preserves replies, compacts spacing, and colours commenter/uploader names.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -1161,6 +1161,11 @@ yt-comment-view-model #header-author-badges {
         if (containsUploaderSource(mutation.target)) {
           invalidateCachedUploaderPaths();
           scheduleApply(document.querySelector("ytd-comments") || document);
+        } else if (CONFIG.colourCommenters && mutation.attributeName === "href" &&
+            mutation.target.matches?.(COMMENT_AUTHOR_SELECTOR)) {
+          // Recycled authors can retain their text/children while changing
+          // channel. Refresh only this link, not the entire comments section.
+          scheduleApply(mutation.target);
         }
         continue;
       }

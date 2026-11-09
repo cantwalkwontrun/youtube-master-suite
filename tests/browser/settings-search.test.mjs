@@ -198,7 +198,7 @@ test('navigating from search to another tab retains an open channel filter draft
   await page.locator('#ytms-settings-search-results [data-tab="player"][data-target="timelinePreviewSize"]').click();
   await page.locator('#ytms-tab-channels').click();
   assert.equal(await page.getByLabel('Maximum age', { exact: true }).inputValue(), '3');
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, channelKey), 1);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, channelKey), 1);
 });
 
 test('search result navigation gives keyboard focus to the backup heading', async t => {

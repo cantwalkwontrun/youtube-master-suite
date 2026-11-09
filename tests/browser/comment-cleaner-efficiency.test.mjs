@@ -224,6 +224,22 @@ test("subsequent source passes discover nested and newly attached open shadow ro
   });
 });
 
+test("recycled author links refresh their colour locally when only their destination changes", async t => {
+  const page = await open(t, 100);
+  await install(page);
+  await page.waitForFunction(() => fixture.traversals === 2);
+  for (const [handle, colour] of [["viewer", "rgb(130, 163, 230)"], ["uploader", "rgb(255, 159, 28)"]]) {
+    await page.evaluate(handle => {
+      fixture.reset();
+      document.querySelector('ytd-comments a').setAttribute('href', `/@${handle}`);
+    }, handle);
+    await page.waitForFunction(colour => document.querySelector('ytd-comments a').style.color === colour, colour);
+    assert.equal(await page.locator('ytd-comments a span').first().evaluate(node => node.style.color), colour);
+    assert.deepEqual(await page.evaluate(() => ({ traversals: fixture.traversals, visited: fixture.visited })),
+      { traversals: 1, visited: 1 }, 'only the changed author subtree is revisited');
+  }
+});
+
 test("inserted author roots are coloured and route exit prevents delayed styling", async t => {
   const page = await open(t);
   await install(page);

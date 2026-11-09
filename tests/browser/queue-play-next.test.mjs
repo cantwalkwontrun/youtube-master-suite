@@ -32,7 +32,7 @@ async function open(t, options = {}) {
   });
   await page.goto(`https://www.youtube.com/watch?v=${A}`);
   if (options.suite) await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000, requireReady: true });
-  await page.evaluate(({ ids, current, delay, unsupported, nativeNext, listId, sheet, homeMiniplayer, homePath, collapsed, stampDelay }) => {
+  await page.evaluate(({ ids, current, delay, unsupported, nativeNext, listId, sheet, homeMiniplayer, homePath, collapsed, stampDelay, iconSlots, iconLoaded }) => {
     const f = window.queueFixture = { adds: [], moves: [], current, delay, ids: ids || [], seed: ids !== null, nativeItems: null,
       displayWrites: 0, rowWrites: 0, staleSelected: new Set(), staleRows: new Set() };
     fixture.playerId = current;
@@ -96,15 +96,24 @@ async function open(t, options = {}) {
       videoId: id, videoIds: [id], listType: "PLAYLIST_EDIT_LIST_TYPE_QUEUE", openMiniplayer: true,
       onCreateListCommand: { createPlaylistServiceEndpoint: { params: "CAQ%3D", videoIds: [id] } },
     } }] } });
+    const nativeIcon = row => {
+      if (!iconSlots) return;
+      const leading = document.createElement('div'); leading.className = 'ytListItemViewModelLeading';
+      const icon = document.createElement('yt-icon'); const slot = document.createElement('span'); slot.className = 'yt-icon-shape';
+      if (iconLoaded) { const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('data-native-icon','1'); slot.append(svg); }
+      icon.append(slot); leading.append(icon); row.prepend(leading);
+    };
     const popupOwner = popup.polymerController = {
       data: null,
       set(path, value) {
         if (path !== "data") throw new Error("Unexpected native binding path");
+        f.menuWrites = (f.menuWrites || 0) + 1;
         this.data = value; popup.replaceChildren();
         for (const item of value.items) {
           const row = document.createElement("ytd-menu-service-item-renderer");
           row.polymerController = { data: item.menuServiceItemRenderer };
           row.textContent = row.polymerController.data.text.simpleText;
+          nativeIcon(row);
           row.setAttribute("role", "menuitem"); row.tabIndex = 0;
           Object.assign(row.style, { display: "block", padding: "10px 16px", cursor: "pointer" });
           row.onclick = () => {
@@ -145,6 +154,7 @@ async function open(t, options = {}) {
       let model;
       const opaque = Symbol('native-write-only-prop');
       f.setSheetData = value => {
+        f.menuWrites = (f.menuWrites || 0) + 1;
         model = value; view.replaceChildren();
         const list = document.createElement('yt-list-view-model'); view.append(list);
         for (const item of value.content.listViewModel.listItems) {
@@ -162,6 +172,7 @@ async function open(t, options = {}) {
             dropdown.close();
           };
           row.append(button); list.append(row);
+          nativeIcon(row);
         }
       };
       Object.defineProperty(view, 'data', { get: () => opaque, set: f.setSheetData });
@@ -206,7 +217,8 @@ async function open(t, options = {}) {
   }, { ids: options.ids === undefined ? [A, B, C] : options.ids, current: options.current || A,
     delay: options.delay || 0, unsupported: Boolean(options.unsupported), nativeNext: Boolean(options.nativeNext),
     listId: options.listId || "TLPQfixture", sheet: Boolean(options.sheet), homeMiniplayer: Boolean(options.homeMiniplayer),
-    homePath: options.homePath || '/', collapsed: Boolean(options.collapsed), stampDelay: options.stampDelay || 0 });
+    homePath: options.homePath || '/', collapsed: Boolean(options.collapsed), stampDelay: options.stampDelay || 0,
+    iconSlots: Boolean(options.iconSlots), iconLoaded: Boolean(options.iconLoaded) });
   if (!options.suite) await page.addScriptTag({ content: `(() => { ${SELECTION_INSTALLER}\n ${INSTALLER}\n installQueuePlayingMarkerReconciliation(); window.disposeQueueNext = installQueuePlayNext(); })();` });
   return page;
 }
@@ -1053,6 +1065,69 @@ test("batch and mismatched queue commands retain only their original action", as
   }
 });
 
+for (const sheet of [false, true]) for (const keyboard of [false, true]) test(`${sheet ? 'current sheet' : 'legacy menu'} cached Play next can be selected again after a trusted eventless ${keyboard ? 'keyboard' : 'pointer'} reopen`, async t => {
+  const page = await open(t, { sheet });
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.ids[1] === 'ccccccccccc');
+  await page.evaluate(() => {
+    const f = queueFixture;
+    f.ids = ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'ccccccccccc']; f.render();
+    const trigger = document.createElement('button'); trigger.id = 'cached-next-trigger';
+    trigger.textContent = 'Open cached video menu'; trigger.style.cssText = 'position:fixed;top:8px;left:8px;z-index:3000';
+    trigger.onclick = () => { f.popup.style.display = 'block'; };
+    document.body.append(trigger);
+  });
+  const trigger = page.locator('#cached-next-trigger');
+  if (keyboard) { await trigger.focus(); await trigger.press('Enter'); }
+  else await trigger.click();
+  const action = page.getByRole('menuitem', { name: 'Play next in queue', exact: true });
+  if (keyboard) { await action.focus(); await action.press('Space'); }
+  else await action.click();
+  await page.waitForFunction(() => queueFixture.moves.length === 2);
+  assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
+for (const sheet of [false, true]) for (const lifecycle of ['navigation', 'pagehide']) test(`${sheet ? 'current sheet' : 'legacy menu'} cached Play next survives an eventless reopen after ${lifecycle}`, async t => {
+  const page = await open(t, { sheet });
+  await page.evaluate(({ id, lifecycle }) => {
+    const f = queueFixture;
+    f.open(id); f.popup.style.display = 'none';
+    if (lifecycle === 'navigation') {
+      window.dispatchEvent(new Event('yt-navigate-start'));
+      window.dispatchEvent(new Event('yt-navigate-finish'));
+    } else {
+      window.dispatchEvent(new Event('pagehide'));
+      window.dispatchEvent(new Event('pageshow'));
+    }
+    const trigger = document.createElement('button'); trigger.id = 'cached-next-lifecycle-trigger';
+    trigger.textContent = 'Reopen cached menu'; trigger.style.cssText = 'position:fixed;top:8px;left:8px;z-index:3000';
+    trigger.onclick = () => { f.popup.style.display = 'block'; };
+    document.body.append(trigger);
+  }, { id: C, lifecycle });
+  await page.locator('#cached-next-lifecycle-trigger').click();
+  await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).click();
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
+test('one cached opening still consumes a trusted click and its native tap wrapper only once', async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    // Without an active player there is no pending move to suppress a duplicate.
+    document.getElementById('movie_player').remove();
+    window.addEventListener('click', event => {
+      if (event.target.closest('ytd-menu-service-item-renderer')?.textContent !== 'Play next in queue') return;
+      event.target.dispatchEvent(new CustomEvent('tap', { bubbles: true, detail: { sourceEvent: event } }));
+    }, true);
+  });
+  await choose(page, D);
+  await page.waitForTimeout(80);
+  assert.equal((await snapshot(page)).adds.length, 1);
+  assert.deepEqual((await snapshot(page)).moves, []);
+});
+
 test("a native move exception is not retried or followed by another add", async t => {
   const page = await open(t);
   await page.evaluate(() => { queueFixture.owner.handleDrop = () => { queueFixture.moves.push('attempt'); throw new Error('changed native implementation'); }; });
@@ -1063,6 +1138,135 @@ test("a native move exception is not retried or followed by another add", async 
   assert.equal((await snapshot(page)).adds.length, 0);
   assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /Could not confirm/);
 });
+
+for (const suite of [false, true]) test(`${suite ? 'generated Suite' : 'source'} rejected native move restores only its own row order and permits later selections`, async t => {
+  const page = await open(t, { suite });
+  const before = await snapshot(page);
+  await page.evaluate(() => {
+    const f = queueFixture;
+    f.nativeDrop = f.owner.handleDrop;
+    f.originalRows = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    f.owner.handleDrop = () => { f.moves.push('rejected'); throw new Error('Synthetic native rejection'); };
+  });
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('ytd-playlist-panel-renderer #items').children].map(row => row.data.videoId)), [A, B, C]);
+  assert.equal(await page.evaluate(() => queueFixture.originalRows.every((row, index) => document.querySelector('ytd-playlist-panel-renderer #items').childNodes[index] === row)), true);
+  assert.deepEqual((await snapshot(page)).ids, before.ids);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  await page.evaluate(() => { queueFixture.owner.handleDrop = queueFixture.nativeDrop; });
+  for (const [target, expected] of [[C, [A, C, B]], [B, [A, B, C]], [C, [A, C, B]]]) {
+    await choose(page, target);
+    await page.waitForFunction(target => queueFixture.ids[1] === target, target);
+    assert.deepEqual((await snapshot(page)).ids, expected);
+    assert.equal((await snapshot(page)).adds.length, 0);
+  }
+  const after = await snapshot(page);
+  assert.deepEqual(after.moves, ['rejected', C, B, C]);
+  assert.deepEqual({ ...after, ids: before.ids, moves: before.moves }, before);
+});
+
+test('reentrant navigation during a move snapshot prevents its DOM and native commits', async t => {
+  const page = await open(t);
+  const before = await snapshot(page);
+  await page.evaluate(() => {
+    const f = queueFixture;
+    f.originalRows = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    f.playlistReads = 0;
+    document.getElementById('movie_player').getPlaylist = () => {
+      if (++f.playlistReads === 2) window.dispatchEvent(new Event('yt-navigate-start'));
+      return [...f.ids];
+    };
+  });
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.playlistReads >= 2);
+  assert.equal(await page.evaluate(() => {
+    const f = queueFixture, nodes = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    return nodes.length === f.originalRows.length && nodes.every((node, index) => node === f.originalRows[index]);
+  }), true);
+  assert.deepEqual(await snapshot(page), before);
+  assert.equal(await page.evaluate(() => queueFixture.playlistReads), 2);
+});
+
+test('reentrant navigation during recovery leaves the post-failure DOM untouched', async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const f = queueFixture;
+    f.playlistReads = 0;
+    document.getElementById('movie_player').getPlaylist = () => {
+      if (++f.playlistReads === 3) window.dispatchEvent(new Event('yt-navigate-start'));
+      return [...f.ids];
+    };
+    f.owner.handleDrop = () => {
+      f.moves.push('rejected');
+      f.nodesAfterNativeFailure = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+      throw new Error('Synthetic native rejection before reentrant navigation');
+    };
+  });
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.playlistReads >= 3);
+  assert.equal(await page.evaluate(() => {
+    const f = queueFixture, nodes = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    return nodes.length === f.nodesAfterNativeFailure.length && nodes.every((node, index) => node === f.nodesAfterNativeFailure[index]);
+  }), true);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('ytd-playlist-panel-renderer #items').children].map(row => row.data.videoId)), [A, C, B]);
+  assert.deepEqual((await snapshot(page)).ids, [A, B, C]);
+  assert.deepEqual((await snapshot(page)).moves, ['rejected']);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  assert.equal(await page.evaluate(() => queueFixture.playlistReads), 3);
+});
+
+for (const change of ['model-order', 'playback', 'playlist-id', 'player-order', 'native-drag', 'row-replacement', 'row-controller-replacement', 'items-replacement', 'owner-replacement', 'external-order', 'extra-node']) {
+  test(`native move recovery preserves an intervening ${change} change`, async t => {
+    const page = await open(t);
+    await page.evaluate(change => {
+      const f = queueFixture, panel = document.querySelector('ytd-playlist-panel-renderer');
+      const player = document.getElementById('movie_player');
+      f.playerPlaylist = [...f.ids];
+      player.getPlaylist = () => [...f.playerPlaylist];
+      f.owner.handleDrop = () => {
+        f.moves.push('rejected');
+        const items = panel.querySelector('#items');
+        if (change === 'model-order') {
+          const contents = f.owner.data.contents;
+          f.owner.data = { ...f.owner.data, contents: [contents[0], contents[2], contents[1]] };
+        }
+        if (change === 'playback') fixture.playerId = 'bbbbbbbbbbb';
+        if (change === 'playlist-id') player.getPlaylistId = () => 'TLPQchanged';
+        if (change === 'player-order') f.playerPlaylist = ['aaaaaaaaaaa', 'ccccccccccc', 'bbbbbbbbbbb'];
+        if (change === 'native-drag') f.owner.ytReorderableController = { native_dragListGroup: { isDragging: () => true } };
+        if (change === 'row-replacement') {
+          const row = items.lastElementChild, replacement = row.cloneNode(true);
+          replacement.data = row.data; row.replaceWith(replacement);
+        }
+        if (change === 'row-controller-replacement') {
+          const row = items.lastElementChild;
+          row.polymerController = { data: row.data };
+        }
+        if (change === 'items-replacement') {
+          const replacement = document.createElement('div'); replacement.id = 'items';
+          replacement.append(...items.childNodes); items.replaceWith(replacement);
+        }
+        if (change === 'owner-replacement') panel.polymerController = { ...f.owner };
+        if (change === 'external-order') items.append(items.firstElementChild);
+        if (change === 'extra-node') items.append(document.createTextNode('Synthetic intervening node'));
+        f.nodesAfterNativeFailure = [...panel.querySelector('#items').childNodes];
+        f.modelAfterNativeFailure = panel.polymerController.data;
+        throw new Error('Synthetic native rejection after an intervening change');
+      };
+    }, change);
+    await choose(page, C);
+    await page.waitForFunction(() => queueFixture.moves.length === 1);
+    assert.equal(await page.evaluate(() => {
+      const f = queueFixture, panel = document.querySelector('ytd-playlist-panel-renderer');
+      const nodes = [...panel.querySelector('#items').childNodes];
+      return nodes.length === f.nodesAfterNativeFailure.length && nodes.every((node, index) => node === f.nodesAfterNativeFailure[index]) &&
+        panel.polymerController.data === f.modelAfterNativeFailure;
+    }), true);
+    assert.deepEqual((await snapshot(page)).moves, ['rejected']);
+    assert.equal((await snapshot(page)).adds.length, 0);
+  });
+}
 
 test("success waits for native queue data rather than the optimistic DOM move", async t => {
   const page = await open(t);
@@ -1134,21 +1338,26 @@ test('a cancelled operation cannot run its queued microtask or frame against a n
     window.cancelAnimationFrame = id => queueFixture.queuedFrames.delete(id);
   });
   await choose(page, C);
-  assert.equal(await page.evaluate(() => queueFixture.queuedMoves.length), 1);
-  await page.evaluate(() => { queueFixture.staleMoveFrame = queueFixture.queuedFrames.get(queueFixture.frameId); });
+  await page.evaluate(() => {
+    queueFixture.staleMoves = queueFixture.queuedMoves.splice(0);
+    queueFixture.staleFrames = [...queueFixture.queuedFrames.values()];
+  });
+  assert.ok(await page.evaluate(() => queueFixture.staleMoves.length > 0));
   await page.evaluate(() => window.dispatchEvent(new Event('yt-navigate-start')));
   await choose(page, C);
-  assert.equal(await page.evaluate(() => queueFixture.queuedMoves.length), 2);
+  assert.ok(await page.evaluate(() => queueFixture.queuedMoves.length > 0));
   await page.evaluate(() => {
-    queueFixture.queuedMoves[0]();
-    queueFixture.staleMoveFrame(0);
+    // Exercise every stale callback, including passive menu/icon work. The
+    // operation guard must not depend on unrelated scheduling counts or order.
+    queueFixture.staleMoves.forEach(callback => callback());
+    queueFixture.staleFrames.forEach(callback => callback(0));
   });
   assert.deepEqual((await snapshot(page)).moves, []);
   await page.evaluate(() => {
     window.queueMicrotask = queueFixture.nativeQueueMicrotask;
     window.requestAnimationFrame = queueFixture.nativeRequestAnimationFrame;
     window.cancelAnimationFrame = queueFixture.nativeCancelAnimationFrame;
-    queueFixture.queuedMoves[1]();
+    queueFixture.queuedMoves.splice(0).forEach(callback => callback());
     queueFixture.queuedFrames.clear();
   });
   await page.waitForFunction(() => queueFixture.moves.length === 1);
@@ -1274,18 +1483,89 @@ for (const sheet of [false, true]) for (const result of ['false', 'throw']) test
   assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), result === 'throw' ? /could not be completed/ : /could not accept/);
 });
 
-test("a silent native no-op cannot report success or trigger another commit", { timeout: 16000 }, async t => {
+test("a silent native no-op recovers its row order without restamping and releases the next selection", { timeout: 20000 }, async t => {
   const page = await open(t);
   await page.evaluate(() => {
+    queueFixture.nativeDrop = queueFixture.owner.handleDrop;
+    queueFixture.originalRows = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    queueFixture.modelBeforeFailure = queueFixture.owner.data;
     queueFixture.owner.handleDrop = ({ currDragItem }) => queueFixture.moves.push(currDragItem.data.videoId);
   });
   await choose(page, C);
   await page.waitForFunction(() => queueFixture.moves.length === 1);
-  await page.evaluate(() => queueFixture.render());
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('ytd-playlist-panel-renderer #items').children].map(row => row.data.videoId)), [A, C, B]);
   await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('Could not confirm'), null, { timeout: 10000 });
   assert.deepEqual((await snapshot(page)).moves, [C]);
   assert.deepEqual((await snapshot(page)).ids, [A, B, C]);
   assert.equal((await snapshot(page)).adds.length, 0);
+  assert.equal(await page.evaluate(() => {
+    const f = queueFixture, items = document.querySelector('ytd-playlist-panel-renderer #items');
+    return f.owner.data === f.modelBeforeFailure && f.originalRows.every((row, index) => items.childNodes[index] === row);
+  }), true);
+  await page.evaluate(() => { queueFixture.owner.handleDrop = queueFixture.nativeDrop; });
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.ids[1] === 'ccccccccccc');
+  assert.deepEqual((await snapshot(page)).moves, [C, C]);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
+test('an unconfirmed newly appended item is retained once and can be moved on the next selection', { timeout: 20000 }, async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const f = queueFixture, render = f.render;
+    f.nativeDrop = f.owner.handleDrop;
+    f.render = () => {
+      render();
+      f.modelAfterAppend = f.owner.data;
+      f.rowsAfterAppend = [...document.querySelector('ytd-playlist-panel-renderer #items').childNodes];
+    };
+    f.owner.handleDrop = ({ currDragItem }) => f.moves.push(currDragItem.data.videoId);
+  });
+  await choose(page, D);
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  assert.deepEqual((await snapshot(page)).ids, [A, B, C, D]);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('Could not confirm'), null, { timeout: 10000 });
+  assert.equal(await page.evaluate(() => {
+    const f = queueFixture, items = document.querySelector('ytd-playlist-panel-renderer #items');
+    return f.owner.data === f.modelAfterAppend && f.rowsAfterAppend.length === items.childNodes.length &&
+      f.rowsAfterAppend.every((row, index) => items.childNodes[index] === row);
+  }), true);
+  assert.deepEqual((await snapshot(page)).ids, [A, B, C, D]);
+  assert.equal((await snapshot(page)).adds.length, 1);
+  await page.evaluate(() => { queueFixture.owner.handleDrop = queueFixture.nativeDrop; });
+  await choose(page, D);
+  await page.waitForFunction(() => queueFixture.ids[1] === 'ddddddddddd');
+  assert.deepEqual((await snapshot(page)).ids, [A, D, B, C]);
+  assert.deepEqual((await snapshot(page)).moves, [D, D]);
+  assert.equal((await snapshot(page)).adds.length, 1, 'retrying the retained entry must not append a duplicate');
+});
+
+test('the confirmation deadline recognises a native model-only commit with no later signal', { timeout: 20000 }, async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const f = queueFixture;
+    f.owner.handleDrop = ({ currDragItem }) => {
+      f.moves.push(currDragItem.data.videoId);
+      const next = [...currDragItem.parentNode.children].map(row => row.data.videoId);
+      // Settle after the bounded animation-frame backstop, without DOM work or
+      // native update events. Only the final deadline check can confirm this.
+      setTimeout(() => {
+        const data = f.owner.data;
+        f.ids = next;
+        f.owner.data = f.modelAfterSilentCommit = { ...data, currentIndex: next.indexOf(f.current),
+          contents: next.map(id => data.contents.find(item => item.playlistPanelVideoRenderer.videoId === id)) };
+      }, 150);
+    };
+  });
+  await choose(page, C);
+  await page.waitForFunction(() => Boolean(queueFixture.modelAfterSilentCommit));
+  assert.equal(await page.locator('[data-yt-master-queue-status]').count(), 0);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent === 'Playing next in queue', null, { timeout: 10000 });
+  assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+  assert.deepEqual((await snapshot(page)).moves, [C]);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  assert.equal(await page.evaluate(() => queueFixture.owner.data === queueFixture.modelAfterSilentCommit), true);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('ytd-playlist-panel-renderer #items').children].map(row => row.data.videoId)), [A, C, B]);
 });
 
 test("rapid repeated requests are explained rather than appended twice", async t => {
@@ -1491,4 +1771,251 @@ test('an unavailable player API fails closed without a runtime error', async t =
 
 test('playing-marker reconciliation adds no polling, observer or playback command', () => {
   assert.doesNotMatch(SELECTION_INSTALLER, /setInterval|setTimeout|MutationObserver|fetch\s*\(|XMLHttpRequest|\.loadVideo|\.loadPlaylist|\.selected\s*=(?!=)/);
+});
+
+for (const sheet of [false,true]) test(`cached owned Play next reopens without restamping native rows (${sheet ? 'current sheet' : 'legacy'})`, async t => {
+  const page = await open(t,{sheet});
+  await page.evaluate(id=>{queueFixture.open(id);queueFixture.firstRows=[...queueFixture.popup.querySelectorAll('ytd-menu-service-item-renderer,yt-list-item-view-model')];queueFixture.firstWrites=queueFixture.menuWrites;},D);
+  await page.evaluate(()=>{for(let i=0;i<3;i++)queueFixture.popup.dispatchEvent(new CustomEvent('yt-popup-opened',{bubbles:true}));});
+  assert.deepEqual(await page.evaluate(()=>({sameRows:queueFixture.firstRows.every(row=>row.isConnected),writes:queueFixture.menuWrites-queueFixture.firstWrites})),{sameRows:true,writes:0});
+  await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).click();
+  await page.waitForFunction(()=>queueFixture.moves.length===1);
+  assert.deepEqual((await snapshot(page)).ids,[A,D,B,C]);assert.equal((await snapshot(page)).adds.length,1);
+});
+
+for (const sheet of [false,true]) test(`owned Play next supplies an immediate cold-icon glyph and yields to native SVG (${sheet ? 'current sheet' : 'legacy'})`,async t=>{
+  const page=await open(t,{sheet,iconSlots:true});
+  const immediate=await page.evaluate(id=>{queueFixture.open(id);return queueFixture.popup.querySelectorAll('[data-ytms-play-next-fallback]').length;},D);
+  assert.equal(immediate,1,'the owned icon must exist before any frame or remote asset finishes');
+  const dimensions=await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).boundingBox();
+  await page.evaluate(()=>{
+    const fallback=queueFixture.popup.querySelector('[data-ytms-play-next-fallback]');const slot=fallback.parentElement;
+    const native=document.createElementNS('http://www.w3.org/2000/svg','svg');native.setAttribute('data-native-icon','1');native.style.cssText='width:24px;height:24px;display:block';
+    slot.replaceChildren(native);queueFixture.loadedNative=native;
+    queueFixture.popup.dispatchEvent(new CustomEvent('yt-popup-opened',{bubbles:true}));
+  });
+  assert.equal(await page.locator('[data-ytms-play-next-fallback]').count(),0);
+  assert.equal(await page.evaluate(()=>queueFixture.loadedNative.isConnected),true);
+  const after=await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).boundingBox();
+  assert.equal(after.width,dimensions.width);assert.equal(after.height,dimensions.height);
+});
+
+test('a native-owned icon and native Play next action are never replaced by the fallback',async t=>{
+  const page=await open(t,{sheet:true,iconSlots:true,iconLoaded:true});await page.evaluate(id=>queueFixture.open(id),D);
+  assert.equal(await page.locator('[data-ytms-play-next-fallback]').count(),0);
+  assert.equal(await page.locator('[data-native-icon]').count(),2);
+  const nativePage=await open(t,{sheet:true,nativeNext:true,iconSlots:true});await nativePage.evaluate(id=>queueFixture.open(id),D);
+  assert.equal(await nativePage.locator('[data-ytms-play-next-fallback]').count(),0);
+  assert.equal(await nativePage.getByRole('menuitem',{name:'Play next in queue',exact:true}).count(),0);
+});
+
+for (const sheet of [false,true]) test(`in-place cached queue-command changes invalidate the restamp fast path (${sheet ? 'current sheet' : 'legacy'})`,async t=>{
+  const page=await open(t,{sheet});await page.evaluate(id=>queueFixture.open(id),D);
+  await page.evaluate(id=>{
+    const popup=queueFixture.popup,data=popup.componentProps?.data()||popup.polymerController.data;
+    const items=data.content?.listViewModel.listItems||data.items;
+    const model=items[1].listItemViewModel||items[1].menuServiceItemRenderer;
+    const command=(model.serviceEndpoint||model.rendererContext.commandContext.onTap.innertubeCommand).signalServiceEndpoint.actions[0].addToPlaylistCommand;
+    queueFixture.beforeChangedWrites=queueFixture.menuWrites;command.videoId=id;command.videoIds=[id];
+    popup.dispatchEvent(new CustomEvent('yt-popup-opened',{bubbles:true}));
+  },C);
+  assert.equal(await page.evaluate(()=>queueFixture.menuWrites-queueFixture.beforeChangedWrites),1);
+  await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).click();await page.waitForFunction(()=>queueFixture.moves.length===1);
+  assert.deepEqual((await snapshot(page)).ids,[A,C,B]);assert.equal((await snapshot(page)).adds.length,0);
+});
+
+for(const reason of ['native-arrival','recycled','detached','closed','reset'])test(`pending Play next icon ownership releases on ${reason}`,async t=>{
+  const page=await open(t,{sheet:true,iconSlots:true});
+  await page.evaluate(()=>{
+    const Native=MutationObserver;window.activePendingWatchers=0;
+    window.MutationObserver=class extends Native{observe(...args){if(!this.active){this.active=true;activePendingWatchers++;}return super.observe(...args);}disconnect(){if(this.active){this.active=false;activePendingWatchers--;}return super.disconnect();}};
+  });
+  await page.evaluate(id=>queueFixture.open(id),D);
+  assert.equal(await page.locator('[data-ytms-play-next-fallback]').count(),1);
+  assert.equal(await page.evaluate(()=>activePendingWatchers),1);
+  await page.evaluate(reason=>{
+    const popup=queueFixture.popup;window.savedPendingIcon=popup.querySelector('[data-ytms-play-next-fallback]');
+    const row=savedPendingIcon.closest('yt-list-item-view-model');
+    if(reason==='native-arrival'){const native=document.createElementNS('http://www.w3.org/2000/svg','svg');native.setAttribute('data-native-icon','1');savedPendingIcon.parentElement.append(native);window.arrivedNativeIcon=native;}
+    else if(reason==='recycled'){popup.componentProps.data().content.listViewModel.listItems[0].listItemViewModel.title.content='Other native action';row.setAttribute('data-target-id','other-native-action');}
+    else if(reason==='detached')row.remove();
+    else if(reason==='closed')popup.dispatchEvent(new CustomEvent('yt-popup-closed',{bubbles:true}));
+    else disposeQueueNext();
+  },reason);
+  await page.waitForFunction(()=>activePendingWatchers===0);
+  assert.equal(await page.evaluate(()=>savedPendingIcon.parentElement),null);
+  if(reason==='native-arrival')assert.equal(await page.evaluate(()=>arrivedNativeIcon.isConnected),true);
+});
+
+for(const sheet of [false,true])for(const reset of [false,true])test(`Play next rejects a native command mutated after the menu opened${reset?' and navigation reset':''} (${sheet?'current sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet});await page.evaluate(id=>queueFixture.open(id),D);
+  if(reset)await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-navigate-start'));
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+  });
+  await page.evaluate(id=>{
+    const popup=queueFixture.popup,data=popup.componentProps?.data()||popup.polymerController.data;
+    const items=data.content?.listViewModel.listItems||data.items;
+    const model=items[1].listItemViewModel||items[1].menuServiceItemRenderer;
+    const command=(model.serviceEndpoint||model.rendererContext.commandContext.onTap.innertubeCommand).signalServiceEndpoint.actions[0].addToPlaylistCommand;
+    command.videoId=id;command.videoIds=[id];
+  },C);
+  await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).click();
+  assert.match(await page.locator('[data-yt-master-queue-status]').textContent(),/menu changed/);
+  assert.equal((await snapshot(page)).adds.length,0);assert.deepEqual((await snapshot(page)).moves,[]);
+  assert.deepEqual((await snapshot(page)).ids,[A,B,C]);
+});
+
+for(const sheet of [false,true])test(`Play next revalidates its command after delayed native queue preparation (${sheet?'current sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet,homeMiniplayer:true,collapsed:true,stampDelay:200});
+  await choose(page,D);
+  await page.evaluate(id=>{
+    const model=queueFixture.nativeItems[0].listItemViewModel||queueFixture.nativeItems[0].menuServiceItemRenderer;
+    const command=(model.serviceEndpoint||model.rendererContext.commandContext.onTap.innertubeCommand).signalServiceEndpoint.actions[0].addToPlaylistCommand;
+    command.videoId=id;command.videoIds=[id];
+  },C);
+  await page.waitForFunction(()=>document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('menu changed'));
+  assert.equal((await snapshot(page)).adds.length,0);assert.deepEqual((await snapshot(page)).moves,[]);
+  assert.deepEqual((await snapshot(page)).ids,[A,B,C]);
+});
+
+async function moveWithLaggingNativePlaylist(t,{sheet=true}={}) {
+  const page=await open(t,{sheet,homeMiniplayer:true});
+  await page.evaluate(()=>{
+    const f=queueFixture,player=document.getElementById('movie_player');
+    f.nativePlaylist=null;
+    player.getPlaylist=()=>f.nativePlaylist ? [...f.nativePlaylist] : [...f.ids];
+    f.owner.handleDrop=({currDragItem})=>{
+      f.nativePlaylist=[...f.ids];
+      f.moves.push(currDragItem.data.videoId);
+      f.ids=[...currDragItem.parentNode.children].map(row=>row.data.videoId);
+      f.render();
+    };
+  });
+  await choose(page,C);
+  await page.waitForFunction(()=>document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  return page;
+}
+
+for (const sheet of [false,true]) test(`Home native player order can lag its own committed panel without blocking subsequent selections (${sheet ? 'sheet' : 'legacy'})`,async t=>{
+  const page=await moveWithLaggingNativePlaylist(t,{sheet});
+  const before=await snapshot(page);
+  assert.deepEqual(before.ids,[A,C,B]);
+  assert.deepEqual(await page.evaluate(()=>document.getElementById('movie_player').getPlaylist()),[A,B,C]);
+  await choose(page,B);
+  await page.waitForFunction(()=>queueFixture.moves.length===2 && document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,B,C]);assert.deepEqual(after.moves,[C,B]);assert.equal(after.adds.length,0);
+  assert.equal(after.playing,before.playing);assert.equal(after.url,before.url);
+  assert.equal(after.title,before.title);assert.equal(after.comments,before.comments);
+});
+
+for (const [name,faults] of [
+  ['changed player playlist',['player-order']],
+  ['changed playback or playlist identity',['playback','playlist-id']],
+  ['changed native queue-entry identity',['model-entry']],
+  ['replaced controller or mismatched row binding',['owner','row-binding']],
+]) test(`confirmed stale-player evidence rejects ${name}`,async t=>{
+  for (const fault of faults) {
+    const page=await moveWithLaggingNativePlaylist(t);
+    await page.evaluate(fault=>{
+      const f=queueFixture,player=document.getElementById('movie_player');
+      const panel=f.mini.querySelector('ytd-playlist-panel-renderer');
+      if (fault==='player-order') f.nativePlaylist=['ccccccccccc','aaaaaaaaaaa','bbbbbbbbbbb'];
+      if (fault==='playback') { fixture.playerId='bbbbbbbbbbb'; f.current='bbbbbbbbbbb'; f.render(); }
+      if (fault==='playlist-id') player.getPlaylistId=()=> 'TLPQchanged';
+      if (fault==='model-entry') {
+        const data=f.owner.data;
+        const contents=data.contents.map((item,index)=>index===1 ? {playlistPanelVideoRenderer:{...item.playlistPanelVideoRenderer,playlistSetVideoId:'foreign-entry'}} : item);
+        f.bind({...data,contents});
+      }
+      if (fault==='owner') panel.polymerController={...f.owner};
+      if (fault==='row-binding') {
+        const row=panel.querySelector('#items').lastElementChild;
+        row.data={...row.data,playlistSetVideoId:'mismatched-row'};
+      }
+    },fault);
+    await choose(page,D);
+    assert.match(await page.locator('[data-yt-master-queue-status]').textContent(),/still updating|Could not identify/,fault);
+    const after=await snapshot(page);
+    assert.equal(after.adds.length,0,fault);assert.deepEqual(after.moves,[C],fault);
+  }
+});
+
+test('Home queue continues adding new videos while the native player API retains its original playlist',async t=>{
+  const page=await open(t,{sheet:true,homeMiniplayer:true});
+  await page.evaluate(()=>{
+    const f=queueFixture,player=document.getElementById('movie_player');
+    f.nativePlaylist=[...f.ids];
+    player.getPlaylist=()=>[...f.nativePlaylist];
+    f.owner.handleDrop=({currDragItem})=>{
+      f.moves.push(currDragItem.data.videoId);
+      f.ids=[...currDragItem.parentNode.children].map(row=>row.data.videoId);
+      f.render();
+    };
+  });
+  const before=await snapshot(page);
+  for(const id of [D,'eeeeeeeeeee']) {
+    await choose(page,id);
+    await page.waitForFunction(({id})=>queueFixture.ids[1]===id && document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue',{id});
+  }
+  assert.deepEqual((await snapshot(page)).ids,[A,'eeeeeeeeeee',D,B,C]);
+  assert.deepEqual(await page.evaluate(()=>document.getElementById('movie_player').getPlaylist()),[A,B,C]);
+  await choose(page,B);
+  await page.waitForFunction(()=>queueFixture.moves.length===3 && document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,B,'eeeeeeeeeee',D,C]);
+  assert.deepEqual(after.moves,[D,'eeeeeeeeeee',B]);
+  assert.deepEqual(after.adds.map(command=>command.videoId),[D,'eeeeeeeeeee']);
+  assert.equal(after.playing,before.playing);assert.equal(after.url,before.url);
+  assert.equal(after.title,before.title);assert.equal(after.comments,before.comments);
+});
+
+test('Home queue keeps confirmed append-only evidence before the first native reorder',async t=>{
+  const page=await open(t,{sheet:true,homeMiniplayer:true,ids:[A]});
+  await page.evaluate(()=>{
+    const f=queueFixture,player=document.getElementById('movie_player');
+    f.nativePlaylist=[...f.ids];player.getPlaylist=()=>[...f.nativePlaylist];
+  });
+  await choose(page,D);
+  await page.waitForFunction(()=>queueFixture.ids[1]==='ddddddddddd' && document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  assert.deepEqual((await snapshot(page)).moves,[]);
+  await choose(page,'eeeeeeeeeee');
+  await page.waitForFunction(()=>queueFixture.moves.length===1 && document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,'eeeeeeeeeee',D]);
+  assert.deepEqual(after.moves,['eeeeeeeeeee']);
+  assert.deepEqual(after.adds.map(command=>command.videoId),[D,'eeeeeeeeeee']);
+  assert.deepEqual(await page.evaluate(()=>document.getElementById('movie_player').getPlaylist()),[A]);
+});
+
+test('a rejected stale-player append recovers only its DOM move without retrying the native command',{timeout:25000},async t=>{
+  for(const fault of ['throw','no-op']) {
+    const page=await open(t,{sheet:true,homeMiniplayer:true});
+    await page.evaluate(fault=>{
+      const f=queueFixture,player=document.getElementById('movie_player');
+      f.nativePlaylist=[...f.ids];player.getPlaylist=()=>[...f.nativePlaylist];
+      f.dropCalls=0;
+      f.owner.handleDrop=({currDragItem})=>{
+        f.dropCalls++;
+        f.rejectedModel=f.owner.data;
+        const rows=[...currDragItem.parentNode.children];
+        f.nativeRowOrder=f.owner.data.contents.map(item=>rows.find(row=>row.data===item.playlistPanelVideoRenderer));
+        if(fault==='throw') throw new Error('Synthetic rejected stale-player move');
+      };
+    },fault);
+    const before=await snapshot(page);
+    await choose(page,D);
+    await page.waitForFunction(()=>document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('Could not confirm'),null,{timeout:10000});
+    const after=await snapshot(page);
+    assert.deepEqual(after.ids,[A,B,C,D],fault);
+    assert.deepEqual(after.adds.map(command=>command.videoId),[D],fault);
+    assert.equal(await page.evaluate(()=>queueFixture.dropCalls),1,fault);
+    assert.equal(await page.evaluate(()=>{
+      const f=queueFixture,items=f.mini.querySelector('ytd-playlist-panel-renderer #items');
+      return f.owner.data===f.rejectedModel && [...items.children].every((row,index)=>row===f.nativeRowOrder[index]);
+    }),true,fault);
+    assert.equal(after.playing,before.playing,fault);assert.equal(after.url,before.url,fault);
+    assert.equal(after.title,before.title,fault);assert.equal(after.comments,before.comments,fault);
+  }
 });

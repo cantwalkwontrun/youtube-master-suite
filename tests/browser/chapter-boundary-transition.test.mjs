@@ -1,3 +1,4 @@
+import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Synthetic overlapping SponsorBlock chapter-boundary checks.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -45,7 +46,7 @@ for (const transition of [false, true]) for (const scenario of ['twoSponsorLabel
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
     ? route.fulfill({contentType:'text/html', body:base.replace('</head>', styles+'</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup)
-      .replace('</body>', `<script>${suite}</script></body>`)}) : route.abort());
+      .replace('</body>', `<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   await page.locator('.ytp-progress-bar').hover();

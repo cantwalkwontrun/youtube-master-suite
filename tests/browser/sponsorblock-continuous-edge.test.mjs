@@ -1,3 +1,4 @@
+import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Isolated synthetic SponsorBlock boundary transition regression.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -39,7 +40,7 @@ async function fixture(t){
   await page.route('**/*',route=>route.request().url().startsWith('https://www.youtube.com/watch?')
     ?route.fulfill({contentType:'text/html',body:base.replace('</head>',styles+'</head>')
       .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)
-      .replace('</body>',`<script>${suite}</script></body>`)}) : route.abort());
+      .replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
   t.after(async()=>{try{assert.deepEqual(errors,[])}finally{await context.close()}});
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});

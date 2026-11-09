@@ -230,7 +230,7 @@ test('title hashtag option can be saved, enabled and disabled after reload witho
     assert.ok((await page.locator('#ytms-disableTitleHashtagLinks-description').textContent()).includes('DeArrow'));
     await toggle.setChecked(enabled);
     await page.locator('#ytms-save-preview').click();
-    assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), enabled);
+    assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), enabled);
     assert.equal((await linkStyle(link)).pointerEvents, enabled ? 'auto' : 'none', 'Saved choices do not change the running page');
     await page.reload();
     await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000 });

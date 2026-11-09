@@ -75,7 +75,21 @@ export function createSettingsSupportPanel(document, suite, hooks) {
       setBackupStatus('Backup download requested. It contains saved settings and channel filters only.');
     } catch { clearDownload(); setBackupStatus('The backup could not be downloaded. Browser file access may be restricted.', true); }
   });
-  const describeValue = value => Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? 'On' : 'Off') : String(value);
+  function describeValue(value, name) {
+    if (name === 'menuLayout') {
+      if (value === null) return 'Use saved menu order and visibility';
+      const layout = suite.menuLayout?.validate(value);
+      if (!layout) return 'Unrecognised menu layout';
+      const labels = suite.menuLayout.labels;
+      function children(parent) {
+        return layout.nodes.filter(node => node.parent === parent).map(node =>
+          Object.hasOwn(labels, node.id) ? labels[node.id] + (node.visible ? '' : ' (hidden)') :
+            node.name + ': [' + children(node.id) + ']').join('; ');
+      }
+      return children('root');
+    }
+    return Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? 'On' : 'Off') : String(value);
+  }
   const settingName = value => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, letter => letter.toUpperCase());
   function showPreview(result) {
     token = result.preview; preview.replaceChildren(); preview.hidden = false;
@@ -86,7 +100,7 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     if (settingChanges.length) {
       const details = node('details'); details.append(node('summary', 'Review setting changes'));
       const list = node('ul');
-      for (const change of settingChanges) list.append(node('li', `${settingName(change.name)}: ${describeValue(change.before)} → ${describeValue(change.after)}`));
+      for (const change of settingChanges) list.append(node('li', `${settingName(change.name)}: ${describeValue(change.before, change.name)} → ${describeValue(change.after, change.name)}`));
       details.append(list); preview.append(details);
     }
     const acknowledgement = node('label', '', { class: 'support-confirm' });

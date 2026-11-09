@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.120
+// @version      1.122
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
 // @updateURL    none
@@ -50,6 +50,7 @@
     preferredVideoQuality: "off",
     timelinePreviewSize: "auto",
     keepHoverPreviews: false,
+    disableVideoPreviews: false,
     timeDisplayMode: "native",
     enablePlayerWheelVolume: true,
     enableVideoMirrorButton: true,
@@ -2763,9 +2764,12 @@
           max-width: calc(100% - 16px) !important;
           padding: 5px 9px !important;
           border-radius: 2px !important;
-          background: rgba(0, 0, 0, 0.9) !important;
-          color: #eee !important;
-          font: 500 12px/1.2 Roboto, Arial, sans-serif !important;
+          background: rgba(28, 28, 28, 0.9) !important;
+          color: inherit !important;
+          font-family: inherit !important;
+          font-size: 118% !important;
+          font-weight: 500 !important;
+          line-height: 15px !important;
           text-shadow: none !important;
           pointer-events: none !important;
         }
@@ -2781,6 +2785,22 @@
           color: inherit !important;
           font: 400 12px/14px Roboto, Arial, sans-serif !important;
           text-align: center !important;
+        }
+        .ytp-big-mode #${VIDEO_MIRROR_TOOLTIP_ID} { line-height: 22px !important; }
+        .ytp-delhi-modern #${VIDEO_MIRROR_TOOLTIP_ID} {
+          border-radius: 8px !important;
+          background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important;
+          -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+          backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important;
+          text-shadow: 0 0 2px #000 !important;
+        }
+        .ytp-delhi-modern #${VIDEO_MIRROR_TOOLTIP_ID} kbd {
+          border-color: rgba(255, 255, 255, 0.3) !important;
+          border-radius: 4px !important;
+          min-width: 11px !important;
+          height: auto !important;
+          color: #fff !important;
+          font: inherit !important;
         }
       `;
   }
@@ -5482,7 +5502,7 @@
 
   installTimelinePreviewSizing();
   if (typeof suite !== 'undefined') suite.installPlayerPresentation?.({
-    document, window, keepHoverPreviews: CONFIG.keepHoverPreviews, timeDisplayMode: CONFIG.timeDisplayMode,
+    document, window, keepHoverPreviews: CONFIG.keepHoverPreviews, disableVideoPreviews: CONFIG.disableVideoPreviews, timeDisplayMode: CONFIG.timeDisplayMode,
   });
   applyRoutePreferences();
 

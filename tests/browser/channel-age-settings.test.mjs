@@ -87,7 +87,7 @@ test('older-video filter manager starts empty, is theme-aware and makes no persi
   assert.equal(await page.locator('#ytms-age-list').getAttribute('aria-label'), 'Channel upload filters');
   assert.equal(await page.locator('#ytms-age-empty').isVisible(), true);
   assert.equal(await page.locator('.ytms-age-rule').count(), 0);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   const dialog = page.locator('#ytms-age-dialog');
   assert.equal((await dialog.boundingBox()).width, 640);
   assert.equal((await dialog.boundingBox()).height, 720);
@@ -110,7 +110,7 @@ test('Add filter collapses a staged rule and Edit filter restores its values wit
   assert.equal(await card.locator('.channel-filter-age').isVisible(), true);
   assert.equal(await card.locator('.channel-filter-age .channel-filter-value').textContent(), 'Up to 3 months');
   assert.equal(await card.locator('.channel-filter-status .channel-filter-value').textContent(), 'Disabled');
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   assert.equal(await page.evaluate(() => ageChanged), 0);
   assert.match(await page.locator('#ytms-age-status').textContent(), /added to this draft/);
   const edit = page.getByRole('button', { name: 'Edit filter for Daily news', exact: true });
@@ -144,7 +144,7 @@ test('Add another channel collapses the previous editor and keeps one editable c
   assert.equal(await field(page, 'Maximum age').inputValue(), '2');
   assert.equal(await field(page, 'Maximum age', 1).inputValue(), '1');
   assert.equal(await page.locator('.ytms-age-rule').nth(1).locator('.channel-filter-age').isVisible(), true);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
 });
 
 test('adding another channel refuses invalid drafts and saving reopens an invalid collapsed editor', async t => {
@@ -168,7 +168,7 @@ test('adding another channel refuses invalid drafts and saving reopens an invali
   assert.equal(await page.locator('.ytms-age-rule').first().locator('.ytms-age-fields').isVisible(), true);
   assert.equal(await page.locator('.ytms-age-fields:visible').count(), 1);
   assert.match(await page.locator('#ytms-age-status').textContent(), /Rule 1/);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   assert.equal(await page.evaluate(() => ageChanged), 0);
 });
 
@@ -219,7 +219,7 @@ test('channel rules save distinct age units and enabled state without changing m
     { channelId: SECOND, name: 'Documentaries', maxAge: 1, unit: 'years', enabled: false, blocked: false },
   ]);
   assert.equal(await page.evaluate(() => ageChanged), 1);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   assert.equal(page.url(), WATCH_URL);
 });
 
@@ -244,7 +244,7 @@ test('invalid IDs, duplicate channels, fractional or out-of-range ages cannot si
   await addRule(page, FIRST);
   await page.locator('#ytms-age-save').click();
   assert.ok((await page.locator('#ytms-age-status').textContent()).includes('Rule 2'));
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   await field(page, 'Channel ID or channel URL', 1).fill(SECOND);
   for (const age of ['0', '1.5', '1001', '']) {
     await field(page, 'Maximum age', 1).fill(age);
@@ -281,7 +281,7 @@ test('menu opener selects an existing channel or drafts a new one without HTML p
   assert.equal(await field(page, 'Channel ID or channel URL').inputValue(), FIRST);
   assert.equal(await field(page, 'Channel name').inputValue(), '<img src=x onerror=alert(1)> News');
   assert.equal(await page.locator('#ytms-age-dialog img').count(), 0);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   await page.locator('#ytms-age-save').click();
   assert.equal(await page.locator('#ytms-age-dialog').isVisible(), false);
   await page.locator('#open').click();
@@ -318,7 +318,7 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   assert.equal(await page.locator('dialog[open]').count(), 1);
   await addRule(page);
   await page.locator('#ytms-age-save').click();
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   assert.equal(await page.locator('#ytms-age-dialog').isVisible(), true);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await page.locator('.ytms-age-fields:visible').count(), 0);
@@ -341,7 +341,7 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   await page.locator('#ytms-menuShowDownload').check();
   await page.locator('#ytms-menuGroupChannelTools').uncheck();
   await page.locator('#ytms-save-preview').click();
-  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values, SETTINGS_KEY);
+  const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, SETTINGS_KEY);
   assert.equal(saved.menuShowDownload, true);
   assert.equal(saved.menuGroupChannelTools, false);
   assert.equal(saved.menuItemOrder[3], 'download');
@@ -349,7 +349,7 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   assert.deepEqual(await list.locator('li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), initial);
   assert.equal(await page.locator('#ytms-menuShowDownload').isChecked(), false);
   assert.equal(await page.locator('#ytms-menuGroupChannelTools').isChecked(), true);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).values.menuShowDownload, SETTINGS_KEY), true);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.menuShowDownload, SETTINGS_KEY), true);
   await page.setViewportSize({ width: 360, height: 600 });
   const dialog = page.locator('#ytms-settings-dialog'), bounds = await dialog.boundingBox();
   assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 360 && bounds.y + bounds.height <= 600);
@@ -371,7 +371,7 @@ test('Hide this channel keeps the age selection but disables it and persists onl
   assert.equal(await field(page, 'Unit').isDisabled(), true);
   assert.equal(await field(page, 'Maximum age').inputValue(), '3');
   assert.equal(await field(page, 'Unit').inputValue(), 'months');
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   await page.locator('#ytms-age-save').click();
   assert.deepEqual(await page.evaluate(() => ageService.getRules()), [
     { channelId: FIRST, name: 'Daily news', maxAge: 3, unit: 'months', enabled: true, blocked: true },
@@ -426,7 +426,7 @@ test('Channels lists only Suite-saved filters and Edit or Remove require explici
   await page.keyboard.press('Enter');
   assert.match(await page.locator('#ytms-age-status').textContent(), /removed from this draft/);
   assert.equal(await page.locator('.ytms-age-rule').count(), 1);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules.length, KEY), 2);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules.length, KEY), 2);
   await page.locator('#ytms-age-cancel').click();
   assert.equal(await list.getByRole('listitem').count(), 2);
   await page.getByRole('button', { name: 'Remove filter for Documentaries', exact: true }).click();
@@ -434,7 +434,7 @@ test('Channels lists only Suite-saved filters and Edit or Remove require explici
   assert.equal(await page.locator('#ytms-age-dialog').isVisible(), true);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await list.getByRole('listitem').count(), 1);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules.length, KEY), 1);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules.length, KEY), 1);
   await page.setViewportSize({ width: 360, height: 600 });
   assert.equal(await page.locator('#ytms-settings-dialog .content').evaluate(node => node.scrollWidth <= node.clientWidth), true);
 });
@@ -456,7 +456,7 @@ test('saved channel filters use aligned details and stacked action columns, reta
   assert.equal(await header.getAttribute('role'), null);
   assert.deepEqual(await list.locator('.channel-filter-age .channel-filter-value').allTextContents(), ['Up to 1000 years', 'No uploads', 'Up to 2 months']);
   assert.deepEqual(await list.locator('.channel-filter-status .channel-filter-value').allTextContents(), ['Enabled', 'Enabled', 'Disabled']);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
 
   for (const dark of [true, false]) {
     await page.evaluate(dark => document.documentElement.toggleAttribute('dark', dark), dark);
@@ -520,7 +520,7 @@ test('saved channel filters use aligned details and stacked action columns, reta
       }
     }
   }
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
 });
 
@@ -557,14 +557,14 @@ test('an open channel editor preserves its draft and rejects a newer save from a
   assert.match(await page.locator('#ytms-age-status').textContent(), /changed in another window/);
   assert.equal(await page.locator('#ytms-age-dialog').isVisible(), true);
   assert.equal(await field(page, 'Maximum age').inputValue(), '2');
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 3);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 3);
   assert.equal(await page.evaluate(() => ageChanged), 0);
   await page.locator('#ytms-age-cancel').click();
   await page.locator('#open').click();
   assert.equal(await field(page, 'Maximum age').inputValue(), '3');
   await field(page, 'Maximum age').fill('4');
   await page.locator('#ytms-age-save').click();
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 4);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 4);
 });
 
 test('cross-window rule saves and clears refresh feed filtering and the Channels list without reload', async t => {
@@ -588,17 +588,17 @@ test('cross-window rule saves and clears refresh feed filtering and the Channels
   }, FIRST);
   assert.equal(await page.locator('#shared-channel-card').getAttribute('data-clean-up-youtube-hidden'), null);
   const rule = { channelId: FIRST, name: 'News', maxAge: 1, unit: 'weeks', enabled: true, blocked: false };
-  await other.evaluate(({ key, rule }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule });
+  await other.evaluate(({ key, rule }) => fixtureStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule });
   await page.waitForFunction(() => document.getElementById('shared-channel-card').getAttribute('data-clean-up-youtube-hidden') === '1');
   await page.locator('#ytms-settings-button').click();
   await page.getByRole('tab', { name: 'Channels', exact: true }).click();
   assert.equal(await page.locator('#ytms-channel-filter-list > article').count(), 1);
   for (const clearAll of [false, true]) {
     if (clearAll) {
-      await other.evaluate(({ key, rule }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule });
+      await other.evaluate(({ key, rule }) => fixtureStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule });
       await page.waitForFunction(() => document.querySelectorAll('#ytms-channel-filter-list > article').length === 1);
     }
-    await other.evaluate(({ key, clearAll }) => clearAll ? localStorage.clear() : localStorage.removeItem(key), { key: KEY, clearAll });
+    await other.evaluate(({ key, clearAll }) => clearAll ? fixtureStorage.clear() : fixtureStorage.removeItem(key), { key: KEY, clearAll });
     await page.waitForFunction(() => !document.getElementById('shared-channel-card').hasAttribute('data-clean-up-youtube-hidden'));
     await page.waitForFunction(() => document.querySelectorAll('#ytms-channel-filter-list > article').length === 0);
   }
@@ -619,13 +619,10 @@ test('a 30-channel table searches names and IDs literally without reading or wri
   assert.equal(await list.getByRole('listitem').count(), 30);
   assert.match(await count.textContent(), /Showing 30 of 30 channels/);
   assert.equal(await search.getAttribute('maxlength'), '120');
-  const before = await page.evaluate(({ key, settings }) => ({ filters: localStorage.getItem(key), settings: localStorage.getItem(settings) }), { key: KEY, settings: SETTINGS_KEY });
+  const before = await page.evaluate(({ key, settings }) => ({ filters: fixtureStorage.getItem(key), settings: fixtureStorage.getItem(settings) }), { key: KEY, settings: SETTINGS_KEY });
   await page.evaluate(key => {
-    const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
-    window.channelViewAudit = { reads: 0, writes: 0 };
-    Storage.prototype.getItem = function(name) { if (name === key) channelViewAudit.reads++; return get.call(this, name); };
-    Storage.prototype.setItem = function(name, value) { if (name === key) channelViewAudit.writes++; return set.call(this, name, value); };
-    window.restoreChannelViewAudit = () => { Storage.prototype.getItem = get; Storage.prototype.setItem = set; return { ...channelViewAudit }; };
+    fixtureGMStorage.startAudit(key);
+    window.restoreChannelViewAudit = () => fixtureGMStorage.finishAudit();
   }, KEY);
   await search.fill('  aLpHa  ');
   assert.deepEqual(await list.locator('h3').allTextContents(), ['Daily Alpha News']);
@@ -644,7 +641,7 @@ test('a 30-channel table searches names and IDs literally without reading or wri
   await page.locator('#ytms-channel-sort').selectOption('name-desc');
   const audit = await page.evaluate(() => restoreChannelViewAudit());
   assert.deepEqual(audit, { reads: 0, writes: 0 });
-  assert.deepEqual(await page.evaluate(({ key, settings }) => ({ filters: localStorage.getItem(key), settings: localStorage.getItem(settings) }), { key: KEY, settings: SETTINGS_KEY }), before);
+  assert.deepEqual(await page.evaluate(({ key, settings }) => ({ filters: fixtureStorage.getItem(key), settings: fixtureStorage.getItem(settings) }), { key: KEY, settings: SETTINGS_KEY }), before);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   assert.equal(await page.locator('#ytms-settings-status').isVisible(), false);
   for (const dark of [true, false]) {
@@ -668,7 +665,7 @@ test('channel sorting is view-only and orders names, real age units and enabled 
   await openChannels(page);
   const list = page.locator('#ytms-channel-filter-list');
   const sort = page.locator('#ytms-channel-sort');
-  const before = await page.evaluate(key => localStorage.getItem(key), KEY);
+  const before = await page.evaluate(key => fixtureStorage.getItem(key), KEY);
   for (const [value, names] of [
     ['name-asc', ['Block', 'Day', 'Month', 'Week', 'Year']],
     ['name-desc', ['Year', 'Week', 'Month', 'Day', 'Block']],
@@ -683,8 +680,8 @@ test('channel sorting is view-only and orders names, real age units and enabled 
   assert.deepEqual(await list.locator('.channel-filter-status .channel-filter-value').allTextContents(), ['Enabled', 'Enabled', 'Enabled', 'Disabled', 'Disabled']);
   await sort.selectOption('status-disabled');
   assert.deepEqual(await list.locator('.channel-filter-status .channel-filter-value').allTextContents(), ['Disabled', 'Disabled', 'Enabled', 'Enabled', 'Enabled']);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), before);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), before);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
 });
 
@@ -702,7 +699,7 @@ test('settings-origin channel saves return to the table and preserve unrelated m
   assert.equal(await page.locator('#ytms-tab-channels').getAttribute('aria-selected'), 'true');
   assert.equal(await page.locator('.ytms-age-fields:visible').count(), 0);
   assert.equal(await page.locator('#ytms-channel-filter-list .channel-filter-age .channel-filter-value').textContent(), 'Up to 2 days');
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), false);
@@ -724,8 +721,8 @@ test('context-origin saves retain an already-open main-preference draft rather t
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.match(await page.locator('#ytms-channel-entry-notice').textContent(), /Other settings still have unsaved changes/);
   assert.equal(await page.locator('#ytms-channel-entry-notice').isVisible(), true);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 2);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 2);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), false);
@@ -739,14 +736,14 @@ test('an embedded dirty channel draft survives external saves and rejects overwr
   await field(page, 'Maximum age').fill('2');
   const other = await page.context().newPage();
   await other.goto(WATCH_URL);
-  await other.evaluate(({ key, rule }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule: { ...original, maxAge: 3 } });
+  await other.evaluate(({ key, rule }) => fixtureStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule: { ...original, maxAge: 3 } });
   await page.waitForTimeout(100);
   assert.equal(await field(page, 'Maximum age').inputValue(), '2');
   await page.locator('#ytms-age-save').click();
   assert.match(await page.locator('#ytms-age-status').textContent(), /changed in another window/);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await field(page, 'Maximum age').inputValue(), '2');
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 3);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 3);
   await page.locator('#ytms-age-cancel').click();
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await page.locator('.ytms-age-fields:visible').count(), 0);
@@ -760,21 +757,20 @@ test('an embedded storage failure keeps its draft open and can be retried withou
   await page.getByRole('button', { name: 'Edit filter for News', exact: true }).click();
   await field(page, 'Maximum age').fill('2');
   await page.evaluate(key => {
-    const native = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(name, value) { if (name === key) throw new Error('Fixture quota failure'); return native.call(this, name, value); };
-    window.restoreChannelStorage = () => { Storage.prototype.setItem = native; };
+    fixtureGMStorage.failWrites(key);
+    window.restoreChannelStorage = () => fixtureGMStorage.failWrites(key, false);
   }, KEY);
   await page.locator('#ytms-age-save').click();
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await field(page, 'Maximum age').inputValue(), '2');
   assert.match(await page.locator('#ytms-age-status').textContent(), /could not be saved/);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 1);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 1);
   await page.evaluate(() => restoreChannelStorage());
   await page.locator('#ytms-age-save').click();
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   assert.equal(await page.locator('.ytms-age-fields:visible').count(), 0);
-  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).rules[0].maxAge, KEY), 2);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY), null);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).rules[0].maxAge, KEY), 2);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), SETTINGS_KEY), null);
 });
 
 test('unsaved channel edits block backup restore until they are explicitly discarded', async t => {
@@ -793,13 +789,13 @@ test('unsaved channel edits block backup restore until they are explicitly disca
   await page.locator('#ytms-confirm-restore').check();
   assert.equal(await page.locator('#ytms-restore-backup').isDisabled(), true);
   assert.match(await page.locator('#ytms-backup-status').textContent(), /Save or discard/);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   await page.getByRole('tab', { name: 'Channels', exact: true }).click();
   assert.equal(await field(page, 'Channel ID or channel URL').inputValue(), FIRST);
   await page.locator('#ytms-age-cancel').click();
   await page.getByRole('tab', { name: 'Support', exact: true }).click();
   assert.equal(await page.locator('#ytms-restore-backup').isEnabled(), true);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
 });
 
 test('returning from Channels restores main footer visibility without revealing an empty status', async t => {
@@ -831,7 +827,7 @@ test('Reload now warns about an unsaved channel draft and dismissal preserves it
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   await page.getByRole('tab', { name: 'Channels', exact: true }).click();
   assert.equal(await field(page, 'Channel ID or channel URL').inputValue(), FIRST);
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), KEY), null);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
 });
 
 const transferRule = (channelId = FIRST, values = {}) => ({
@@ -839,14 +835,14 @@ const transferRule = (channelId = FIRST, values = {}) => ({
 });
 const channelFile = rules => ({ format: CHANNEL_FORMAT, version: 1, language: 'en-GB', channelFilters: rules });
 async function channelTransferRaw(page) {
-  return page.evaluate(keys => keys.map(key => localStorage.getItem(key)), [SETTINGS_KEY, CORNER_KEY, KEY]);
+  return page.evaluate(keys => keys.map(key => fixtureStorage.getItem(key)), [SETTINGS_KEY, CORNER_KEY, KEY]);
 }
 async function transferFixture(t, rules = [transferRule()], exposeChannelLauncher = false) {
   const page = await openFixture(t, rules, { width: 1280, height: 900 }, true, exposeChannelLauncher);
   const values = createSuiteSettings(() => ({ getItem: () => null }), () => true).read();
   await page.evaluate(({ settings, corner, values }) => {
-    localStorage.setItem(settings, JSON.stringify({ version: 1, values: { ...values, hideShorts: false } }));
-    localStorage.setItem(corner, 'bottom-left');
+    fixtureStorage.setItem(settings, JSON.stringify({ version: 1, values: { ...values, hideShorts: false } }));
+    fixtureStorage.setItem(corner, 'bottom-left');
   }, { settings: SETTINGS_KEY, corner: CORNER_KEY, values });
   await openChannels(page);
   await openTransferDetails(page);
@@ -1064,7 +1060,7 @@ test('a channel write made after preview is preserved and import requires a fres
   await importChannels(page, channelFile([transferRule(SECOND)]));
   await transferPreview(page);
   const concurrent = transferRule(FIRST, { maxAge: 9, unit: 'months' });
-  await page.evaluate(({ key, rule }) => localStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule: concurrent });
+  await page.evaluate(({ key, rule }) => fixtureStorage.setItem(key, JSON.stringify({ version: 1, rules: [rule] })), { key: KEY, rule: concurrent });
   await confirmChannelImport(page);
   assert.match(await page.locator('#ytms-channel-transfer-status').textContent(), /changed|preview/i);
   const after = await channelTransferRaw(page);
@@ -1078,9 +1074,8 @@ test('storage failure during channel import leaves prior channels and unrelated 
   await importChannels(page, channelFile([transferRule(SECOND)]));
   await transferPreview(page);
   await page.evaluate(key => {
-    const native = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(name, value) { if (name === key) throw new Error('Fixture quota failure'); return native.call(this, name, value); };
-    window.restoreTransferStorage = () => { Storage.prototype.setItem = native; };
+    fixtureGMStorage.failWrites(key);
+    window.restoreTransferStorage = () => fixtureGMStorage.failWrites(key, false);
   }, KEY);
   await confirmChannelImport(page);
   assert.deepEqual(await channelTransferRaw(page), before);
