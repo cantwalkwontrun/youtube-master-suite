@@ -4,8 +4,14 @@ lang: en-GB
 
 # Optional controls and compatibility
 
-The Suite adds 108 menu controls in this update. This includes switches for previously automatic cleanup, preserving its existing defaults. Queue fitting is on by default as requested; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
+The Suite adds 112 menu controls in this update. This includes switches for previously automatic cleanup, preserving its existing defaults. Queue fitting and Home loading start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
+
+## Home loading
+
+**Feed → Home loading** controls automatic recovery after filtering and a manual **Load more** button. Both default to on. Automatic loading starts only near the end of a filtered Home feed, waits at least three seconds between requests, and is limited to three extra batches per visit. Choose limits of 1, 3, 5 or 10 batches and delays of 3, 5 or 10 seconds. Save and reload to apply settings.
+
+The button requests one native batch and remains available after the automatic limit. Native button-only continuations require a manual click. Loading pauses in background tabs, during navigation, on unsupported or ambiguous layouts, and after errors or a ten-second stall. An attempted native continuation is never sent twice for the same feed, including after page suspension. No direct API request, scroll, page refresh or playback command is used. Filters and companion-extension content are retained. YouTube must still provide a continuation; this cannot guarantee an endless feed.
 
 ## Custom video menus and creator choices
 

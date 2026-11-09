@@ -37,6 +37,20 @@ test('new controls preserve old saved values and reading never rewrites the reco
   assert.equal(f.storage.getItem(f.settings.key), before);
 });
 
+test('Home loading has bounded choices and independent switches without changing existing preferences', () => {
+  const { settings, storage } = fixture({ hideChat: false, miniplayerWidth: 997, autoLoadFilteredHome: false, homeLoadBatchLimit: '10', homeLoadDelay: '5' });
+  const before = storage.getItem(settings.key);
+  assert.equal(settings.initial.autoLoadFilteredHome, false);
+  assert.equal(settings.initial.showHomeLoadMore, true);
+  assert.equal(settings.initial.homeLoadBatchLimit, '10');
+  assert.equal(settings.initial.homeLoadDelay, '5');
+  assert.equal(settings.initial.hideChat, false);
+  assert.equal(settings.initial.miniplayerWidth, 997);
+  for (const invalid of ['0', '100', '-1', 10, true, {}, null]) assert.equal(settings.validate({ homeLoadBatchLimit: invalid }).homeLoadBatchLimit, '3');
+  for (const invalid of ['0', '1', '100', 5, true, {}, null]) assert.equal(settings.validate({ homeLoadDelay: invalid }).homeLoadDelay, '3');
+  assert.equal(storage.getItem(settings.key), before);
+});
+
 test('earlier full backups gain only defaults for newly introduced controls', () => {
   const f = fixture();
   const exported = f.backup.exportData(); assert.equal(exported.ok, true);

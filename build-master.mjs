@@ -9,6 +9,7 @@ import { createChannelLookup } from "./sources/channel-lookup.mjs";
 import { createFeatureCatalogue } from "./sources/feature-catalogue.mjs";
 import { installPlayerControls } from "./sources/player-controls.mjs";
 import { installDiscoveryControls } from "./sources/discovery-controls.mjs";
+import { installHomeFeedLoading } from "./sources/home-feed-loading.mjs";
 import { installLayoutControls } from "./sources/layout-controls.mjs";
 import { installCompactNativeQueue } from "./sources/compact-native-queue.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
@@ -27,7 +28,7 @@ import { createIsolatedStorage } from "./sources/isolated-storage.mjs";
 import { initialiseIsolatedStorage } from "./sources/storage-bootstrap.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.76";
+const MASTER_VERSION = "1.2.77";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -2394,7 +2395,7 @@ ${runtimeMutationCoverageHelpers}
     const options = { document, window, preferences: suite.settings.initial,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
-    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}]) {
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installHomeFeedLoading.toString()}]) {
       try { install(options); } catch { options.reportError(); }
     }
   };

@@ -92,6 +92,7 @@ function createHarness({ enabled = true } = {}) {
       const siblings = this.parentElement?.children || [];
       return siblings[siblings.indexOf(this) + 1] || null;
     }
+    get nextElementSibling() { return this.nextSibling; }
     compareDocumentPosition(other) {
       if (other === this) return 0;
       const nodes = document.documentElement.querySelectorAll("*");

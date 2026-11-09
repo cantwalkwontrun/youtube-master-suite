@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.58
+// @version      1.59
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3

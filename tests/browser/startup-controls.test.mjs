@@ -10,6 +10,29 @@ let browser;
 before(async () => { browser = await launchFixtureBrowser(); });
 after(async () => { await browser?.close(); });
 
+test('whitespace between native controls cannot put Mirror before Suite settings on its first insertion', async t => {
+  const source = readFileSync(new URL('../../sources/modules/youtube-player-preferences-lite.user.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  function placeVideoMirrorButton(');
+  const end = source.indexOf('\n  function ', start + 1);
+  const context = await browser.newContext(); t.after(() => context.close());
+  const page = await context.newPage();
+  await page.setContent('<!doctype html><html lang="en-GB"><body><div class="ytp-right-controls"><button class="ytp-settings-button"></button> \n<button id="ytms-player-settings-button"></button> \n<button class="ytp-size-button"></button></div></body></html>');
+  const result = await page.evaluate(source => {
+    const controls = document.querySelector('.ytp-right-controls');
+    window.videoMirrorButton = document.createElement('button'); videoMirrorButton.id = 'ytppl-video-mirror-button';
+    window.hideVideoMirrorTooltip = () => {};
+    const place = (0, eval)('(' + source + ')');
+    const textNodes = [...controls.childNodes].filter(node => node.nodeType === 3);
+    place(controls);
+    const observer = new MutationObserver(() => {}); observer.observe(controls, { childList: true });
+    place(controls);
+    const repeatWrites = observer.takeRecords().length; observer.disconnect();
+    return { order: [...controls.children].map(button => button.id || button.className), repeatWrites, textPreserved: textNodes.every(node => node.parentNode === controls) };
+  }, source.slice(start, end));
+  assert.deepEqual(result.order, ['ytp-settings-button', 'ytms-player-settings-button', 'ytppl-video-mirror-button', 'ytp-size-button']);
+  assert.equal(result.repeatWrites, 0); assert.equal(result.textPreserved, true);
+});
+
 test('a comment-heavy watch page converges toolbar order after late native controls without idle movement', async t => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
   // Hydrate after the fixture's own renderer: inserting server markup earlier

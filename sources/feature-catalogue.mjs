@@ -2,6 +2,30 @@
 export function createFeatureCatalogue() {
  const definitions = [
   {
+    "key": "autoLoadFilteredHome", "tab": "feed", "section": "Home loading",
+    "label": "Load more automatically after filtering",
+    "description": "On Home, ask YouTube for another batch when filtered cards leave you near the end. Pauses in background tabs, on errors, and at the automatic batch limit. Does not scroll or change playback.",
+    "default": true
+  },
+  {
+    "key": "showHomeLoadMore", "tab": "feed", "section": "Home loading",
+    "label": "Show Load more button on Home",
+    "description": "Load one native batch on request. The button reports loading, unsupported layouts and the end of YouTube’s recommendations. It cannot create recommendations after YouTube stops supplying them.",
+    "default": true
+  },
+  {
+    "key": "homeLoadBatchLimit", "tab": "feed", "section": "Home loading",
+    "label": "Automatic batches per Home visit",
+    "description": "Limit extra automatic requests for this Home visit. Load more remains available afterwards. Returning to Home starts a new allowance.",
+    "default": "3", "options": [["1", "1 batch"], ["3", "3 batches"], ["5", "5 batches"], ["10", "10 batches"]]
+  },
+  {
+    "key": "homeLoadDelay", "tab": "feed", "section": "Home loading",
+    "label": "Minimum time between extra loads",
+    "description": "Give YouTube’s native loading and the filters time to settle. One request is allowed per native continuation; failed or stalled requests are not repeated automatically.",
+    "default": "3", "options": [["3", "3 seconds"], ["5", "5 seconds"], ["10", "10 seconds"]]
+  },
+  {
     "key": "originalAudio",
     "tab": "player",
     "section": "Playback",

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.122
+// @version      1.123
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
 // @updateURL    none
@@ -3237,15 +3237,15 @@
           Node.DOCUMENT_POSITION_FOLLOWING)) ||
         (settingsButton && !afterButton)
       )
-    ) next = beforeButton.nextSibling;
+    ) next = beforeButton.nextElementSibling;
 
     // The suite's panel shortcut belongs immediately before Mirror video.
     // Respect it when this module reconciles or recreates native controls.
-    if (next?.id === "ytms-player-settings-button") next = next.nextSibling;
+    if (next?.id === "ytms-player-settings-button") next = next.nextElementSibling;
 
     if (
       next !== videoMirrorButton &&
-      (videoMirrorButton.parentElement !== parent || videoMirrorButton.nextSibling !== next)
+      (videoMirrorButton.parentElement !== parent || videoMirrorButton.nextElementSibling !== next)
     ) {
       hideVideoMirrorTooltip();
       parent.insertBefore(videoMirrorButton, next);
