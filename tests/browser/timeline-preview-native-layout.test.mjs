@@ -38,12 +38,12 @@ async function fixture(t) {
   const page = await context.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem('yt-master-suite.settings.v1', JSON.stringify({version:1,values:{timelinePreviewSize:'large',theatreMode:false}})));
-  await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
-    ? route.fulfill({contentType:'text/html',body:BASE.replace('</head>',CSS+'</head>')
-      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+MARKUP)}) : route.abort());
+  const fixtureHtml = BASE.replace('</head>',CSS+'</head>')
+      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+MARKUP);
+  await page.route('**/*', route => route.abort());
   t.after(async () => { try { assert.deepEqual(errors,[]); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
-  await navigateWatchFixture(page);
+  await navigateWatchFixture(page, { html: fixtureHtml });
   await page.addScriptTag({ content: SUITE });
   await waitForSuiteHealth(page,MANIFEST.registeredModules,{timeoutMs:10000,errors});
   return page;

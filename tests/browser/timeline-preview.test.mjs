@@ -38,13 +38,13 @@ async function fixture(t, mode = 'auto', viewport = { width: 1920, height: 1080 
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(({ KEY, mode, miniplayer }) => localStorage.setItem(KEY, JSON.stringify({ version:1,
     values:{ timelinePreviewSize:mode, theatreMode:false, miniplayerEnabled:miniplayer } })), { KEY, mode, miniplayer });
-  await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
-    route.fulfill({ contentType:'text/html', body:BASE.replace('</head>', CSS + '</head>')
+  const fixtureHtml = BASE.replace('</head>', CSS + '</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>' + MARKUP)
-      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}</body>`) }) : route.abort());
+      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}</body>`);
+  await page.route('**/*', route => route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
-  await navigateWatchFixture(page);
+  await navigateWatchFixture(page, { html: fixtureHtml });
   await page.addScriptTag({ content: SUITE });
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs:10000, errors });
   return page;

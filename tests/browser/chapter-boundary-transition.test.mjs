@@ -42,12 +42,12 @@ for (const transition of [false, true]) for (const scenario of ['twoSponsorLabel
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.addInitScript(() => localStorage.setItem('yt-master-suite.settings.v1', JSON.stringify({version:1, values:{timelinePreviewSize:'large',theatreMode:false}})));
-  await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
-    ? route.fulfill({contentType:'text/html', body:base.replace('</head>', styles+'</head>')
-      .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup)}) : route.abort());
+  const fixtureHtml = base.replace('</head>', styles+'</head>')
+      .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup);
+  await page.route('**/*', route => route.abort());
   // Suite health and the geometry assertions below are the readiness contract;
   // unrelated image load completion is not required by this fixture.
-  await navigateWatchFixture(page);
+  await navigateWatchFixture(page, { html: fixtureHtml });
   await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   await page.locator('.ytp-progress-bar').hover();

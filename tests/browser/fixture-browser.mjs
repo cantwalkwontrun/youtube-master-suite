@@ -197,16 +197,23 @@ export async function waitForSuiteHealth(page, moduleCount, {
 // Language: en-GB. These synthetic watch fixtures start on a fresh blank page.
 // Verify the parsed document directly instead of depending on a Firefox load
 // event notification. Production-script health is checked separately afterwards.
-export async function navigateWatchFixture(page, { timeoutMs = 10000 } = {}) {
+export async function navigateWatchFixture(page, { html, timeoutMs = 10000 } = {}) {
   const url = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
   if (page.url() !== 'about:blank') throw new Error('Watch fixture navigation requires a fresh page');
+  if (typeof html !== 'string' || !html.includes('<ytd-app>') || html.length > 250000) throw new Error('Expected native synthetic watch markup');
   const events = { response: 0, domcontentloaded: 0, load: 0 };
   const response = value => { if (value.url() === url) events.response++; };
   const dom = () => events.domcontentloaded++;
   const load = () => events.load++;
   page.on('response', response); page.on('domcontentloaded', dom); page.on('load', load);
+  const originPage = route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="en-GB"><head><meta charset="utf-8"></head><body></body></html>' });
   try {
+    // Establish the origin with a small script-free response. Feed the complete
+    // native fixture through document.open/write/close rather than the Linux
+    // Firefox routed-response parser, which can stall before its first script.
+    await page.route(url, originPage);
     await page.goto(url, { waitUntil: 'commit', timeout: timeoutMs });
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     await page.waitForFunction(expected => location.href === expected &&
       document.readyState !== 'loading' && Boolean(document.querySelector('ytd-app #movie_player video')) &&
       typeof window.fixture === 'object' && window.fixture !== null,
@@ -225,6 +232,7 @@ export async function navigateWatchFixture(page, { timeoutMs = 10000 } = {}) {
     finally { clearTimeout(timer); }
     throw new Error(`Synthetic watch navigation failed: ${JSON.stringify({ events, state })}`, { cause: error });
   } finally {
+    await page.unroute(url, originPage);
     page.off('response', response); page.off('domcontentloaded', dom); page.off('load', load);
   }
 }
