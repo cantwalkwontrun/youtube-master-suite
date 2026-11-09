@@ -28,7 +28,7 @@ import { createIsolatedStorage } from "./sources/isolated-storage.mjs";
 import { initialiseIsolatedStorage } from "./sources/storage-bootstrap.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.77";
+const MASTER_VERSION = "1.2.78";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");

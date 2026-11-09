@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.77
+// @version      1.2.78
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -91,7 +91,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.77";
+  const MASTER_VERSION = "1.2.78";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -7762,7 +7762,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   if ((!automatic && !manual) || !document.body || !MutationObserver) return () => {};
   const limit = [1, 3, 5, 10].includes(Number(preferences.homeLoadBatchLimit)) ? Number(preferences.homeLoadBatchLimit) : 3;
   const delay = [3, 5, 10].includes(Number(preferences.homeLoadDelay)) ? Number(preferences.homeLoadDelay) * 1000 : 3000;
-  const continuationSelector = 'ytd-continuation-item-renderer';
+  const continuationSelector = 'ytd-continuation-item-renderer,yt-continuation-item-view-model';
   const cardSelector = 'ytd-rich-item-renderer';
   const flags = ['data-clean-up-youtube-hidden', 'data-clean-up-youtube-permanent-hidden',
     'data-ytppl-live-hidden', 'data-ytppl-upcoming-hidden', 'data-ytppl-pay-to-watch-hidden',
@@ -7774,6 +7774,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   let timer = 0, pending = null, attempts = new Set(), automaticCount = 0, lastRequest = -Infinity;
   let paused = '', cards = [], cardsDirty = true;
   const attemptedByGrid = new WeakMap();
+  const confirmedEndByGrid = new WeakSet();
   let automaticReadyAt = window.performance.now() + delay;
   const listeners = [];
   const home = () => ['/', '/feed/recommended'].includes(window.location.pathname);
@@ -7794,6 +7795,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   function reset() {
     clearTimer(); observer.disconnect(); observing = false; removeUi();
+    if (grid) confirmedEndByGrid.delete(grid);
     grid = null; cards = []; cardsDirty = true; pending = null;
     attempts = new Set(); automaticCount = 0; lastRequest = -Infinity; paused = '';
     automaticReadyAt = window.performance.now() + delay;
@@ -7824,6 +7826,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const data = owner.data;
       if (!data || typeof data !== 'object' || typeof owner.spinnerActive !== 'boolean' ||
         typeof owner.endOfList !== 'boolean' || typeof owner.showButton !== 'boolean') return null;
+      if (owner.endOfList) return { host, owner, token: null, ended: true, busy: false, buttonMode: owner.showButton };
       let token, invoke;
       if (!owner.showButton && data.trigger === 'CONTINUATION_TRIGGER_ON_ITEM_SHOWN') {
         if (typeof owner.resetIntersectionObserver !== 'function') return null;
@@ -7874,7 +7877,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     // Record before invoking: synchronous native events cannot dispatch twice.
     attempts.add(next.token); lastRequest = window.performance.now();
     if (!isManual) automaticCount++;
-    pending = { host: next.host, token: next.token, cardCount: cards.length, deadline: window.performance.now() + 10000 };
+    pending = { host: next.host, owner: next.owner, token: next.token, cardCount: cards.length, deadline: window.performance.now() + 10000 };
     try { next.invoke(); } catch { pending = null; paused = 'YouTube could not load more. Automatic loading paused.'; reportError(); }
     setStatus(pending ? 'Waiting for YouTube…' : paused);
     schedule(pending ? 10000 : 180);
@@ -7901,15 +7904,22 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (pending) {
       // A new native token is the proof of continuation advancement. Merely
       // changing a spinner, unrelated rows or a title cannot authorise a retry.
-      if ((next && next.token !== pending.token) || (!pending.host.isConnected && !next && cards.length > pending.cardCount)) pending = null;
+      if (next && next.token !== pending.token) pending = null;
+      else if (!pending.host.isConnected && !next && cards.length > pending.cardCount) {
+        if (pending.owner.endOfList === true) confirmedEndByGrid.add(grid);
+        pending = null;
+      }
       else if (window.performance.now() >= pending.deadline) {
         pending = null; paused = 'YouTube has not supplied another batch. Automatic loading paused.';
       } else { setStatus('Waiting for YouTube…'); schedule(pending.deadline - window.performance.now()); return; }
     }
     if (!next) {
-      setStatus(grid.querySelector(continuationSelector) ? 'Loading is unavailable for this YouTube layout.' : 'YouTube has no more recommendations available.'); return;
+      setStatus(grid.querySelector(continuationSelector) ? 'Loading is unavailable for this YouTube layout.' :
+        confirmedEndByGrid.has(grid) ? 'YouTube has no more recommendations available.' :
+          'YouTube isn’t offering another batch right now.'); return;
     }
-    if (next.ended) { setStatus('YouTube has no more recommendations available.'); return; }
+    if (next.ended) { confirmedEndByGrid.add(grid); setStatus('YouTube has no more recommendations available.'); return; }
+    confirmedEndByGrid.delete(grid);
     if (next.busy) { setStatus(paused || 'YouTube is loading recommendations…'); return; }
     if (attempts.has(next.token)) { setStatus(paused || 'Waiting for YouTube to supply another batch.'); return; }
     if (attempts.size >= 128) { setStatus('Loading recovery limit reached for this Home visit.'); return; }
@@ -7952,7 +7962,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (home()) { if (!grid) automaticReadyAt = window.performance.now() + delay; schedule(); }
     else reset();
   });
-  listen(window, 'yt-page-data-updated', () => { cardsDirty = true; clearTimer(); schedule(); });
+  listen(window, 'yt-page-data-updated', () => {
+    if (grid) confirmedEndByGrid.delete(grid);
+    cardsDirty = true; clearTimer(); schedule();
+  });
   listen(document, 'visibilitychange', () => { clearTimer(); if (active()) schedule(); });
   listen(window, 'pagehide', () => {
     suspended = true; clearTimer(); observer.disconnect(); observing = false; removeUi();

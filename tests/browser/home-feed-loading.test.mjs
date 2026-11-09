@@ -41,6 +41,40 @@ async function open(t, { prefs = {}, path = '/', mode = 'modern', filtered = tru
 const calls = page => page.evaluate(() => calls);
 const wait = (page, count) => page.waitForFunction(count => calls === count, count);
 
+test('a missing loading control is not presented as confirmed exhaustion', async t => {
+  const page = await open(t);
+  await page.evaluate(() => host.remove());
+  await page.locator('#ytms-home-loading').waitFor();
+  const message = await page.locator('#ytms-home-loading-status').textContent();
+  assert.match(message, /isn’t offering another batch right now/);
+  assert.equal(message.includes('no more recommendations'), false);
+});
+
+test('a modern continuation is recognised as an unsupported control rather than an exhausted feed', async t => {
+  const page = await open(t);
+  await page.evaluate(() => { const modern = document.createElement('yt-continuation-item-view-model'); modern.style.display = 'block'; modern.style.height = '1px'; host.replaceWith(modern); });
+  await page.locator('#ytms-home-loading').waitFor();
+  assert.match(await page.locator('#ytms-home-loading-status').textContent(), /unavailable for this YouTube layout/);
+  assert.equal(await calls(page), 0);
+});
+
+test('a confirmed native end remains recognisable when its command has been cleared', async t => {
+  const page = await open(t);
+  await page.evaluate(() => { owner.endOfList = true; owner.data = {}; });
+  await page.locator('#ytms-home-loading').waitFor();
+  assert.match(await page.locator('#ytms-home-loading-status').textContent(), /no more recommendations/);
+  assert.equal(await calls(page), 0);
+});
+
+test('fresh page data without a loading control does not inherit an older exhaustion claim', async t => {
+  const page = await open(t);
+  await page.evaluate(() => { owner.endOfList = true; });
+  await page.waitForFunction(() => document.querySelector('#ytms-home-loading-status')?.textContent.includes('no more recommendations'));
+  await page.evaluate(() => { host.remove(); window.dispatchEvent(new Event('yt-page-data-updated')); });
+  await page.waitForFunction(() => document.querySelector('#ytms-home-loading-status')?.textContent.includes('isn’t offering another batch'));
+  assert.equal(await calls(page), 0);
+});
+
 test('automatic recovery waits, loads only filtered Home, and stops at its batch allowance', async t => {
   const page = await open(t, { prefs: { homeLoadBatchLimit: '1' } });
   await page.locator('#ytms-home-loading button').waitFor();
