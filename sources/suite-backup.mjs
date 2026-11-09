@@ -33,6 +33,7 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
   }
 
   function checkedSettings(input, complete = true) {
+    input = settings.migrateLegacySettings(input, true);
     checkObject(input, settingNames, complete ? requiredSettingNames : []);
     const values = settings.validate(input);
     for (const name of Object.keys(input)) {

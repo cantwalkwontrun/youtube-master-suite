@@ -14,6 +14,14 @@ export function installCompactNativeQueue({ document, window, enabled = true,
   let visibilityObserver = null, visibilityAncestors = [];
   let suspended = document.hidden, settleTimer = 0, settling = '', settled = '';
   let clickGuard = null, clickTimer = 0;
+  let measurements = null;
+  function measure(node, property) {
+    const read = () => property === 'rect' ? node.getBoundingClientRect() : window.getComputedStyle(node);
+    if (!measurements) return read();
+    let entry = measurements.get(node);
+    if (!entry) { entry = {}; measurements.set(node,entry); }
+    return entry[property] ||= read();
+  }
   function ensureStyle() {
     if (style) return;
     style = document.createElement('style');
@@ -49,12 +57,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   function visible(node) {
     if (!node?.isConnected || node.hidden) return false;
-    const box = node.getBoundingClientRect(), css = window.getComputedStyle(node);
+    const box = measure(node,'rect'), css = measure(node,'css');
     return box.width > 0 && box.height > 0 && css.display !== 'none' &&
       css.visibility === 'visible' && Number(css.opacity) > 0;
   }
   function animating(node) {
-    const transform = window.getComputedStyle(node).transform;
+    const transform = measure(node,'css').transform;
     const transformed = transform !== 'none' && transform !== 'matrix(1, 0, 0, 1, 0, 0)' &&
       transform !== 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)';
     const classes = animationClasses.filter(name => node.classList.contains(name)).join(' ');
@@ -111,6 +119,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const shown = hosts.filter(visible);
       adopt(shown.length === 1 ? shown[0] : hosts.length === 1 ? hosts[0] : null);
       if (!host) return;
+      // Adoption can release a previous owner's geometry. Reuse measurements
+      // only within this read phase, never across frames, writes or gestures.
+      measurements = new WeakMap();
       nativeSignature = signature(host);
       // A stylesheet or an ancestor can reveal this host without changing any
       // of its own attributes. Keep one size observation until it is visible.
@@ -148,21 +159,21 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const unset = value => value === '' || value === 'auto';
       const south = pxAnchor(nativeBottom) && unset(nativeTop);
       if (!south && !(pxAnchor(nativeTop) && unset(nativeBottom))) { release(); return; }
-      const panelBox = panel.getBoundingClientRect(), listBox = list.getBoundingClientRect();
-      const listCss = window.getComputedStyle(list), containerCss = window.getComputedStyle(container);
+      const panelBox = measure(panel,'rect'), listBox = measure(list,'rect');
+      const listCss = measure(list,'css'), containerCss = measure(container,'css');
       const px = value => Number.parseFloat(value) || 0;
       // Native continuation/unavailable rows can also occupy list space. Their
       // actual extent must remain visible even though they are not video rows.
-      const rowBottom = Math.max(...[...rows, ...contents].map(row => row.getBoundingClientRect().bottom));
+      const rowBottom = Math.max(...[...new Set([...rows, ...contents])].map(row => measure(row,'rect').bottom));
       const contentHeight = listBox.top - panelBox.top + rowBottom - listBox.top + list.scrollTop +
         px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
       const upperHeight = nativeHeight - 285;
-      const maximum = window.getComputedStyle(host).maxHeight;
+      const maximum = measure(host,'css').maxHeight;
       if (!pxAnchor(maximum)) { release(); return; }
       const effectiveHeight = Math.min(nativeHeight, px(maximum), window.innerHeight - 32);
       const available = Math.min(285, effectiveHeight - upperHeight);
       const target = Math.min(Math.ceil(contentHeight), available);
-      const minimum = listBox.top - panelBox.top + rows[0].getBoundingClientRect().height +
+      const minimum = listBox.top - panelBox.top + measure(rows[0],'rect').height +
         px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
       // Keep the native scrolling layout for long queues or unknown geometry.
       if (!(target > 0 && target < 284 && contentHeight > 0) || available < minimum) { release(); return; }
@@ -176,7 +187,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     } catch (error) {
       release();
       try { reportError(error); } catch { /* Reporting must not obstruct native controls. */ }
-    }
+    } finally { measurements = null; }
   }
   function schedule() {
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(sync);

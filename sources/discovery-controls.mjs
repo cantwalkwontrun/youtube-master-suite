@@ -1,12 +1,14 @@
 // Language: en-GB. Optional native-page presentation and discovery controls.
 // All markers, styles and links are owned; native content and extension data stay intact.
-export function installDiscoveryControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
+import { classifyCatalogueFilm } from './catalogue-film.mjs';
+export function installDiscoveryControls({ document, window, preferences = {}, classifyFilm = classifyCatalogueFilm, MutationObserver = window.MutationObserver, reportError = () => {} }) {
   const p = preferences, root = document.documentElement;
-  const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
-  if (!root || (!keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
+  const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
+  if (!root || (!['free','paid','none'].includes(p.filmVisibility) && !keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
   const attr = 'data-ytms-discovery-hidden', reasonAttr = 'data-ytms-discovery-reason';
   const owned = new Set(), filteredCards = new Set(), pendingCards = new Set(), badgeNodes = new Set(), viewNodes = new Set(), headings = new Set(), restoredNavigation = new Set(), cardHeadings = new WeakMap(), cardDecorations = new WeakMap(), decorationOwners = new WeakMap(), rootOwned = new Map(), logoRecords = new Map(), attemptedRoutes = new Set();
   const manuallyPlayed = new WeakSet(), pausedTrailers = new WeakSet();
+  let filmResults = new WeakMap();
   const outerCardSelector = 'ytd-rich-item-renderer,ytd-video-renderer,ytd-grid-video-renderer,ytd-playlist-renderer,ytd-movie-renderer';
   const cardSelector = outerCardSelector+',yt-lockup-view-model';
   // Modern rich items contain a lockup renderer for the same video. Treat the
@@ -39,7 +41,11 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
   const add = (enabled, selector, css = 'display:none!important') => { if (enabled) rules.push(`${selector}{${css}}`); };
   add(true, `:root:not([data-yt-master-show-filtered="1"]) [${attr}="1"]`);
   add(p.hideAllComments, 'ytd-watch-flexy ytd-comments,ytd-watch-grid ytd-comments');
-  add(p.hideCommentGifs, 'ytd-comments img[src*="tenor.com"],ytd-comments img[src*="giphy.com"],ytd-comments img[src$=".gif"],ytd-comments img[src*=".gif?"]');
+  // Native comment GIFs can be proxied or served as WebP, without a GIF URL.
+  // Hide the attachment host so its reserved space disappears as well. CSS
+  // covers lazy-loaded replies without observing or scanning every comment.
+  add(p.hideCommentGifs, ':is(ytd-comment-view-model,yt-comment-view-model,ytd-comment-renderer) :is(.ytwCommentImageAttachmentViewModelHost,.ytwCommentImageAttachmentViewModelImageContainer,yt-comment-image-view-model)');
+  add(p.hideCommentGifs, 'ytd-comments img:is([src*="tenor.com" i],[src*="giphy.com" i],[src$=".gif" i],[src*=".gif?" i],[src*=".gif#" i]):not(:is(#author-thumbnail,yt-avatar-shape,.yt-spec-avatar-shape,#creator-heart,ytd-creator-heart-renderer) *):not(.emoji,.yt-core-attributed-string__image-element)');
   add(p.hideHomePosts, '[data-ytms-discovery-route="home"] ytd-browse ytd-post-renderer,[data-ytms-discovery-route="home"] ytd-browse ytd-backstage-post-thread-renderer');
   add(p.hideSubscriptionsHeaders, '[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-rich-grid-renderer #header,[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-feed-filter-chip-bar-renderer');
   add(p.hideChannelBanner, '[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #channel-header-container #banner,[data-ytms-discovery-route="channel"] yt-page-header-renderer yt-image-banner-view-model,[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #banner');
@@ -106,13 +112,17 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
   }
   function filterReason(card) {
     if (!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) return '';
-    const badges = [...card.querySelectorAll('ytd-badge-supported-renderer,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost')].map(text);
-    const metadata = [...card.querySelectorAll('#metadata-line span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')].map(text);
-    const nativeLinks = [...card.querySelectorAll('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title')];
+    const badges = p.hideFeedDubbed ? [...card.querySelectorAll('ytd-badge-supported-renderer,ytd-badge-supported-renderer .badge,ytd-badge-supported-renderer .badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost')].map(text) : [];
+    const metadata = p.hideFeedVods || p.hideFeedLowViews ? [...card.querySelectorAll('#metadata-line span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')].map(text) : [];
+    const nativeLinks = p.hideFeedPlaylists ? [...card.querySelectorAll('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title')] : [];
     if (p.hideFeedPlaylists && (card.matches('ytd-playlist-renderer') || nativeLinks.some(a => { try { const u = new window.URL(a.href); return u.origin === window.location.origin && u.pathname === '/playlist' && u.searchParams.has('list'); } catch { return false; } }))) return 'Playlist';
     if (p.hideFeedVods && metadata.some(x => /^Streamed\s.+\sago$/i.test(x))) return 'Stream archive';
     if (p.hideFeedDubbed && badges.some(x => /^auto[- ]dubbed$/i.test(x))) return 'Auto-dubbed';
-    if (p.hideFeedMovies && (card.matches('ytd-movie-renderer') || badges.some(x => /^(?:Movies?\s*(?:&|and)\s*TV|Buy or rent)$/i.test(x)))) return 'Film or television';
+    if (['free','paid','none'].includes(p.filmVisibility)) {
+      if (!filmResults.has(card)) filmResults.set(card,classifyFilm(card));
+      const film = filmResults.get(card);
+      if (film && (p.filmVisibility === 'none' || film !== 'unknown' && film !== p.filmVisibility)) return 'Film or television';
+    }
     if (p.hideFeedCollaborations && (card.hasAttribute('is-collaboration') || [...card.querySelectorAll('.ytContentMetadataViewModelAvatarStack yt-avatar-stack-view-model')].some(stack => stack.querySelectorAll('img').length >= 2))) return 'Collaboration';
     if (p.hideFeedLowViews) {
       const values = metadata.map(parseViews).filter(x => x !== null);
@@ -131,6 +141,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
     cardDecorations.delete(card);
   }
   function decorateCard(card) {
+    if (!p.listChannelHeaders && !p.hideThumbnailBadges && !p.hideViewsIcon && !p.viewsSeparateLine) return;
     clearDecorations(card);
     const valid = eligibleFeed() && !card.closest(excluded) && card.closest(feedSurface);
     const list = routeKind() === 'home' && p.homeList || routeKind() === 'subscriptions' && p.subscriptionsList;
@@ -228,7 +239,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
       setRoot('data-ytms-discovery-list', (kind === 'home' && p.homeList || kind === 'subscriptions' && p.subscriptionsList) ? '1' : null);
       const darkReader = document.querySelector('style.darkreader,link.darkreader') || root.hasAttribute('data-darkreader-mode');
       setRoot('data-ytms-discovery-theme', !darkReader && ['dark','light'].includes(p.interfaceTheme) ? p.interfaceTheme : null);
-      const candidates = scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
+      const candidates = !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
       const cards = new Set([...candidates].map(canonicalCard).filter(Boolean));
       for (const card of cards) {
         clearNestedCardOwnership(card);
@@ -256,19 +267,40 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
       syncObservation();
     } catch (error) { reportError('discoveryControls','reconcile',error); }
   }
-  function schedule(full = true) { if (full !== false) scanAllCards = true; if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile); }
-  const filters = ['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(k=>p[k]);
+  function schedule(full = true) { if (full !== false) { scanAllCards = true; filmResults = new WeakMap(); } if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile); }
+  const filters = ['free','paid','none'].includes(p.filmVisibility) || ['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(k=>p[k]);
+  const filmOnly = ['free','paid','none'].includes(p.filmVisibility) && !['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(key=>p[key]);
+  const filmBadges = 'ytd-badge-supported-renderer,.badge-style-type-ypc,.badge-style-type-ypc-green,.badge-style-type-ypc-transparent,.badge,.badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost';
+  const filmStructure = cardSelector + ',ytd-rich-grid-media,' + filmBadges;
+  function affectsFilm(record, element) {
+    if (element.closest(filmBadges)) return true;
+    if (record.type === 'attributes') {
+      // Class changes can turn a former native badge into a plain span.
+      if (record.attributeName === 'class') return /(?:^|\s)(?:badge(?:-label|-style-type-ypc(?:-green|-transparent)?)?|ytBadgeShapeBadgeText|yt-badge-shape__text|ytThumbnailOverlayBadgeViewModelHost)(?:\s|$)/.test(record.oldValue || '');
+      return record.attributeName === 'href' && element.matches('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title');
+    }
+    if (element.matches(cardSelector + ',ytd-rich-grid-media')) return true;
+    return record.type === 'childList' && [...record.addedNodes,...record.removedNodes].some(node =>
+      node.nodeType === 1 && (node.matches(filmStructure) || node.querySelector(filmStructure)));
+  }
   const observer = new MutationObserver(mutations => {
     let changed = false;
     for (const m of mutations) {
       const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
       if (!el || el.closest('#ytms-settings-dialog,#ytms-age-dialog,.html5-video-player')) continue;
       if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
-      const card = canonicalCard(el); if (card) { pendingCards.add(card); changed = true; }
+      const card = canonicalCard(el);
+      if (card) {
+        if ((!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) && !filteredCards.has(card) && !cardDecorations.has(card) && !cardHeadings.has(card)) continue;
+        const filmChanged = ['free','paid','none'].includes(p.filmVisibility) && affectsFilm(m,el);
+        if (filmChanged) filmResults.delete(card);
+        if (filmOnly && !filmChanged) continue;
+        pendingCards.add(card); changed = true;
+      }
       if (el.closest('ytd-masthead,ytd-guide-renderer,yt-tab-group-shape,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer')) changed = true;
       for (const node of m.addedNodes) if (node.nodeType === 1) {
-        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) pendingCards.add(card); changed = true; }
-        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) pendingCards.add(card); changed = true; }
+        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
       }
       // Native virtualisation can remove cards without adding a replacement.
@@ -280,7 +312,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, M
   });
   function syncObservation() {
     const needed = !disposed && !suspended && (filters && eligibleFeed() || p.logoToSubscriptions || p.restoreSubscriptionsLink || p.homeRedirect && routeKind() === 'home' || p.channelDefaultVideos && channelBase() || p.hideSearchAI && routeKind() === 'search' || p.hideAIChapters || p.hideSidebarSubscriptions || ['dark','light'].includes(p.interfaceTheme));
-    if (needed && !observerActive) { observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','aria-label','title','overlay-style','is-collaboration','class','data-darkreader-mode']}); observerActive = true; }
+    if (needed && !observerActive) { observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeOldValue:['free','paid','none'].includes(p.filmVisibility),attributeFilter:['href','aria-label','title','overlay-style','is-collaboration','class','data-darkreader-mode']}); observerActive = true; }
     else if (!needed && observerActive) { observer.disconnect(); observerActive = false; }
   }
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };

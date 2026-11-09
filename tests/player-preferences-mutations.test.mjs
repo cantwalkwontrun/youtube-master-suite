@@ -98,6 +98,35 @@ test("volume getter falls back when the player API is unavailable", () => {
   assert.equal(context.getPlayerVolume({ getVolume: () => 0 }, video), 0);
 });
 
+test("disabled card filters clear existing markers without scanning ordinary cards", () => {
+  const marked = {}, ancestor = {}, ordinary = {};
+  const scans = [], writes = [];
+  const root = { nodeType: 1, closest: () => ancestor };
+  const context = vm.createContext({
+    Node: { ELEMENT_NODE: 1 },
+    CARD_HIDE_ATTRIBUTES: { owned: "data-owned" },
+    collectMatchingElements: (_, selector) => {
+      scans.push(selector);
+      return new Set(selector === "ordinary" ? [ordinary] : [marked]);
+    },
+    setCardHidden: (card, key, hidden) => writes.push({ card, key, hidden }),
+  });
+  vm.runInContext(extractFunction(PLAYER_PREFERENCES_SOURCE, "hideMatchingCards"), context);
+  for (let index = 0; index < 100; index += 1) {
+    context.hideMatchingCards(root, false, "ordinary", "owned", () => { throw new Error("disabled predicate"); });
+  }
+  assert.equal(scans.length, 100);
+  assert.ok(scans.every(selector => selector === '[data-owned="1"]'));
+  assert.equal(writes.length, 200);
+  assert.ok(writes.every(write => !write.hidden && write.key === "owned" && write.card !== ordinary));
+  scans.length = 0; writes.length = 0;
+  context.hideMatchingCards(root, true, "ordinary", "owned", card => card === ordinary);
+  assert.deepEqual(scans, ["ordinary", '[data-owned="1"]']);
+  assert.equal(writes.find(write => write.card === ordinary).hidden, true);
+  assert.equal(writes.find(write => write.card === marked).hidden, false);
+  assert.equal(writes.find(write => write.card === ancestor).hidden, false);
+});
+
 function createWheelVolumeHarness({ player, video }) {
   const overlays = [];
   const context = vm.createContext({

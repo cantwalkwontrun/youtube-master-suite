@@ -8,8 +8,8 @@ import { createMenuEditor } from "./sources/menu-editor.mjs";
 import { createChannelLookup } from "./sources/channel-lookup.mjs";
 import { createFeatureCatalogue } from "./sources/feature-catalogue.mjs";
 import { installPlayerControls } from "./sources/player-controls.mjs";
+import { classifyCatalogueFilm } from './sources/catalogue-film.mjs';
 import { installDiscoveryControls } from "./sources/discovery-controls.mjs";
-import { installHomeFeedLoading } from "./sources/home-feed-loading.mjs";
 import { installLayoutControls } from "./sources/layout-controls.mjs";
 import { installCompactNativeQueue } from "./sources/compact-native-queue.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
@@ -28,7 +28,7 @@ import { createIsolatedStorage } from "./sources/isolated-storage.mjs";
 import { initialiseIsolatedStorage } from "./sources/storage-bootstrap.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.78";
+const MASTER_VERSION = "1.2.83";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -732,6 +732,7 @@ function transformModuleBody(moduleDefinition, body) {
   }
 
   if (moduleDefinition.id === "playerPreferencesLite") {
+    transformed = replaceExactly(transformed, "    return hasPayToWatchText(card);", "    return hasPayToWatchText(card) && !suite.classifyFilm(card);", "Catalogue film preference owns catalogue price filtering");
     transformed = replaceExactly(
       transformed,
       playerPreferencesEnsureStyles,
@@ -2358,6 +2359,7 @@ ${runtimeMutationCoverageHelpers}
     settings: createSuiteSettings(() => storage, () => Boolean(document.documentElement?.hasAttribute("dark")), createFeatureCatalogue(), menuLayout),
     menuLayout,
     createMenuEditor: ${createMenuEditor.toString()},
+    classifyFilm: ${classifyCatalogueFilm.toString()},
     channelAge: createChannelAgeService(() => storage),
     createChannelAgeDialog: ${createChannelAgeDialog.toString()},
     installVideoMenu: ${installVideoMenu.toString()},
@@ -2392,10 +2394,10 @@ ${runtimeMutationCoverageHelpers}
   suite.startFeatureControls = () => {
     if (featureControlsStarted) return;
     featureControlsStarted = true;
-    const options = { document, window, preferences: suite.settings.initial,
+    const options = { document, window, preferences: suite.settings.initial, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
-    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installHomeFeedLoading.toString()}]) {
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}]) {
       try { install(options); } catch { options.reportError(); }
     }
   };

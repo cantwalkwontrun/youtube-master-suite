@@ -4,14 +4,12 @@ lang: en-GB
 
 # Optional controls and compatibility
 
-The Suite adds 112 menu controls in this update. This includes switches for previously automatic cleanup, preserving its existing defaults. Queue fitting and Home loading start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
+The Suite adds 108 menu controls in this update. This includes switches for previously automatic cleanup, preserving its existing defaults. Queue fitting starts on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
 
-## Home loading
+## Films
 
-**Feed → Home loading** controls automatic recovery after filtering and a manual **Load more** button. Both default to on. Automatic loading starts only near the end of a filtered Home feed, waits at least three seconds between requests, and is limited to three extra batches per visit. Choose limits of 1, 3, 5 or 10 batches and delays of 3, 5 or 10 seconds. Save and reload to apply settings.
-
-The button requests one native batch and remains available after the automatic limit. Native button-only continuations require a manual click. Loading pauses in background tabs, during navigation, on unsupported or ambiguous layouts, and after errors or a ten-second stall. An attempted native continuation is never sent twice for the same feed, including after page suspension. No direct API request, scroll, page refresh or playback command is used. Filters and companion-extension content are retained. YouTube must still provide a continuation; this cannot guarantee an endless feed.
+**Feed → Additional filters → Films to show** offers All films, Free films only, Paid films only and Hide all films. Native catalogue and price badges identify free and paid titles; unclear or conflicting price status stays visible except with Hide all films. This selector takes priority over Hide paid video cards for catalogue titles. Other feed filters still apply. Existing hidden-film preferences remain hidden; older visible-film settings retain their paid-content preference. Ordinary uploads are not classified from their titles, genres or duration.
 
 ## Custom video menus and creator choices
 
@@ -93,7 +91,7 @@ Compact queues retain the native corner alignment, including the bottom inset. N
 | feed / Additional filters | Hide collaboration videos | Off | Hide explicitly labelled collaboration cards. Ordinary multi-author text is not guessed. |
 | feed / Additional filters | Hide low-view videos | Off | Filter cards with an explicit, readable native view count below the selected threshold. Unknown counts are kept. |
 | feed / Additional filters | Hide labelled auto-dubbed videos | Off | Hide cards explicitly labelled auto-dubbed. Audio languages are not guessed from titles. |
-| feed / Additional filters | Hide Movies and TV cards | Off | Hide explicitly identified Movies and TV cards in recommendations and search. |
+| feed / Additional filters | Films to show | Free films only | Show all, free, paid or no catalogue titles; unclear prices stay visible except when hiding all films. |
 | feed / Additional filters | Hide Home community posts | Off | Hide community post cards on Home. Channel post pages are unaffected. |
 | interface / Page appearance | Hide native thumbnail badges | Off | Hide recognised native format and New badges. Durations, LIVE badges and extension markers are preserved. |
 | interface / Page appearance | Hide Premium promotions | Off | Hide native Premium upsell surfaces. This is cosmetic and does not block advertising. |

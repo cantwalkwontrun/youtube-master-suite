@@ -14,6 +14,63 @@ function fixture(values) {
   return { data, storage, settings, backup: createSuiteBackup(() => storage, settings, createChannelAgeService(() => storage)) };
 }
 
+test('retired Home loading and film preferences migrate without rewriting storage or losing settings', () => {
+  for (const hideFeedMovies of [true, false]) {
+    const f = fixture({ autoLoadFilteredHome: true, showHomeLoadMore: true, homeLoadBatchLimit: '5', homeLoadDelay: '3', hideFeedMovies, miniplayerWidth: 997, viewerColour: '#ABCDEF' });
+    const before = f.storage.getItem(f.settings.key);
+    assert.equal(f.settings.initial.filmVisibility, hideFeedMovies ? 'none' : 'free');
+    assert.equal(f.storage.getItem(f.settings.key), before);
+    const exported = f.backup.exportData();
+    assert.equal(exported.ok, true, exported.error);
+    const doc = JSON.parse(exported.text);
+    assert.equal(doc.settings.filmVisibility, hideFeedMovies ? 'none' : 'free');
+    assert.equal(doc.settings.miniplayerWidth, 997);
+    delete doc.settings.filmVisibility;
+    Object.assign(doc.settings, { hideFeedMovies, autoLoadFilteredHome: true, showHomeLoadMore: false, homeLoadBatchLimit: '10', homeLoadDelay: '5' });
+    assert.equal(f.backup.preview(JSON.stringify(doc)).ok, true);
+    assert.equal(f.settings.save(f.settings.read()).ok, true);
+    const saved = JSON.parse(f.storage.getItem(f.settings.key)).values;
+    for (const name of ['hideFeedMovies','autoLoadFilteredHome','showHomeLoadMore','homeLoadBatchLimit','homeLoadDelay']) assert.equal(Object.hasOwn(saved, name), false);
+    assert.equal(saved.filmVisibility, hideFeedMovies ? 'none' : 'free');
+    assert.equal(saved.viewerColour, '#ABCDEF');
+  }
+});
+
+test('migration still protects malformed and unknown saved preferences', () => {
+  for (const values of [{autoLoadFilteredHome:'yes'}, {homeLoadBatchLimit:'999'}, {hideFeedMovies:true,showFilms:true}, {unknownPreference:true}]) {
+    const f = fixture(values), before = f.storage.getItem(f.settings.key);
+    assert.equal(f.settings.save(f.settings.read()).ok, false);
+    assert.equal(f.backup.exportData().ok, false);
+    assert.equal(f.storage.getItem(f.settings.key), before);
+  }
+  const f = fixture(), doc = JSON.parse(f.backup.exportData().text);
+  doc.settings.homeLoadDelay = '0';
+  assert.equal(f.backup.preview(JSON.stringify(doc)).ok, false);
+});
+
+test('boolean film settings migrate with the prior paid-content preference and all four choices round-trip', () => {
+  for (const [values, expected] of [
+    [{showFilms:true,hidePayToWatchCards:true},'free'],
+    [{showFilms:true,hidePayToWatchCards:false},'all'],
+    [{showFilms:false,hidePayToWatchCards:false},'none'],
+    [{hideFeedMovies:false,hidePayToWatchCards:false},'all'],
+    [{hidePayToWatchCards:false},'all'],
+  ]) {
+    const f=fixture(values), before=f.storage.getItem(f.settings.key);
+    assert.equal(f.settings.initial.filmVisibility,expected);
+    assert.equal(f.storage.getItem(f.settings.key),before);
+    assert.equal(f.backup.exportData().ok,true);
+    assert.equal(f.settings.save(f.settings.read()).ok,true);
+  }
+  for (const filmVisibility of ['all','free','paid','none']) {
+    const f=fixture({filmVisibility});
+    assert.equal(f.settings.initial.filmVisibility,filmVisibility);
+    const doc=JSON.parse(f.backup.exportData().text);
+    assert.equal(doc.settings.filmVisibility,filmVisibility);
+    assert.equal(f.backup.preview(JSON.stringify(doc)).ok,true);
+  }
+});
+
 test('catalogue has unique, typed settings and rejects arbitrary option values', () => {
   const catalogue = createFeatureCatalogue(), { settings } = fixture();
   assert.equal(new Set(catalogue.definitions.map(item => item.key)).size, catalogue.definitions.length);
@@ -35,20 +92,6 @@ test('new controls preserve old saved values and reading never rewrites the reco
   assert.equal(f.settings.initial.showDeArrowQueueButton, false);
   for (const key of ['originalAudio', 'snapshotButton', 'homeRedirect', 'hideAllComments', 'fullWindowTheatre']) assert.equal(f.settings.initial[key], false);
   assert.equal(f.storage.getItem(f.settings.key), before);
-});
-
-test('Home loading has bounded choices and independent switches without changing existing preferences', () => {
-  const { settings, storage } = fixture({ hideChat: false, miniplayerWidth: 997, autoLoadFilteredHome: false, homeLoadBatchLimit: '10', homeLoadDelay: '5' });
-  const before = storage.getItem(settings.key);
-  assert.equal(settings.initial.autoLoadFilteredHome, false);
-  assert.equal(settings.initial.showHomeLoadMore, true);
-  assert.equal(settings.initial.homeLoadBatchLimit, '10');
-  assert.equal(settings.initial.homeLoadDelay, '5');
-  assert.equal(settings.initial.hideChat, false);
-  assert.equal(settings.initial.miniplayerWidth, 997);
-  for (const invalid of ['0', '100', '-1', 10, true, {}, null]) assert.equal(settings.validate({ homeLoadBatchLimit: invalid }).homeLoadBatchLimit, '3');
-  for (const invalid of ['0', '1', '100', 5, true, {}, null]) assert.equal(settings.validate({ homeLoadDelay: invalid }).homeLoadDelay, '3');
-  assert.equal(storage.getItem(settings.key), before);
 });
 
 test('earlier full backups gain only defaults for newly introduced controls', () => {

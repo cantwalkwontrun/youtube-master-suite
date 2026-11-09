@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.23
+// @version      2.24
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -151,6 +151,7 @@
     '[data-ytppl-upcoming-hidden="1"]',
     '[data-ytppl-pay-to-watch-hidden="1"]',
     '[data-ytppl-watched-hidden="1"]',
+    '[data-ytms-discovery-hidden="1"]',
   ].join(',');
 
   function getText(el) {
@@ -661,6 +662,7 @@
       markerReasons.forEach(([attribute, reason]) => {
         if (container.getAttribute(attribute) === '1') reasons.add(reason);
       });
+      if (container.getAttribute('data-ytms-discovery-hidden') === '1') reasons.add(container.getAttribute('data-ytms-discovery-reason') || 'Additional filter');
       reasons.forEach((reason) => counts.set(reason, (counts.get(reason) || 0) + 1));
     });
 
@@ -704,12 +706,14 @@
     const revealed =
       document.documentElement?.getAttribute(FILTER_REVEAL_ATTRIBUTE) === '1';
     const button = existing || document.createElement('button');
-    button.id = FILTER_TOGGLE_ID;
-    button.type = 'button';
-    button.setAttribute('aria-pressed', String(Boolean(revealed)));
-    button.textContent = `Filtered: ${containers.size} · ${revealed ? 'Hide' : 'Show'}`;
+    if (!existing) { button.id = FILTER_TOGGLE_ID; button.type = 'button'; }
+    const pressed = String(Boolean(revealed));
+    const label = `Filtered: ${containers.size} · ${revealed ? 'Hide' : 'Show'}`;
+    if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
+    if (button.textContent !== label) button.textContent = label;
     const reasons = getFilteredReasonSummary(containers);
-    button.title = reasons || `${containers.size} filtered items`;
+    const title = reasons || `${containers.size} filtered items`;
+    if (button.title !== title) button.title = title;
     if (!existing) {
       button.addEventListener('click', () => {
         const root = document.documentElement;
@@ -830,6 +834,10 @@
   const observer = new MutationObserver((mutations) => {
     let toggleDirty = false;
     for (const mutation of mutations) {
+      if (mutation.type === 'attributes' && mutation.attributeName?.startsWith('data-ytms-discovery-')) {
+        toggleDirty = true;
+        continue; // Summary only: do not feed an owned filter result back into card filtering.
+      }
       if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
         const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
         const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
@@ -881,6 +889,8 @@
       'data-ytppl-upcoming-hidden',
       'data-ytppl-pay-to-watch-hidden',
       'data-ytppl-watched-hidden',
+      'data-ytms-discovery-hidden',
+      'data-ytms-discovery-reason',
     ],
     attributes: true,
     characterData: true,

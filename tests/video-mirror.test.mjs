@@ -269,7 +269,7 @@ function createHarness({ enabled = true } = {}) {
     videoMirrorVideo: null, videoMirrorButton: null, videoMirrorTooltip: null, videoMirrorPlayer: null,
     videoMirrorControls: null, videoMirrorPageSuspended: false,
     videoMirrorTooltipObserver: null,
-    applyFrame: 0, playerLayoutRefreshFrame: 0, pendingApplyRoots: new Set(),
+    applyFrame: 0, dynamicNavigationPending: false, playerLayoutRefreshFrame: 0, pendingApplyRoots: new Set(),
     liveChatSyncFrame: 0, liveChatNavigationPending: false,
     mutationAffectsLiveChat: () => false,
     requestAnimationFrame(callback) {

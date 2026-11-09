@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.123
+// @version      1.128
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
 // @updateURL    none
@@ -452,6 +452,7 @@
   const PLAYER_LAYOUT_REFRESH_DELAYS_MS = [0, 100, 500, 1200];
 
   let applyFrame = 0;
+  let dynamicNavigationPending = false;
   const pendingApplyRoots = new Set();
   let legacyActionHiddenCleared = false;
   let theaterModeUserDisabled = false;
@@ -861,7 +862,12 @@
   function hideMatchingCards(root, enabled, selector, datasetKey, predicate) {
     const attribute = CARD_HIDE_ATTRIBUTES[datasetKey];
     const markerSelector = attribute ? `[${attribute}="1"]` : "";
-    const candidates = collectMatchingElements(root, selector);
+    // Disabled filters only need to release cards they previously marked.
+    // Scanning ordinary cards here repeats work on every feed mutation even
+    // when the corresponding preference (or route profile) is switched off.
+    const candidates = enabled
+      ? collectMatchingElements(root, selector)
+      : new Set();
 
     if (markerSelector) {
       collectMatchingElements(root, markerSelector).forEach((card) =>
@@ -4591,13 +4597,14 @@
     }
   }
 
-  function applyRoutePreferences() {
+  function applyRoutePreferences(deferDynamic = false) {
     scheduleVideoMirrorSync();
     scheduleLiveChatSync();
     ensureStyles();
     syncFullscreenComments();
     convertCurrentShortsPage();
-    applyDynamicPreferences(document);
+    if (deferDynamic) scheduleApply(document);
+    else applyDynamicPreferences(document);
     schedulePreferredQualityAttempts();
     scheduleLiveChatCollapseAttempts();
 
@@ -4607,16 +4614,18 @@
   }
 
   function handleNavigateFinish() {
+    dynamicNavigationPending = false;
     liveChatNavigationPending = false;
     preferredQualityNavigationPending = false;
     theaterModeUserDisabled = false;
     theaterModeAttemptKey = "";
-    applyRoutePreferences();
+    applyRoutePreferences(true);
     configureDynamicMutationObserver();
     schedulePlayerLayoutRefreshAttempts();
   }
 
   function handleNavigateStart() {
+    dynamicNavigationPending = true;
     liveChatNavigationPending = true;
     resetLiveChat();
     preferredQualityNavigationPending = true;
@@ -4708,6 +4717,7 @@
   }
 
   function scheduleApply(root = document) {
+    if (dynamicNavigationPending || videoMirrorPageSuspended) return;
     addPendingApplyRoot(root);
     if (applyFrame) {
       return;
@@ -5166,10 +5176,12 @@
             // SponsorBlock and its start is a documented offset or lies within
             // a previously witnessed transition on this same tooltip. This
             // also handles reversal before the transition reaches its endpoint.
-            if (Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
-              const transitions = node.getAnimations?.().filter(animation =>
-                animation.transitionProperty === 'transform' && animation.playState === 'running' &&
-                animation.effect?.target === node) || [];
+            const transitions = node.getAnimations?.().filter(animation =>
+              animation.transitionProperty === 'transform' && animation.playState === 'running' &&
+              animation.effect?.target === node) || [];
+            // A foreign transition can briefly cross a documented offset.
+            // Validate its endpoints even when this frame happens to match.
+            if (transitions.length || Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
               // The class mutation can be observed one frame before the
               // browser creates its transition. At the untouched zero offset,
               // retain the measured layout for at most one frame and retry.
@@ -5507,6 +5519,7 @@
   applyRoutePreferences();
 
   const observer = new MutationObserver((mutations) => {
+    if (dynamicNavigationPending || videoMirrorPageSuspended) return;
     const roots = new Set();
     let watchDynamicRootsChanged = false;
     let videoMirrorChanged = false;
@@ -5580,6 +5593,7 @@
   window.addEventListener(
     "yt-page-data-updated",
     () => {
+      if (dynamicNavigationPending || videoMirrorPageSuspended) return;
       scheduleVideoMirrorSync();
       scheduleLiveChatSync();
       schedulePreferredQualityAttempts();
@@ -5594,6 +5608,7 @@
   window.addEventListener(
     "pagehide",
     () => {
+      dynamicNavigationPending = true;
       videoMirrorPageSuspended = true;
       resetLiveChat();
       clearPreferredQualityAttempts();
@@ -5610,6 +5625,7 @@
   window.addEventListener(
     "pageshow",
     () => {
+      if (videoMirrorPageSuspended) dynamicNavigationPending = false;
       videoMirrorPageSuspended = false;
       liveChatNavigationPending = false;
       schedulePreferredQualityAttempts();

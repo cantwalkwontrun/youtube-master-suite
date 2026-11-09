@@ -38,6 +38,43 @@ const markup = `<div class="ytp-progress-bar-container"><div class="ytp-progress
 let browser;
 before(async()=>{browser=await launchFixtureBrowser()});
 after(async()=>{await browser?.close()});
+test('a running foreign transform stays native at the exact documented SponsorBlock offset',async t=>{
+  const context=await browser.newContext({viewport:{width:1920,height:1080}});
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  t.after(async()=>{try{assert.deepEqual(errors,[])}finally{await context.close()}});
+  await page.addInitScript(()=>localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{timelinePreviewSize:'large',theatreMode:false}})));
+  await page.route('**/*',route=>route.abort());
+  await navigateWatchFixture(page,{html:base.replace('</head>',styles+'</head>').replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)});
+  await page.addScriptTag({content:suite});
+  await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
+  await page.addStyleTag({content:'#movie_player .ytp-tooltip.sponsorCategoryTooltipVisible{transform:translateY(-250px)!important}'});
+  await page.locator('.ytp-progress-bar').hover();
+  await page.waitForFunction(()=>Math.abs(document.querySelector('.ytp-tooltip-bg').getBoundingClientRect().width-480)<1);
+  const crossing=await page.evaluate(async()=>{
+    const tip=document.querySelector('.ytp-tooltip');
+    tip.style.transition='transform 250ms linear';
+    getComputedStyle(tip).transform;
+    tip.classList.add('sponsorCategoryTooltipVisible');
+    const label=tip.querySelector('.sponsorCategoryTooltip'),original=tip.querySelector('.ytp-tooltip-title:not(.sponsorCategoryTooltip)');
+    label.style.removeProperty('display');label.style.right=original.style.right;label.style.textAlign=original.style.textAlign;
+    getComputedStyle(tip).transform;
+    const animation=tip.getAnimations().find(item=>item.transitionProperty==='transform');
+    if(!animation)throw new Error('The native CSS transition did not start');
+    await animation.ready;
+    animation.playbackRate=0;
+    // 14 ms into a 250 ms linear 0 -> -250px transition is exactly -1em.
+    // Keep it running at zero rate so this regression does not depend on FPS.
+    animation.currentTime=14;
+    window.crossingAnimation=animation;
+    document.querySelector('.ytp-progress-bar').dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:500,clientY:650}));
+    return {offset:new DOMMatrixReadOnly(getComputedStyle(tip).transform).f,state:animation.playState};
+  });
+  assert.equal(crossing.state,'running');assert.ok(Math.abs(crossing.offset+14)<0.05,JSON.stringify(crossing));
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))));
+  const width=await page.locator('.ytp-tooltip-bg').evaluate(node=>node.getBoundingClientRect().width);
+  assert.ok(width<210,`Foreign transition enlarged to ${width}px at the documented offset`);
+  await page.evaluate(()=>crossingAnimation.cancel());
+});
 for(const kind of ['none','sponsor','child','big','foreign']) test(`crossing a SponsorBlock segment edge with ${kind} transition`,async t=>{
   const context=await browser.newContext({viewport:{width:1920,height:1080}});
   const page=await context.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));

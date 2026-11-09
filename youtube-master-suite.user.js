@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.78
+// @version      1.2.83
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -91,7 +91,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.78";
+  const MASTER_VERSION = "1.2.83";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -1152,30 +1152,6 @@
   const createFeatureCatalogue = function createFeatureCatalogue() {
  const definitions = [
   {
-    "key": "autoLoadFilteredHome", "tab": "feed", "section": "Home loading",
-    "label": "Load more automatically after filtering",
-    "description": "On Home, ask YouTube for another batch when filtered cards leave you near the end. Pauses in background tabs, on errors, and at the automatic batch limit. Does not scroll or change playback.",
-    "default": true
-  },
-  {
-    "key": "showHomeLoadMore", "tab": "feed", "section": "Home loading",
-    "label": "Show Load more button on Home",
-    "description": "Load one native batch on request. The button reports loading, unsupported layouts and the end of YouTube’s recommendations. It cannot create recommendations after YouTube stops supplying them.",
-    "default": true
-  },
-  {
-    "key": "homeLoadBatchLimit", "tab": "feed", "section": "Home loading",
-    "label": "Automatic batches per Home visit",
-    "description": "Limit extra automatic requests for this Home visit. Load more remains available afterwards. Returning to Home starts a new allowance.",
-    "default": "3", "options": [["1", "1 batch"], ["3", "3 batches"], ["5", "5 batches"], ["10", "10 batches"]]
-  },
-  {
-    "key": "homeLoadDelay", "tab": "feed", "section": "Home loading",
-    "label": "Minimum time between extra loads",
-    "description": "Give YouTube’s native loading and the filters time to settle. One request is allowed per native continuation; failed or stalled requests are not repeated automatically.",
-    "default": "3", "options": [["3", "3 seconds"], ["5", "5 seconds"], ["10", "10 seconds"]]
-  },
-  {
     "key": "originalAudio",
     "tab": "player",
     "section": "Playback",
@@ -1448,12 +1424,13 @@
     "default": false
   },
   {
-    "key": "hideFeedMovies",
+    "key": "filmVisibility",
     "tab": "feed",
     "section": "Additional filters",
-    "label": "Hide Movies and TV cards",
-    "description": "Hide explicitly identified Movies and TV cards in recommendations and search.",
-    "default": false
+    "label": "Films to show",
+    "description": "Choose which catalogue films and TV cards to show. Unknown price status stays visible unless all films are hidden. This choice takes priority over Hide paid video cards for catalogue titles; other filters still apply.",
+    "default": "free",
+    "options": [["all", "All films"], ["free", "Free films only"], ["paid", "Paid films only"], ["none", "Hide all films"]]
   },
   {
     "key": "hideHomePosts",
@@ -2146,7 +2123,7 @@
     "tab": "feed",
     "section": "Feed cleanup",
     "label": "Hide paid video cards",
-    "description": "Hide native rent, buy and pay-to-watch cards in supported feeds.",
+    "description": "Hide other pay-to-watch video cards in supported feeds. Catalogue films and TV use Films to show instead.",
     "default": true
   },
   {
@@ -2326,9 +2303,43 @@
     return typeof value === "string" && /^#?[0-9a-f]{6}$/i.test(value.trim())
       ? "#" + value.trim().replace(/^#/, "").toUpperCase() : null;
   }
+  function migrateLegacySettings(input, strict = false) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+    if (strict && Object.getPrototypeOf(input) !== Object.prototype) return null;
+    const result = { ...input };
+    const retired = {
+      autoLoadFilteredHome: value => typeof value === 'boolean',
+      showHomeLoadMore: value => typeof value === 'boolean',
+      homeLoadBatchLimit: value => ['1', '3', '5', '10'].includes(value),
+      homeLoadDelay: value => ['3', '5', '10'].includes(value),
+    };
+    for (const [name, valid] of Object.entries(retired)) if (Object.hasOwn(result, name)) {
+      if (strict && !valid(result[name])) return null;
+      delete result[name];
+    }
+    if (Object.hasOwn(result, 'hideFeedMovies')) {
+      if (strict && (typeof result.hideFeedMovies !== 'boolean' ||
+        Object.hasOwn(result, 'showFilms') && result.showFilms !== !result.hideFeedMovies)) return null;
+      if (!Object.hasOwn(result, 'showFilms') && typeof result.hideFeedMovies === 'boolean') result.showFilms = !result.hideFeedMovies;
+      delete result.hideFeedMovies;
+    }
+    if (Object.hasOwn(result, 'showFilms')) {
+      if (strict && typeof result.showFilms !== 'boolean') return null;
+      if (typeof result.showFilms === 'boolean') {
+        const visibility = result.showFilms ? (result.hidePayToWatchCards === false ? 'all' : 'free') : 'none';
+        if (strict && Object.hasOwn(result, 'filmVisibility') && result.filmVisibility !== visibility) return null;
+        if (!Object.hasOwn(result, 'filmVisibility')) result.filmVisibility = visibility;
+      }
+      delete result.showFilms;
+    }
+    // Older partial records can predate either film switch.
+    if (!Object.hasOwn(result, 'filmVisibility') && result.hidePayToWatchCards === false) result.filmVisibility = 'all';
+    return result;
+  }
   function validate(input) {
     const result = { ...defaults, menuItemOrder: [...defaults.menuItemOrder] };
     if (!input || typeof input !== "object" || Array.isArray(input)) return result;
+    input = migrateLegacySettings(input);
     for (const [name, fallback] of Object.entries(defaults)) {
       if (!Object.hasOwn(input, name)) continue;
       const value = input[name];
@@ -2390,7 +2401,9 @@
       if (!record || typeof record !== "object" || Array.isArray(record) ||
           Object.keys(record).some(name => name !== "version" && name !== "values") ||
           record.version !== 1 || !record.values || typeof record.values !== "object" || Array.isArray(record.values)) return false;
-      for (const [name, value] of Object.entries(record.values)) {
+      const migrated = migrateLegacySettings(record.values, true);
+      if (!migrated) return false;
+      for (const [name, value] of Object.entries(migrated)) {
         if (!Object.hasOwn(defaults, name)) return false;
         const fallback = defaults[name];
         if (typeof fallback === "boolean") {
@@ -2509,7 +2522,7 @@
     return {};
   }
   const isValidMenuLayout = value => value === null || menuLayouts.validate(value) !== null;
-  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
+  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, migrateLegacySettings, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
     isValidMenuLayout, features: catalogue.definitions });
 };
   const createChannelAgeService = function createChannelAgeService(getStorage, now = () => Date.now()) {
@@ -3504,6 +3517,38 @@
       return [...list.children].find(item => item.dataset.menuItem === id)?.querySelector('input, button, select') || heading;
     },
     refresh() { invalid = false; announce(''); render(); } });
+},
+    classifyFilm: function classifyCatalogueFilm(card) {
+  const selector = 'ytd-badge-supported-renderer,ytd-badge-supported-renderer .badge,ytd-badge-supported-renderer .badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost';
+  const labels = [...card.querySelectorAll(selector)].map(node => (node.textContent || '').trim());
+  let catalogue = card.matches('ytd-movie-renderer') || Boolean(card.querySelector('ytd-movie-renderer,ytd-badge-supported-renderer .badge-style-type-ypc,ytd-badge-supported-renderer .badge-style-type-ypc-green,ytd-badge-supported-renderer .badge-style-type-ypc-transparent'));
+  const nativeData = node => {
+    try { return typeof node?.componentProps?.data === 'function' ? node.componentProps.data() : (node?.inst || node?.polymerController || node)?.data; }
+    catch { return null; }
+  };
+  const inspectBadge = badge => {
+    badge = badge?.metadataBadgeRenderer || badge;
+    if (!/^BADGE_STYLE_TYPE_YPC(?:_GREEN|_TRANSPARENT)?$/.test(badge?.style || '')) return;
+    catalogue = true;
+    if (typeof badge.label === 'string') labels.push(badge.label.trim());
+  };
+  for (const node of [card, card.querySelector('ytd-rich-grid-media'), card.querySelector('yt-lockup-view-model')].filter(Boolean)) {
+    const model = nativeData(node);
+    if (model?.movieRenderer || model?.content?.movieRenderer) catalogue = true;
+    for (const candidate of [model, model?.videoRenderer, model?.content?.videoRenderer, model?.movieRenderer, model?.content?.movieRenderer])
+      if (Array.isArray(candidate?.badges)) candidate.badges.slice(0, 8).forEach(inspectBadge);
+  }
+  for (const node of [...card.querySelectorAll('ytd-badge-supported-renderer')].slice(0, 8)) {
+    const data = nativeData(node);
+    (Array.isArray(data) ? data.slice(0, 8) : [data]).forEach(inspectBadge);
+  }
+  const free = labels.some(label => /^(?:Free(?: with ads)?|Gratis|Gratuit|Kostenlos|Gratuito|Grátis)$/iu.test(label));
+  const paid = labels.some(label => /^(?:Buy or rent|Pay to watch|(?:Buy|Rent)(?: from)?(?:\s+.*)?|[£$€]\s*\d[\d.,]*)$/i.test(label));
+  const rating = labels.some(label => /^(?:U|PG|12A?|15|18|G|PG-13|R|NC-17|TV-(?:Y7?|G|PG|14|MA)|Not rated|Unrated)$/i.test(label));
+  catalogue ||= labels.some(label => /^(?:Movies?\s*(?:&|and)\s*TV|Buy or rent)$/i.test(label)) || (free || paid) && rating;
+  if (!catalogue) return null;
+  // Conflicting or absent price evidence is intentionally left visible.
+  return free === paid ? 'unknown' : free ? 'free' : 'paid';
 },
     channelAge: createChannelAgeService(() => storage),
     createChannelAgeDialog: function createChannelAgeDialog(document, service, onSaved, options = {}) {
@@ -5640,6 +5685,7 @@
   }
 
   function checkedSettings(input, complete = true) {
+    input = settings.migrateLegacySettings(input, true);
     checkObject(input, settingNames, complete ? requiredSettingNames : []);
     const values = settings.validate(input);
     for (const name of Object.keys(input)) {
@@ -6604,6 +6650,14 @@
   let visibilityObserver = null, visibilityAncestors = [];
   let suspended = document.hidden, settleTimer = 0, settling = '', settled = '';
   let clickGuard = null, clickTimer = 0;
+  let measurements = null;
+  function measure(node, property) {
+    const read = () => property === 'rect' ? node.getBoundingClientRect() : window.getComputedStyle(node);
+    if (!measurements) return read();
+    let entry = measurements.get(node);
+    if (!entry) { entry = {}; measurements.set(node,entry); }
+    return entry[property] ||= read();
+  }
   function ensureStyle() {
     if (style) return;
     style = document.createElement('style');
@@ -6639,12 +6693,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   function visible(node) {
     if (!node?.isConnected || node.hidden) return false;
-    const box = node.getBoundingClientRect(), css = window.getComputedStyle(node);
+    const box = measure(node,'rect'), css = measure(node,'css');
     return box.width > 0 && box.height > 0 && css.display !== 'none' &&
       css.visibility === 'visible' && Number(css.opacity) > 0;
   }
   function animating(node) {
-    const transform = window.getComputedStyle(node).transform;
+    const transform = measure(node,'css').transform;
     const transformed = transform !== 'none' && transform !== 'matrix(1, 0, 0, 1, 0, 0)' &&
       transform !== 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)';
     const classes = animationClasses.filter(name => node.classList.contains(name)).join(' ');
@@ -6701,6 +6755,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const shown = hosts.filter(visible);
       adopt(shown.length === 1 ? shown[0] : hosts.length === 1 ? hosts[0] : null);
       if (!host) return;
+      // Adoption can release a previous owner's geometry. Reuse measurements
+      // only within this read phase, never across frames, writes or gestures.
+      measurements = new WeakMap();
       nativeSignature = signature(host);
       // A stylesheet or an ancestor can reveal this host without changing any
       // of its own attributes. Keep one size observation until it is visible.
@@ -6738,21 +6795,21 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const unset = value => value === '' || value === 'auto';
       const south = pxAnchor(nativeBottom) && unset(nativeTop);
       if (!south && !(pxAnchor(nativeTop) && unset(nativeBottom))) { release(); return; }
-      const panelBox = panel.getBoundingClientRect(), listBox = list.getBoundingClientRect();
-      const listCss = window.getComputedStyle(list), containerCss = window.getComputedStyle(container);
+      const panelBox = measure(panel,'rect'), listBox = measure(list,'rect');
+      const listCss = measure(list,'css'), containerCss = measure(container,'css');
       const px = value => Number.parseFloat(value) || 0;
       // Native continuation/unavailable rows can also occupy list space. Their
       // actual extent must remain visible even though they are not video rows.
-      const rowBottom = Math.max(...[...rows, ...contents].map(row => row.getBoundingClientRect().bottom));
+      const rowBottom = Math.max(...[...new Set([...rows, ...contents])].map(row => measure(row,'rect').bottom));
       const contentHeight = listBox.top - panelBox.top + rowBottom - listBox.top + list.scrollTop +
         px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
       const upperHeight = nativeHeight - 285;
-      const maximum = window.getComputedStyle(host).maxHeight;
+      const maximum = measure(host,'css').maxHeight;
       if (!pxAnchor(maximum)) { release(); return; }
       const effectiveHeight = Math.min(nativeHeight, px(maximum), window.innerHeight - 32);
       const available = Math.min(285, effectiveHeight - upperHeight);
       const target = Math.min(Math.ceil(contentHeight), available);
-      const minimum = listBox.top - panelBox.top + rows[0].getBoundingClientRect().height +
+      const minimum = listBox.top - panelBox.top + measure(rows[0],'rect').height +
         px(listCss.paddingBottom) + px(listCss.borderBottomWidth) + px(containerCss.borderBottomWidth);
       // Keep the native scrolling layout for long queues or unknown geometry.
       if (!(target > 0 && target < 284 && contentHeight > 0) || available < minimum) { release(); return; }
@@ -6766,7 +6823,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     } catch (error) {
       release();
       try { reportError(error); } catch { /* Reporting must not obstruct native controls. */ }
-    }
+    } finally { measurements = null; }
   }
   function schedule() {
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(sync);
@@ -6899,7 +6956,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   suite.startFeatureControls = () => {
     if (featureControlsStarted) return;
     featureControlsStarted = true;
-    const options = { document, window, preferences: suite.settings.initial,
+    const options = { document, window, preferences: suite.settings.initial, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
     for (const install of [function installPlayerControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
@@ -7249,13 +7306,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     for (const [url, timer] of downloads) { window.clearTimeout(timer); window.URL.revokeObjectURL(url); } downloads.clear();
     for (const [target, type, callback] of listeners) target.removeEventListener(type, callback, true);
   };
-}, function installDiscoveryControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
+}, function installDiscoveryControls({ document, window, preferences = {}, classifyFilm = classifyCatalogueFilm, MutationObserver = window.MutationObserver, reportError = () => {} }) {
   const p = preferences, root = document.documentElement;
-  const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
-  if (!root || (!keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
+  const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
+  if (!root || (!['free','paid','none'].includes(p.filmVisibility) && !keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
   const attr = 'data-ytms-discovery-hidden', reasonAttr = 'data-ytms-discovery-reason';
   const owned = new Set(), filteredCards = new Set(), pendingCards = new Set(), badgeNodes = new Set(), viewNodes = new Set(), headings = new Set(), restoredNavigation = new Set(), cardHeadings = new WeakMap(), cardDecorations = new WeakMap(), decorationOwners = new WeakMap(), rootOwned = new Map(), logoRecords = new Map(), attemptedRoutes = new Set();
   const manuallyPlayed = new WeakSet(), pausedTrailers = new WeakSet();
+  let filmResults = new WeakMap();
   const outerCardSelector = 'ytd-rich-item-renderer,ytd-video-renderer,ytd-grid-video-renderer,ytd-playlist-renderer,ytd-movie-renderer';
   const cardSelector = outerCardSelector+',yt-lockup-view-model';
   // Modern rich items contain a lockup renderer for the same video. Treat the
@@ -7288,7 +7346,11 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const add = (enabled, selector, css = 'display:none!important') => { if (enabled) rules.push(`${selector}{${css}}`); };
   add(true, `:root:not([data-yt-master-show-filtered="1"]) [${attr}="1"]`);
   add(p.hideAllComments, 'ytd-watch-flexy ytd-comments,ytd-watch-grid ytd-comments');
-  add(p.hideCommentGifs, 'ytd-comments img[src*="tenor.com"],ytd-comments img[src*="giphy.com"],ytd-comments img[src$=".gif"],ytd-comments img[src*=".gif?"]');
+  // Native comment GIFs can be proxied or served as WebP, without a GIF URL.
+  // Hide the attachment host so its reserved space disappears as well. CSS
+  // covers lazy-loaded replies without observing or scanning every comment.
+  add(p.hideCommentGifs, ':is(ytd-comment-view-model,yt-comment-view-model,ytd-comment-renderer) :is(.ytwCommentImageAttachmentViewModelHost,.ytwCommentImageAttachmentViewModelImageContainer,yt-comment-image-view-model)');
+  add(p.hideCommentGifs, 'ytd-comments img:is([src*="tenor.com" i],[src*="giphy.com" i],[src$=".gif" i],[src*=".gif?" i],[src*=".gif#" i]):not(:is(#author-thumbnail,yt-avatar-shape,.yt-spec-avatar-shape,#creator-heart,ytd-creator-heart-renderer) *):not(.emoji,.yt-core-attributed-string__image-element)');
   add(p.hideHomePosts, '[data-ytms-discovery-route="home"] ytd-browse ytd-post-renderer,[data-ytms-discovery-route="home"] ytd-browse ytd-backstage-post-thread-renderer');
   add(p.hideSubscriptionsHeaders, '[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-rich-grid-renderer #header,[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-feed-filter-chip-bar-renderer');
   add(p.hideChannelBanner, '[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #channel-header-container #banner,[data-ytms-discovery-route="channel"] yt-page-header-renderer yt-image-banner-view-model,[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #banner');
@@ -7355,13 +7417,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   function filterReason(card) {
     if (!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) return '';
-    const badges = [...card.querySelectorAll('ytd-badge-supported-renderer,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost')].map(text);
-    const metadata = [...card.querySelectorAll('#metadata-line span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')].map(text);
-    const nativeLinks = [...card.querySelectorAll('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title')];
+    const badges = p.hideFeedDubbed ? [...card.querySelectorAll('ytd-badge-supported-renderer,ytd-badge-supported-renderer .badge,ytd-badge-supported-renderer .badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost')].map(text) : [];
+    const metadata = p.hideFeedVods || p.hideFeedLowViews ? [...card.querySelectorAll('#metadata-line span,.yt-content-metadata-view-model__metadata-text,.ytContentMetadataViewModelMetadataText')].map(text) : [];
+    const nativeLinks = p.hideFeedPlaylists ? [...card.querySelectorAll('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title')] : [];
     if (p.hideFeedPlaylists && (card.matches('ytd-playlist-renderer') || nativeLinks.some(a => { try { const u = new window.URL(a.href); return u.origin === window.location.origin && u.pathname === '/playlist' && u.searchParams.has('list'); } catch { return false; } }))) return 'Playlist';
     if (p.hideFeedVods && metadata.some(x => /^Streamed\s.+\sago$/i.test(x))) return 'Stream archive';
     if (p.hideFeedDubbed && badges.some(x => /^auto[- ]dubbed$/i.test(x))) return 'Auto-dubbed';
-    if (p.hideFeedMovies && (card.matches('ytd-movie-renderer') || badges.some(x => /^(?:Movies?\s*(?:&|and)\s*TV|Buy or rent)$/i.test(x)))) return 'Film or television';
+    if (['free','paid','none'].includes(p.filmVisibility)) {
+      if (!filmResults.has(card)) filmResults.set(card,classifyFilm(card));
+      const film = filmResults.get(card);
+      if (film && (p.filmVisibility === 'none' || film !== 'unknown' && film !== p.filmVisibility)) return 'Film or television';
+    }
     if (p.hideFeedCollaborations && (card.hasAttribute('is-collaboration') || [...card.querySelectorAll('.ytContentMetadataViewModelAvatarStack yt-avatar-stack-view-model')].some(stack => stack.querySelectorAll('img').length >= 2))) return 'Collaboration';
     if (p.hideFeedLowViews) {
       const values = metadata.map(parseViews).filter(x => x !== null);
@@ -7380,6 +7446,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     cardDecorations.delete(card);
   }
   function decorateCard(card) {
+    if (!p.listChannelHeaders && !p.hideThumbnailBadges && !p.hideViewsIcon && !p.viewsSeparateLine) return;
     clearDecorations(card);
     const valid = eligibleFeed() && !card.closest(excluded) && card.closest(feedSurface);
     const list = routeKind() === 'home' && p.homeList || routeKind() === 'subscriptions' && p.subscriptionsList;
@@ -7477,7 +7544,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       setRoot('data-ytms-discovery-list', (kind === 'home' && p.homeList || kind === 'subscriptions' && p.subscriptionsList) ? '1' : null);
       const darkReader = document.querySelector('style.darkreader,link.darkreader') || root.hasAttribute('data-darkreader-mode');
       setRoot('data-ytms-discovery-theme', !darkReader && ['dark','light'].includes(p.interfaceTheme) ? p.interfaceTheme : null);
-      const candidates = scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
+      const candidates = !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
       const cards = new Set([...candidates].map(canonicalCard).filter(Boolean));
       for (const card of cards) {
         clearNestedCardOwnership(card);
@@ -7505,19 +7572,40 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       syncObservation();
     } catch (error) { reportError('discoveryControls','reconcile',error); }
   }
-  function schedule(full = true) { if (full !== false) scanAllCards = true; if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile); }
-  const filters = ['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideFeedMovies','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(k=>p[k]);
+  function schedule(full = true) { if (full !== false) { scanAllCards = true; filmResults = new WeakMap(); } if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile); }
+  const filters = ['free','paid','none'].includes(p.filmVisibility) || ['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(k=>p[k]);
+  const filmOnly = ['free','paid','none'].includes(p.filmVisibility) && !['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(key=>p[key]);
+  const filmBadges = 'ytd-badge-supported-renderer,.badge-style-type-ypc,.badge-style-type-ypc-green,.badge-style-type-ypc-transparent,.badge,.badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost';
+  const filmStructure = cardSelector + ',ytd-rich-grid-media,' + filmBadges;
+  function affectsFilm(record, element) {
+    if (element.closest(filmBadges)) return true;
+    if (record.type === 'attributes') {
+      // Class changes can turn a former native badge into a plain span.
+      if (record.attributeName === 'class') return /(?:^|\s)(?:badge(?:-label|-style-type-ypc(?:-green|-transparent)?)?|ytBadgeShapeBadgeText|yt-badge-shape__text|ytThumbnailOverlayBadgeViewModelHost)(?:\s|$)/.test(record.oldValue || '');
+      return record.attributeName === 'href' && element.matches('a#thumbnail,a#video-title,a.yt-lockup-view-model__content-image,a.yt-lockup-metadata-view-model__title');
+    }
+    if (element.matches(cardSelector + ',ytd-rich-grid-media')) return true;
+    return record.type === 'childList' && [...record.addedNodes,...record.removedNodes].some(node =>
+      node.nodeType === 1 && (node.matches(filmStructure) || node.querySelector(filmStructure)));
+  }
   const observer = new MutationObserver(mutations => {
     let changed = false;
     for (const m of mutations) {
       const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
       if (!el || el.closest('#ytms-settings-dialog,#ytms-age-dialog,.html5-video-player')) continue;
       if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
-      const card = canonicalCard(el); if (card) { pendingCards.add(card); changed = true; }
+      const card = canonicalCard(el);
+      if (card) {
+        if ((!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) && !filteredCards.has(card) && !cardDecorations.has(card) && !cardHeadings.has(card)) continue;
+        const filmChanged = ['free','paid','none'].includes(p.filmVisibility) && affectsFilm(m,el);
+        if (filmChanged) filmResults.delete(card);
+        if (filmOnly && !filmChanged) continue;
+        pendingCards.add(card); changed = true;
+      }
       if (el.closest('ytd-masthead,ytd-guide-renderer,yt-tab-group-shape,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer')) changed = true;
       for (const node of m.addedNodes) if (node.nodeType === 1) {
-        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) pendingCards.add(card); changed = true; }
-        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) pendingCards.add(card); changed = true; }
+        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
       }
       // Native virtualisation can remove cards without adding a replacement.
@@ -7529,7 +7617,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   });
   function syncObservation() {
     const needed = !disposed && !suspended && (filters && eligibleFeed() || p.logoToSubscriptions || p.restoreSubscriptionsLink || p.homeRedirect && routeKind() === 'home' || p.channelDefaultVideos && channelBase() || p.hideSearchAI && routeKind() === 'search' || p.hideAIChapters || p.hideSidebarSubscriptions || ['dark','light'].includes(p.interfaceTheme));
-    if (needed && !observerActive) { observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','aria-label','title','overlay-style','is-collaboration','class','data-darkreader-mode']}); observerActive = true; }
+    if (needed && !observerActive) { observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeOldValue:['free','paid','none'].includes(p.filmVisibility),attributeFilter:['href','aria-label','title','overlay-style','is-collaboration','class','data-darkreader-mode']}); observerActive = true; }
     else if (!needed && observerActive) { observer.disconnect(); observerActive = false; }
   }
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
@@ -7755,224 +7843,6 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     for (const [type, handler] of listeners) window.removeEventListener(type, handler);
     style.remove();
   };
-}, function installHomeFeedLoading({ document, window, preferences = {},
-  MutationObserver = window.MutationObserver, reportError = () => {} }) {
-  const automatic = preferences.autoLoadFilteredHome === true;
-  const manual = preferences.showHomeLoadMore === true;
-  if ((!automatic && !manual) || !document.body || !MutationObserver) return () => {};
-  const limit = [1, 3, 5, 10].includes(Number(preferences.homeLoadBatchLimit)) ? Number(preferences.homeLoadBatchLimit) : 3;
-  const delay = [3, 5, 10].includes(Number(preferences.homeLoadDelay)) ? Number(preferences.homeLoadDelay) * 1000 : 3000;
-  const continuationSelector = 'ytd-continuation-item-renderer,yt-continuation-item-view-model';
-  const cardSelector = 'ytd-rich-item-renderer';
-  const flags = ['data-clean-up-youtube-hidden', 'data-clean-up-youtube-permanent-hidden',
-    'data-ytppl-live-hidden', 'data-ytppl-upcoming-hidden', 'data-ytppl-pay-to-watch-hidden',
-    'data-ytppl-watched-hidden', 'data-ytms-discovery-hidden'];
-  const filteredSelector = flags.map(flag => `[${flag}="1"]`).join(',');
-  const excluded = 'ytd-miniplayer,ytd-playlist-panel-renderer,ytd-popup-container,ytd-engagement-panel-section-list-renderer';
-  let disposed = false, navigating = false, suspended = false, observing = false;
-  let grid = null, footer = null, button = null, status = null, style = null;
-  let timer = 0, pending = null, attempts = new Set(), automaticCount = 0, lastRequest = -Infinity;
-  let paused = '', cards = [], cardsDirty = true;
-  const attemptedByGrid = new WeakMap();
-  const confirmedEndByGrid = new WeakSet();
-  let automaticReadyAt = window.performance.now() + delay;
-  const listeners = [];
-  const home = () => ['/', '/feed/recommended'].includes(window.location.pathname);
-  const active = () => !disposed && !navigating && !suspended && !document.hidden && home();
-  const listen = (target, type, fn, options) => { target.addEventListener(type, fn, options); listeners.push([target, type, fn, options]); };
-  const visible = el => {
-    if (!el?.isConnected || el.closest('[hidden],[aria-hidden="true"]')) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
-  };
-  const clearTimer = () => { if (timer) window.clearTimeout(timer); timer = 0; };
-  function schedule(ms = 180) {
-    if (!active() || timer) return;
-    timer = window.setTimeout(() => { timer = 0; try { reconcile(); } catch { paused = 'Loading recovery paused for this page.'; reportError(); } }, ms);
-  }
-  function removeUi() {
-    footer?.remove(); style?.remove(); footer = button = status = style = null;
-  }
-  function reset() {
-    clearTimer(); observer.disconnect(); observing = false; removeUi();
-    if (grid) confirmedEndByGrid.delete(grid);
-    grid = null; cards = []; cardsDirty = true; pending = null;
-    attempts = new Set(); automaticCount = 0; lastRequest = -Infinity; paused = '';
-    automaticReadyAt = window.performance.now() + delay;
-  }
-  function ensureUi() {
-    if (!manual || !grid?.parentElement) return;
-    if (!footer) {
-      style = document.createElement('style'); style.id = 'ytms-home-loading-style';
-      style.textContent = '#ytms-home-loading{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;padding:20px 12px;color:var(--yt-spec-text-secondary,#aaa);font:14px/20px Roboto,Arial,sans-serif}#ytms-home-loading button{font:500 14px/20px Roboto,Arial,sans-serif;color:var(--yt-spec-text-primary,#f1f1f1);background:var(--yt-spec-badge-chip-background,rgba(128,128,128,.2));border:0;border-radius:20px;padding:10px 18px;cursor:pointer}#ytms-home-loading button:disabled{opacity:.5;cursor:default}#ytms-home-loading button:focus-visible{outline:2px solid var(--yt-spec-call-to-action,#3ea6ff);outline-offset:3px}';
-      (document.head || document.documentElement).append(style);
-      footer = document.createElement('div'); footer.id = 'ytms-home-loading'; footer.lang = 'en-GB';
-      button = document.createElement('button'); button.type = 'button'; button.textContent = 'Load more';
-      status = document.createElement('span'); status.id = 'ytms-home-loading-status';
-      status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-      button.setAttribute('aria-describedby', status.id);
-      button.addEventListener('click', () => { if (active()) { clearTimer(); reconcile(true); } });
-      footer.append(button, status);
-    }
-    if (footer.previousElementSibling !== grid) grid.after(footer);
-  }
-  // The checked native controller owns endpoint dispatch, spinner and response
-  // handling. Never construct requests, tokens, endpoints or synthetic yt-actions.
-  function contract(host) {
-    try {
-      const candidates = [...new Set([host.inst, host.polymerController, host].filter(Boolean))];
-      const owner = candidates.find(c => c.hostElement === host || c === host);
-      if (!owner || typeof owner.triggerContinuation !== 'function') return null;
-      const data = owner.data;
-      if (!data || typeof data !== 'object' || typeof owner.spinnerActive !== 'boolean' ||
-        typeof owner.endOfList !== 'boolean' || typeof owner.showButton !== 'boolean') return null;
-      if (owner.endOfList) return { host, owner, token: null, ended: true, busy: false, buttonMode: owner.showButton };
-      let token, invoke;
-      if (!owner.showButton && data.trigger === 'CONTINUATION_TRIGGER_ON_ITEM_SHOWN') {
-        if (typeof owner.resetIntersectionObserver !== 'function') return null;
-        token = data.continuationEndpoint?.continuationCommand?.token;
-        // Match the native intersection callback's complete sequence. Leaving
-        // its observer armed could dispatch this same token again afterwards.
-        invoke = () => { try { owner.triggerContinuation(); } finally { owner.resetIntersectionObserver(); } };
-      } else if (owner.showButton && ['CONTINUATION_TRIGGER_ON_BUTTON_CLICK', 'CONTINUATION_TRIGGER_ON_ITEM_SHOWN'].includes(data.trigger)) {
-        const renderer = host.querySelector('#button ytd-button-renderer');
-        const nativeButton = renderer?.querySelector('button');
-        const model = renderer?.data || renderer?.polymerController?.data;
-        token = data.button?.buttonRenderer?.command?.continuationCommand?.token;
-        if (!nativeButton || nativeButton.disabled || !visible(nativeButton) ||
-          model?.command?.continuationCommand?.token !== token) return null;
-        invoke = () => nativeButton.click();
-      } else return null;
-      if (typeof token !== 'string' || !token.length || token.length > 16384) return null;
-      return { host, owner, token, invoke, busy: owner.spinnerActive,
-        ended: owner.endOfList, buttonMode: owner.showButton };
-    } catch { return null; }
-  }
-  function current() {
-    const hosts = [...grid.querySelectorAll(continuationSelector)].filter(el =>
-      el.closest('ytd-rich-grid-renderer') === grid && !el.closest(excluded) && visible(el));
-    return hosts.length === 1 ? contract(hosts[0]) : null;
-  }
-  function setStatus(text, enabled = false) {
-    if (!status) return;
-    if (status.textContent !== text) status.textContent = text;
-    button.disabled = !enabled;
-    const label = pending ? 'Loading…' : 'Load more';
-    if (button.textContent !== label) button.textContent = label;
-    footer.setAttribute('aria-busy', pending ? 'true' : 'false');
-  }
-  function nearEnd() {
-    // Walk backwards only until a visible card is found. No image/title reads or
-    // geometry writes, and no document-wide feed scan during scrolling.
-    for (let i = cards.length - 1; i >= 0; i--) {
-      const rect = cards[i].getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) return rect.bottom <= window.innerHeight + 240;
-    }
-    return grid.getBoundingClientRect().top <= window.innerHeight + 240;
-  }
-  function request(next, isManual) {
-    if (!active() || pending || next.busy || next.ended || attempts.has(next.token) ||
-      attempts.size >= 128 || window.performance.now() - lastRequest < delay) return;
-    if (!isManual && (paused || next.buttonMode || automaticCount >= limit)) return;
-    // Record before invoking: synchronous native events cannot dispatch twice.
-    attempts.add(next.token); lastRequest = window.performance.now();
-    if (!isManual) automaticCount++;
-    pending = { host: next.host, owner: next.owner, token: next.token, cardCount: cards.length, deadline: window.performance.now() + 10000 };
-    try { next.invoke(); } catch { pending = null; paused = 'YouTube could not load more. Automatic loading paused.'; reportError(); }
-    setStatus(pending ? 'Waiting for YouTube…' : paused);
-    schedule(pending ? 10000 : 180);
-  }
-  function reconcile(isManual = false) {
-    if (!active()) return;
-    if (!observing) {
-      observer.observe(document.body, { childList: true, subtree: true, attributes: true,
-        attributeFilter: [...flags, 'hidden', 'aria-hidden', 'aria-busy', 'active'] });
-      observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-yt-master-show-filtered'] });
-      observing = true;
-    }
-    if (!grid?.isConnected || !visible(grid)) {
-      const grids = [...document.querySelectorAll('ytd-browse ytd-rich-grid-renderer')].filter(el =>
-        !el.closest(excluded) && visible(el));
-      if (grids.length !== 1) { removeUi(); return; }
-      grid = grids[0]; cardsDirty = true;
-      if (!attemptedByGrid.has(grid)) attemptedByGrid.set(grid, new Set());
-      attempts = attemptedByGrid.get(grid);
-    }
-    ensureUi();
-    if (cardsDirty) { cards = [...grid.querySelectorAll(cardSelector)].filter(el => el.closest('ytd-rich-grid-renderer') === grid); cardsDirty = false; }
-    const next = current();
-    if (pending) {
-      // A new native token is the proof of continuation advancement. Merely
-      // changing a spinner, unrelated rows or a title cannot authorise a retry.
-      if (next && next.token !== pending.token) pending = null;
-      else if (!pending.host.isConnected && !next && cards.length > pending.cardCount) {
-        if (pending.owner.endOfList === true) confirmedEndByGrid.add(grid);
-        pending = null;
-      }
-      else if (window.performance.now() >= pending.deadline) {
-        pending = null; paused = 'YouTube has not supplied another batch. Automatic loading paused.';
-      } else { setStatus('Waiting for YouTube…'); schedule(pending.deadline - window.performance.now()); return; }
-    }
-    if (!next) {
-      setStatus(grid.querySelector(continuationSelector) ? 'Loading is unavailable for this YouTube layout.' :
-        confirmedEndByGrid.has(grid) ? 'YouTube has no more recommendations available.' :
-          'YouTube isn’t offering another batch right now.'); return;
-    }
-    if (next.ended) { confirmedEndByGrid.add(grid); setStatus('YouTube has no more recommendations available.'); return; }
-    confirmedEndByGrid.delete(grid);
-    if (next.busy) { setStatus(paused || 'YouTube is loading recommendations…'); return; }
-    if (attempts.has(next.token)) { setStatus(paused || 'Waiting for YouTube to supply another batch.'); return; }
-    if (attempts.size >= 128) { setStatus('Loading recovery limit reached for this Home visit.'); return; }
-    const remaining = delay - (window.performance.now() - lastRequest);
-    if (remaining > 0) { setStatus('Please wait before loading another batch.'); schedule(remaining); return; }
-    setStatus(paused || (automaticCount >= limit && automatic ? 'Automatic batch limit reached. You can load another batch manually.' : ''), true);
-    if (isManual) { request(next, true); return; }
-    if (automatic && cards.length > 0 && !paused && !next.buttonMode && automaticCount < limit &&
-      document.documentElement.getAttribute('data-yt-master-show-filtered') !== '1' &&
-      grid.querySelector(filteredSelector) && nearEnd()) {
-      // Give native intersection loading first refusal and filters time to settle.
-      if (window.performance.now() < automaticReadyAt) schedule(automaticReadyAt - window.performance.now());
-      else request(next, false);
-    }
-  }
-  const observer = new MutationObserver(records => {
-    let relevant = false;
-    for (const record of records) {
-      if (record.target === footer || footer?.contains(record.target)) continue;
-      if (record.target === document.documentElement) { relevant = true; continue; }
-      if (record.type === 'attributes' && record.target.matches?.('ytd-browse,ytd-rich-grid-renderer')) {
-        relevant = true; grid = null; cardsDirty = true; continue;
-      }
-      if (grid?.contains(record.target)) {
-        if (record.type === 'attributes' || record.target.closest?.(continuationSelector) ||
-          [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 &&
-            (node.matches(`${cardSelector},ytd-rich-grid-row,${continuationSelector}`) || node.querySelector(`${cardSelector},${continuationSelector}`)))) {
-          relevant = true; cardsDirty = true;
-        }
-      } else if ([...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 &&
-        (node.matches('ytd-browse,ytd-rich-grid-renderer') || node.querySelector('ytd-rich-grid-renderer')))) { relevant = true; grid = null; cardsDirty = true; }
-    }
-    if (relevant) { clearTimer(); schedule(); }
-  });
-  listen(window, 'scroll', () => schedule(220), { passive: true });
-  listen(window, 'resize', () => schedule());
-  listen(window, 'yt-navigate-start', () => { navigating = true; reset(); });
-  listen(window, 'yt-navigate-finish', () => {
-    navigating = false;
-    if (home()) { if (!grid) automaticReadyAt = window.performance.now() + delay; schedule(); }
-    else reset();
-  });
-  listen(window, 'yt-page-data-updated', () => {
-    if (grid) confirmedEndByGrid.delete(grid);
-    cardsDirty = true; clearTimer(); schedule();
-  });
-  listen(document, 'visibilitychange', () => { clearTimer(); if (active()) schedule(); });
-  listen(window, 'pagehide', () => {
-    suspended = true; clearTimer(); observer.disconnect(); observing = false; removeUi();
-  });
-  listen(window, 'pageshow', () => { suspended = false; schedule(); });
-  schedule();
-  return () => { disposed = true; reset(); for (const [target, type, fn, options] of listeners) target.removeEventListener(type, fn, options); };
 }]) {
       try { install(options); } catch { options.reportError(); }
     }
@@ -9278,7 +9148,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.23",
+    "Feed UI Cleaner v2.24",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -9423,6 +9293,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           '[data-ytppl-upcoming-hidden="1"]',
           '[data-ytppl-pay-to-watch-hidden="1"]',
           '[data-ytppl-watched-hidden="1"]',
+          '[data-ytms-discovery-hidden="1"]',
         ].join(',');
 
         function getText(el) {
@@ -9933,6 +9804,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             markerReasons.forEach(([attribute, reason]) => {
               if (container.getAttribute(attribute) === '1') reasons.add(reason);
             });
+            if (container.getAttribute('data-ytms-discovery-hidden') === '1') reasons.add(container.getAttribute('data-ytms-discovery-reason') || 'Additional filter');
             reasons.forEach((reason) => counts.set(reason, (counts.get(reason) || 0) + 1));
           });
 
@@ -9976,12 +9848,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           const revealed =
             document.documentElement?.getAttribute(FILTER_REVEAL_ATTRIBUTE) === '1';
           const button = existing || document.createElement('button');
-          button.id = FILTER_TOGGLE_ID;
-          button.type = 'button';
-          button.setAttribute('aria-pressed', String(Boolean(revealed)));
-          button.textContent = `Filtered: ${containers.size} · ${revealed ? 'Hide' : 'Show'}`;
+          if (!existing) { button.id = FILTER_TOGGLE_ID; button.type = 'button'; }
+          const pressed = String(Boolean(revealed));
+          const label = `Filtered: ${containers.size} · ${revealed ? 'Hide' : 'Show'}`;
+          if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
+          if (button.textContent !== label) button.textContent = label;
           const reasons = getFilteredReasonSummary(containers);
-          button.title = reasons || `${containers.size} filtered items`;
+          const title = reasons || `${containers.size} filtered items`;
+          if (button.title !== title) button.title = title;
           if (!existing) {
             button.addEventListener('click', () => {
               const root = document.documentElement;
@@ -10102,6 +9976,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const observer = new MutationObserver((mutations) => {
           let toggleDirty = false;
           for (const mutation of mutations) {
+            if (mutation.type === 'attributes' && mutation.attributeName?.startsWith('data-ytms-discovery-')) {
+              toggleDirty = true;
+              continue; // Summary only: do not feed an owned filter result back into card filtering.
+            }
             if (CONFIG.hideStaticUi && CONFIG.hideHistoryAuxActions !== false && location.pathname === '/feed/history') {
               const target = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
               const inHistorySecondary = Boolean(target?.closest?.('ytd-two-column-browse-results-renderer #secondary'));
@@ -10153,6 +10031,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             'data-ytppl-upcoming-hidden',
             'data-ytppl-pay-to-watch-hidden',
             'data-ytppl-watched-hidden',
+            'data-ytms-discovery-hidden',
+            'data-ytms-discovery-reason',
           ],
           attributes: true,
           characterData: true,
@@ -11785,7 +11665,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "playerPreferencesLite",
-    "Player Preferences Lite v1.123",
+    "Player Preferences Lite v1.128",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -12231,6 +12111,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const PLAYER_LAYOUT_REFRESH_DELAYS_MS = [0, 100, 500, 1200];
 
         let applyFrame = 0;
+        let dynamicNavigationPending = false;
         const pendingApplyRoots = new Set();
         let legacyActionHiddenCleared = false;
         let theaterModeUserDisabled = false;
@@ -12640,7 +12521,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         function hideMatchingCards(root, enabled, selector, datasetKey, predicate) {
           const attribute = CARD_HIDE_ATTRIBUTES[datasetKey];
           const markerSelector = attribute ? `[${attribute}="1"]` : "";
-          const candidates = collectMatchingElements(root, selector);
+          // Disabled filters only need to release cards they previously marked.
+          // Scanning ordinary cards here repeats work on every feed mutation even
+          // when the corresponding preference (or route profile) is switched off.
+          const candidates = enabled
+            ? collectMatchingElements(root, selector)
+            : new Set();
 
           if (markerSelector) {
             collectMatchingElements(root, markerSelector).forEach((card) =>
@@ -12700,7 +12586,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (!card || isExcludedSurface(card)) {
             return false;
           }
-          return hasPayToWatchText(card);
+          return hasPayToWatchText(card) && !suite.classifyFilm(card);
         }
 
         function hidePayToWatchCards(root = document) {
@@ -16363,13 +16249,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
         }
 
-        function applyRoutePreferences() {
+        function applyRoutePreferences(deferDynamic = false) {
           scheduleVideoMirrorSync();
           scheduleLiveChatSync();
           ensureStyles();
           syncFullscreenComments();
           convertCurrentShortsPage();
-          applyDynamicPreferences(document);
+          if (deferDynamic) scheduleApply(document);
+          else applyDynamicPreferences(document);
           schedulePreferredQualityAttempts();
           scheduleLiveChatCollapseAttempts();
 
@@ -16379,16 +16266,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function handleNavigateFinish() {
+          dynamicNavigationPending = false;
           liveChatNavigationPending = false;
           preferredQualityNavigationPending = false;
           theaterModeUserDisabled = false;
           theaterModeAttemptKey = "";
-          applyRoutePreferences();
+          applyRoutePreferences(true);
           configureDynamicMutationObserver();
           schedulePlayerLayoutRefreshAttempts();
         }
 
         function handleNavigateStart() {
+          dynamicNavigationPending = true;
           liveChatNavigationPending = true;
           resetLiveChat();
           preferredQualityNavigationPending = true;
@@ -16480,6 +16369,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function scheduleApply(root = document) {
+          if (dynamicNavigationPending || videoMirrorPageSuspended) return;
           addPendingApplyRoot(root);
           if (applyFrame) {
             return;
@@ -16938,10 +16828,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
                   // SponsorBlock and its start is a documented offset or lies within
                   // a previously witnessed transition on this same tooltip. This
                   // also handles reversal before the transition reaches its endpoint.
-                  if (Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
-                    const transitions = node.getAnimations?.().filter(animation =>
-                      animation.transitionProperty === 'transform' && animation.playState === 'running' &&
-                      animation.effect?.target === node) || [];
+                  const transitions = node.getAnimations?.().filter(animation =>
+                    animation.transitionProperty === 'transform' && animation.playState === 'running' &&
+                    animation.effect?.target === node) || [];
+                  // A foreign transition can briefly cross a documented offset.
+                  // Validate its endpoints even when this frame happens to match.
+                  if (transitions.length || Math.abs(matrix.f - target) > 0.05 || (!sponsorVisible && matrix.f !== 0)) {
                     // The class mutation can be observed one frame before the
                     // browser creates its transition. At the untouched zero offset,
                     // retain the measured layout for at most one frame and retry.
@@ -17279,6 +17171,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         applyRoutePreferences();
 
         const observer = new MutationObserver((mutations) => {
+          if (dynamicNavigationPending || videoMirrorPageSuspended) return;
           const roots = new Set();
           let watchDynamicRootsChanged = false;
           let videoMirrorChanged = false;
@@ -17352,6 +17245,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         suite.addWindowListener(
           "yt-page-data-updated",
           () => {
+            if (dynamicNavigationPending || videoMirrorPageSuspended) return;
             scheduleVideoMirrorSync();
             scheduleLiveChatSync();
             schedulePreferredQualityAttempts();
@@ -17366,6 +17260,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         suite.addWindowListener(
           "pagehide",
           () => {
+            dynamicNavigationPending = true;
             videoMirrorPageSuspended = true;
             resetLiveChat();
             clearPreferredQualityAttempts();
@@ -17382,6 +17277,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         suite.addWindowListener(
           "pageshow",
           () => {
+            if (videoMirrorPageSuspended) dynamicNavigationPending = false;
             videoMirrorPageSuspended = false;
             liveChatNavigationPending = false;
             schedulePreferredQualityAttempts();
@@ -19521,7 +19417,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.75",
+    "Watch Layout Cleaner v1.76",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -20095,19 +19991,19 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               eligible &&
               (!related || isElementOrAncestorHidden(related, watchFlexy));
             const chatVisible =
-              eligible && chatSurfaces.some(isActiveChatSurface);
+              relatedHidden && chatSurfaces.some(isActiveChatSurface);
             const queueVisible =
-              eligible &&
+              relatedHidden && !chatVisible &&
               Array.from(
                 watchFlexy.querySelectorAll(PLAYLIST_PANEL_SELECTOR),
               ).some(isActiveQueuePanel);
             const auxiliarySurfaceVisible =
-              eligible &&
+              relatedHidden && !chatVisible && !queueVisible &&
               Array.from(
                 watchFlexy.querySelectorAll(AUXILIARY_RAIL_SURFACE_SELECTOR),
               ).some(isActiveAuxiliaryRailSurface);
             const engagementPanelVisible =
-              eligible &&
+              relatedHidden && !chatVisible && !queueVisible && !auxiliarySurfaceVisible &&
               Array.from(
                 watchFlexy.querySelectorAll(`#secondary ${ENGAGEMENT_PANEL_SELECTOR}`),
               ).some(isActiveEngagementPanel);
@@ -22346,7 +22242,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "suiteSettings",
-    "Suite Settings v1.59",
+    "Suite Settings v1.62",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;

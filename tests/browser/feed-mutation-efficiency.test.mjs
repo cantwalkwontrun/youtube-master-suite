@@ -137,6 +137,25 @@ for (const [attribute, reason] of [["data-ytppl-watched-hidden", "Watched"], ["d
   });
 }
 
+test('additional filters update the reveal summary without refiltering cards or rewriting unchanged controls',async t=>{
+  const page=await open(t);
+  await page.evaluate(()=>{
+    const card=document.getElementById('card-0');
+    card.setAttribute('data-ytms-discovery-reason','Film or television');card.setAttribute('data-ytms-discovery-hidden','1');
+  });
+  await page.waitForFunction(()=>document.getElementById('yt-master-filter-toggle').title.includes('Film or television: 1'));
+  await page.evaluate(()=>{
+    feedAuditReset();window.toggleMutations=0;
+    new MutationObserver(records=>toggleMutations+=records.length).observe(document.getElementById('yt-master-filter-toggle'),{attributes:true,childList:true,subtree:true});
+    const card=document.getElementById('card-0');card.setAttribute('data-ytms-discovery-hidden','1');
+  });await settle(page);
+  assert.deepEqual(await page.evaluate(()=>({cleanups:feedAudit.cleanups.length,writes:toggleMutations})),{cleanups:0,writes:0});
+  await page.evaluate(()=>document.getElementById('card-0').setAttribute('data-ytms-discovery-reason','Low view count'));
+  await page.waitForFunction(()=>document.getElementById('yt-master-filter-toggle').title.includes('Low view count: 1'));
+  await page.evaluate(()=>document.getElementById('card-0').removeAttribute('data-ytms-discovery-hidden'));
+  await page.waitForFunction(()=>document.getElementById('yt-master-filter-toggle').title==='Channel age: 1');
+});
+
 test("pre-filtered inserted cards, removed cards and a removed whole feed update the summary", async t => {
   const page = await open(t);
   await page.evaluate(() => { const card = document.getElementById("card-1").cloneNode(true); card.id = "extra"; document.querySelector("#contents").append(card); });
@@ -230,6 +249,43 @@ test("a queued document dominates individual light-DOM roots", async t => {
   await settle(page);
   assert.deepEqual(await page.evaluate(() => window.feedAudit.cleanups), ["#document"]);
   assert.equal(await page.evaluate(() => window.feedAudit.scans), 1);
+});
+
+test('navigation finish and native page-data updates share one dynamic preference pass',async t=>{
+  const page=await open(t,{playerQueue:true,count:500});
+  const immediate=await page.evaluate(()=>{
+    feedQueueProbe.pause();playerQueueProbe.pause();playerQueueAudit=[];
+    window.dispatchEvent(new Event('yt-navigate-start'));
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+    return [...playerQueueAudit];
+  });
+  assert.deepEqual(immediate,[]);
+  await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),['#document']);
+  await page.evaluate(()=>{
+    playerQueueAudit=[];
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+    window.dispatchEvent(new Event('yt-navigate-start'));
+  });await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),[]);
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+    playerQueueProbe.schedule(document.getElementById('card-0'));
+  });await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),[],'Late data and stamping must not restart scans during navigation');
+  await page.evaluate(()=>window.dispatchEvent(new Event('pageshow')));await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),[],'An initial pageshow must not finish an active navigation');
+  await page.evaluate(()=>window.dispatchEvent(new Event('yt-navigate-finish')));await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),['#document']);
+  await page.evaluate(()=>{
+    playerQueueAudit=[];window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+  });await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),[]);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pageshow')));await settle(page);
+  assert.deepEqual(await page.evaluate(()=>playerQueueAudit),['#document']);
 });
 
 test("a queued document does not subsume a connected shadow-tree feed root", async t => {

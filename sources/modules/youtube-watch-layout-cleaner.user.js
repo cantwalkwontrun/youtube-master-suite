@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.75
+// @version      1.76
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -573,19 +573,19 @@ ${buildQueueCompatibilityCss()}
         eligible &&
         (!related || isElementOrAncestorHidden(related, watchFlexy));
       const chatVisible =
-        eligible && chatSurfaces.some(isActiveChatSurface);
+        relatedHidden && chatSurfaces.some(isActiveChatSurface);
       const queueVisible =
-        eligible &&
+        relatedHidden && !chatVisible &&
         Array.from(
           watchFlexy.querySelectorAll(PLAYLIST_PANEL_SELECTOR),
         ).some(isActiveQueuePanel);
       const auxiliarySurfaceVisible =
-        eligible &&
+        relatedHidden && !chatVisible && !queueVisible &&
         Array.from(
           watchFlexy.querySelectorAll(AUXILIARY_RAIL_SURFACE_SELECTOR),
         ).some(isActiveAuxiliaryRailSurface);
       const engagementPanelVisible =
-        eligible &&
+        relatedHidden && !chatVisible && !queueVisible && !auxiliarySurfaceVisible &&
         Array.from(
           watchFlexy.querySelectorAll(`#secondary ${ENGAGEMENT_PANEL_SELECTOR}`),
         ).some(isActiveEngagementPanel);

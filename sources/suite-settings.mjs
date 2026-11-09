@@ -58,9 +58,43 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
     return typeof value === "string" && /^#?[0-9a-f]{6}$/i.test(value.trim())
       ? "#" + value.trim().replace(/^#/, "").toUpperCase() : null;
   }
+  function migrateLegacySettings(input, strict = false) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+    if (strict && Object.getPrototypeOf(input) !== Object.prototype) return null;
+    const result = { ...input };
+    const retired = {
+      autoLoadFilteredHome: value => typeof value === 'boolean',
+      showHomeLoadMore: value => typeof value === 'boolean',
+      homeLoadBatchLimit: value => ['1', '3', '5', '10'].includes(value),
+      homeLoadDelay: value => ['3', '5', '10'].includes(value),
+    };
+    for (const [name, valid] of Object.entries(retired)) if (Object.hasOwn(result, name)) {
+      if (strict && !valid(result[name])) return null;
+      delete result[name];
+    }
+    if (Object.hasOwn(result, 'hideFeedMovies')) {
+      if (strict && (typeof result.hideFeedMovies !== 'boolean' ||
+        Object.hasOwn(result, 'showFilms') && result.showFilms !== !result.hideFeedMovies)) return null;
+      if (!Object.hasOwn(result, 'showFilms') && typeof result.hideFeedMovies === 'boolean') result.showFilms = !result.hideFeedMovies;
+      delete result.hideFeedMovies;
+    }
+    if (Object.hasOwn(result, 'showFilms')) {
+      if (strict && typeof result.showFilms !== 'boolean') return null;
+      if (typeof result.showFilms === 'boolean') {
+        const visibility = result.showFilms ? (result.hidePayToWatchCards === false ? 'all' : 'free') : 'none';
+        if (strict && Object.hasOwn(result, 'filmVisibility') && result.filmVisibility !== visibility) return null;
+        if (!Object.hasOwn(result, 'filmVisibility')) result.filmVisibility = visibility;
+      }
+      delete result.showFilms;
+    }
+    // Older partial records can predate either film switch.
+    if (!Object.hasOwn(result, 'filmVisibility') && result.hidePayToWatchCards === false) result.filmVisibility = 'all';
+    return result;
+  }
   function validate(input) {
     const result = { ...defaults, menuItemOrder: [...defaults.menuItemOrder] };
     if (!input || typeof input !== "object" || Array.isArray(input)) return result;
+    input = migrateLegacySettings(input);
     for (const [name, fallback] of Object.entries(defaults)) {
       if (!Object.hasOwn(input, name)) continue;
       const value = input[name];
@@ -122,7 +156,9 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
       if (!record || typeof record !== "object" || Array.isArray(record) ||
           Object.keys(record).some(name => name !== "version" && name !== "values") ||
           record.version !== 1 || !record.values || typeof record.values !== "object" || Array.isArray(record.values)) return false;
-      for (const [name, value] of Object.entries(record.values)) {
+      const migrated = migrateLegacySettings(record.values, true);
+      if (!migrated) return false;
+      for (const [name, value] of Object.entries(migrated)) {
         if (!Object.hasOwn(defaults, name)) return false;
         const fallback = defaults[name];
         if (typeof fallback === "boolean") {
@@ -241,6 +277,6 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
     return {};
   }
   const isValidMenuLayout = value => value === null || menuLayouts.validate(value) !== null;
-  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
+  return Object.freeze({ key, cornerKey, defaults, initial, read, save, validate, migrateLegacySettings, colours, normaliseHex, overrides, isPreviousDefaultMenuOrder,
     isValidMenuLayout, features: catalogue.definitions });
 }

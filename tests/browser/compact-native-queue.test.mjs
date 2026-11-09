@@ -129,6 +129,26 @@ async function open(t, { rows = 2, enabled = true, hidden = false, path = '/', v
   return page;
 }
 const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+test('one native queue fit reads each row geometry and computed style at most once per frame',async t=>{
+  const page=await open(t,{rows:40});
+  await page.evaluate(()=>{
+    const raf=requestAnimationFrame.bind(window),rect=Element.prototype.getBoundingClientRect,css=window.getComputedStyle;
+    window.fitAudit={frames:[],current:null};
+    window.requestAnimationFrame=callback=>raf(time=>{
+      const track=callback.name==='sync' && String(callback).includes('const hosts');
+      const previous=fitAudit.current;if(track){fitAudit.current={rect:new Map(),css:new Map()};fitAudit.frames.push(fitAudit.current);}
+      try{return callback(time);}finally{fitAudit.current=previous;}
+    });
+    Element.prototype.getBoundingClientRect=function(...args){if(fitAudit.current&&this.matches('ytd-playlist-panel-video-renderer')){const map=fitAudit.current.rect;map.set(this,(map.get(this)||0)+1);}return rect.apply(this,args);};
+    window.getComputedStyle=function(node,...args){if(fitAudit.current&&node.matches('ytd-playlist-panel-video-renderer')){const map=fitAudit.current.css;map.set(node,(map.get(node)||0)+1);}return css.call(window,node,...args);};
+    window.dispatchEvent(new Event('resize'));
+  });await settle(page);
+  const result=await page.evaluate(()=>fitAudit.frames.map(frame=>({rect:[...frame.rect.values()],css:[...frame.css.values()]})));
+  assert.ok(result.length>0);
+  assert.ok(result.some(frame=>frame.rect.length===40));
+  for(const frame of result)for(const count of [...frame.rect,...frame.css])assert.ok(count<=1,`Repeated row measurement: ${count}`);
+});
 const state = page => page.evaluate(() => {
   const f = compactFixture, box = f.host.getBoundingClientRect();
   return { height:box.height, top:box.top, bottom:box.bottom, width:box.width,

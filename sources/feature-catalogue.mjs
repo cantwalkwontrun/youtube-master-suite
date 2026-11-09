@@ -2,30 +2,6 @@
 export function createFeatureCatalogue() {
  const definitions = [
   {
-    "key": "autoLoadFilteredHome", "tab": "feed", "section": "Home loading",
-    "label": "Load more automatically after filtering",
-    "description": "On Home, ask YouTube for another batch when filtered cards leave you near the end. Pauses in background tabs, on errors, and at the automatic batch limit. Does not scroll or change playback.",
-    "default": true
-  },
-  {
-    "key": "showHomeLoadMore", "tab": "feed", "section": "Home loading",
-    "label": "Show Load more button on Home",
-    "description": "Load one native batch on request. The button reports loading, unsupported layouts and the end of YouTube’s recommendations. It cannot create recommendations after YouTube stops supplying them.",
-    "default": true
-  },
-  {
-    "key": "homeLoadBatchLimit", "tab": "feed", "section": "Home loading",
-    "label": "Automatic batches per Home visit",
-    "description": "Limit extra automatic requests for this Home visit. Load more remains available afterwards. Returning to Home starts a new allowance.",
-    "default": "3", "options": [["1", "1 batch"], ["3", "3 batches"], ["5", "5 batches"], ["10", "10 batches"]]
-  },
-  {
-    "key": "homeLoadDelay", "tab": "feed", "section": "Home loading",
-    "label": "Minimum time between extra loads",
-    "description": "Give YouTube’s native loading and the filters time to settle. One request is allowed per native continuation; failed or stalled requests are not repeated automatically.",
-    "default": "3", "options": [["3", "3 seconds"], ["5", "5 seconds"], ["10", "10 seconds"]]
-  },
-  {
     "key": "originalAudio",
     "tab": "player",
     "section": "Playback",
@@ -298,12 +274,13 @@ export function createFeatureCatalogue() {
     "default": false
   },
   {
-    "key": "hideFeedMovies",
+    "key": "filmVisibility",
     "tab": "feed",
     "section": "Additional filters",
-    "label": "Hide Movies and TV cards",
-    "description": "Hide explicitly identified Movies and TV cards in recommendations and search.",
-    "default": false
+    "label": "Films to show",
+    "description": "Choose which catalogue films and TV cards to show. Unknown price status stays visible unless all films are hidden. This choice takes priority over Hide paid video cards for catalogue titles; other filters still apply.",
+    "default": "free",
+    "options": [["all", "All films"], ["free", "Free films only"], ["paid", "Paid films only"], ["none", "Hide all films"]]
   },
   {
     "key": "hideHomePosts",
@@ -996,7 +973,7 @@ export function createFeatureCatalogue() {
     "tab": "feed",
     "section": "Feed cleanup",
     "label": "Hide paid video cards",
-    "description": "Hide native rent, buy and pay-to-watch cards in supported feeds.",
+    "description": "Hide other pay-to-watch video cards in supported feeds. Catalogue films and TV use Films to show instead.",
     "default": true
   },
   {

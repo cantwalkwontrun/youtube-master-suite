@@ -170,6 +170,44 @@ function createHarness() {
   };
 }
 
+test("a visible related rail avoids unrelated panel geometry and still reacts when hidden", () => {
+  const harness = createHarness();
+  const related = harness.watchFlexy.querySelector("#related");
+  related.hidden = false;
+  const reads = [];
+  const original = harness.context.getComputedStyle;
+  harness.context.getComputedStyle = element => { reads.push(element); return original(element); };
+  harness.context.reconcileSecondaryRailState();
+  assert.deepEqual(reads, [related, harness.watchFlexy]);
+  assert.equal(harness.attributes.has("data-ywlc-empty-secondary-rail"), false);
+  related.hidden = true;
+  harness.visiblePopupFrame.hidden = true;
+  harness.context.reconcileSecondaryRailState();
+  assert.equal(harness.attributes.get("data-ywlc-empty-secondary-rail"), "1");
+});
+
+test("visible chat and queue stop later panel measurements without losing transitions", () => {
+  const harness = createHarness();
+  const chat = addChatFrame(harness);
+  const queue = addQueuePanel(harness);
+  const measured = [];
+  harness.visiblePopupFrame.getBoundingClientRect = () => { measured.push("popup"); return { width: 374, height: 500 }; };
+  const original = harness.context.getComputedStyle;
+  harness.context.getComputedStyle = element => { if (element === queue) measured.push("queue"); return original(element); };
+  harness.context.reconcileSecondaryRailState();
+  assert.deepEqual(measured, []);
+  chat.hidden = true;
+  harness.context.reconcileSecondaryRailState();
+  assert.deepEqual(measured, ["queue"]);
+  queue.hidden = true;
+  harness.context.reconcileSecondaryRailState();
+  assert.deepEqual(measured, ["queue", "popup"]);
+  assert.equal(harness.attributes.has("data-ywlc-empty-secondary-rail"), false);
+  harness.visiblePopupFrame.hidden = true;
+  harness.context.reconcileSecondaryRailState();
+  assert.equal(harness.attributes.get("data-ywlc-empty-secondary-rail"), "1");
+});
+
 test("disabling empty-sidebar collapse releases only the owned empty-rail marker", () => {
   const harness = createHarness();
   harness.visiblePopupFrame.hidden = true;

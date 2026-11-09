@@ -167,7 +167,10 @@ export async function waitForSuiteHealth(page, moduleCount, {
     await page.waitForFunction(({ count, ready }) => {
       const health = JSON.parse(document.documentElement.getAttribute("data-yt-master-suite") || "null");
       return health?.healthy && (!ready || health.ready) && health.initialisedModules.length === count;
-    }, { count: moduleCount, ready: requireReady }, { timeout: timeoutMs });
+    // Health is data, not animation. Background Firefox test windows can stop
+    // delivering animation frames despite every module already being healthy.
+    // Keep the same assertion and deadline without depending on repaint timing.
+    }, { count: moduleCount, ready: requireReady }, { timeout: timeoutMs, polling: 50 });
   } catch (error) {
     let diagnostic;
     try {

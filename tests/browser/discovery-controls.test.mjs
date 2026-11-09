@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { readFileSync } from 'node:fs';
+import { classifyCatalogueFilm } from '../../sources/catalogue-film.mjs';
 import { installDiscoveryControls } from '../../sources/discovery-controls.mjs';
 import { launchFixtureBrowser } from './fixture-browser.mjs';
 let browser;
@@ -23,14 +24,16 @@ async function open(t, prefs = {}, path = '/') {
   const errors = []; page.on('pageerror',e=>errors.push(e.message));
   t.after(async()=>{try{assert.deepEqual(errors,[]);}finally{await context.close();}});
   await page.goto(url);
-  await page.evaluate(({source,prefs})=>{
+  await page.evaluate(({source,prefs,classifier})=>{
     window.discoveryPrefs = prefs; window.observerCounts={constructed:0,observed:0,disconnected:0};
     class CountedObserver extends MutationObserver {
       constructor(callback){super(callback);observerCounts.constructed++;}
       observe(...args){observerCounts.observed++;return super.observe(...args);}
       disconnect(){observerCounts.disconnected++;return super.disconnect();}
     }
-    window.disposeDiscovery = (0,eval)('('+source+')')({document,window,preferences:prefs,MutationObserver:CountedObserver,reportError:(id,phase,error)=>{throw error;}});
+    window.filmClassifications=0;
+    const classify=(0,eval)('('+classifier+')');
+    window.disposeDiscovery = (0,eval)('('+source+')')({document,window,preferences:prefs,classifyFilm:card=>{filmClassifications++;return classify(card);},MutationObserver:CountedObserver,reportError:(id,phase,error)=>{throw error;}});
     window.addCard = (id,{metadata='10 views',badge='',href='/watch?v=aaaaaaaaaaa',collaboration=false,movie=false}={})=>{
       const card=document.createElement(movie?'ytd-movie-renderer':'ytd-rich-item-renderer');card.id=id;
       const content=document.createElement('ytd-rich-grid-media');
@@ -41,7 +44,7 @@ async function open(t, prefs = {}, path = '/') {
       const ryd=document.createElement('span');ryd.id='return-youtube-dislike';ryd.textContent='42';
       content.append(link,meta,nativeBadge,custom,ryd);if(collaboration)card.setAttribute('is-collaboration','');card.append(content);document.querySelector('#contents').append(card);return card;
     };
-  },{source:installDiscoveryControls.toString(),prefs});
+  },{source:installDiscoveryControls.toString(),prefs,classifier:classifyCatalogueFilm.toString()});
   return page;
 }
 async function settle(page) {
@@ -51,13 +54,90 @@ async function settle(page) {
 }
 async function hidden(page,id,expected=true){await page.waitForFunction(({id,expected})=>(document.getElementById(id)?.getAttribute('data-ytms-discovery-hidden')==='1')===expected,{id,expected});await settle(page);assert.equal(await page.locator('#'+id).isVisible(),!expected);}
 
+for (const enabled of [false,true]) test(`comment GIF preference ${enabled} handles native attachments while preserving comment content`,async t=>{
+  const page=await open(t,{hideCommentGifs:enabled},'/watch?v=aaaaaaaaaaa');
+  await page.evaluate(()=>{
+    const comments=document.createElement('ytd-comments');comments.style.display='block';
+    comments.innerHTML=`<ytd-comment-view-model style="display:block">
+      <a id="author-thumbnail"><img id="avatar" src="https://synthetic.invalid/avatar.gif" width="32" height="32"></a>
+      <span id="content-text">A comment <img id="emoji" class="emoji" src="https://synthetic.invalid/emoji.gif" width="20" height="20"></span>
+      <div id="native-gif" class="ytwCommentImageAttachmentViewModelHost" style="height:128px"><img src="https://synthetic.invalid/proxied.webp" width="228" height="128"></div>
+      <yt-comment-image-view-model id="native-reply" style="display:block;height:128px"><img src="https://synthetic.invalid/opaque-image" width="228" height="128"></yt-comment-image-view-model>
+      <img id="legacy-gif" src="https://synthetic.invalid/animation.GIF?size=small" width="100" height="80">
+      <img id="ordinary-image" src="https://synthetic.invalid/ordinary.webp" width="100" height="80">
+      <button id="replies">11 replies</button>
+    </ytd-comment-view-model>`;
+    document.querySelector('ytd-app').append(comments);
+    window.commentFixture=comments;
+  });
+  await settle(page);
+  for(const id of ['native-gif','native-reply','legacy-gif'])assert.equal(await page.locator('#'+id).isVisible(),!enabled,id);
+  for(const id of ['avatar','content-text','emoji','ordinary-image','replies'])assert.equal(await page.locator('#'+id).isVisible(),true,id);
+  if(enabled)assert.equal(await page.locator('#native-gif').evaluate(el=>el.getBoundingClientRect().height),0);
+  await page.evaluate(()=>{
+    const reply=document.createElement('ytd-comment-renderer');reply.innerHTML='<div id="late-gif" class="ytwCommentImageAttachmentViewModelImageContainer" style="height:128px">Lazy attachment</div>';commentFixture.append(reply);
+  });
+  assert.equal(await page.locator('#late-gif').isVisible(),!enabled);
+  assert.equal(await page.evaluate(()=>observerCounts.observed),0,'CSS-only preference starts no DOM observation');
+  await page.evaluate(()=>disposeDiscovery());
+  for(const id of ['native-gif','native-reply','legacy-gif','late-gif'])assert.equal(await page.locator('#'+id).isVisible(),true,'dispose restores '+id);
+});
+
 test('default settings perform no observation or page changes',async t=>{
   const page=await open(t);assert.deepEqual(await page.evaluate(()=>observerCounts),{constructed:0,observed:0,disconnected:0});
   assert.equal(await page.locator('#ytms-discovery-controls-style').count(),0);assert.equal(await page.locator('a#logo').getAttribute('href'),'/');
 });
 
+test('film switch recognises free catalogue badges and native models without title or duration guesses',async t=>{
+  const page=await open(t,{filmVisibility:'none'});
+  await page.evaluate(()=>{
+    const badge=(card,value)=>{const el=document.createElement('span');el.className='yt-badge-shape__text';el.textContent=value;card.append(el);};
+    badge(addCard('pg',{badge:'Free'}),'PG');
+    badge(addCard('twelve',{badge:'Free'}),'12');
+    addCard('movie',{movie:true});
+    const model=addCard('model');model.querySelector('ytd-rich-grid-media').data={badges:[{metadataBadgeRenderer:{style:'BADGE_STYLE_TYPE_YPC_GREEN'}}]};
+    const modern=addCard('modern');modern.componentProps={data:()=>({content:{videoRenderer:{badges:[{metadataBadgeRenderer:{style:'BADGE_STYLE_TYPE_YPC_TRANSPARENT'}}]}}})};
+    addCard('freeOnly',{badge:'Free'});addCard('ratingOnly',{badge:'PG'});
+    const ordinary=addCard('ordinary',{metadata:'Drama · 2004 · 1:47:56'});ordinary.querySelector('#video-title').textContent='Free film PG review';
+    const thirdParty=addCard('extension',{badge:'Free'});const label=document.createElement('span');label.className='extension-badge';label.textContent='PG';thirdParty.append(label);
+    const queue=document.createElement('ytd-playlist-panel-renderer');queue.append(addCard('queuedFilm',{movie:true}));document.body.append(queue);
+  });
+  for(const id of ['pg','twelve','movie','model','modern'])await hidden(page,id);
+  for(const id of ['freeOnly','ratingOnly','ordinary','extension','queuedFilm'])await hidden(page,id,false);
+  await page.evaluate(()=>document.querySelector('#pg > .yt-badge-shape__text').textContent='Verified');
+  await hidden(page,'pg',false);
+  await page.evaluate(()=>{discoveryPrefs.filmVisibility='all';window.dispatchEvent(new Event('yt-page-data-updated'));});
+  for(const id of ['twelve','movie','model','modern'])await hidden(page,id,false);
+});
+
+test('Show films on creates no discovery observer by itself',async t=>{
+  const page=await open(t,{filmVisibility:'all'});
+  assert.equal(await page.evaluate(()=>observerCounts.constructed),0);
+  await page.evaluate(()=>addCard('visibleFilm',{movie:true}));
+  await hidden(page,'visibleFilm',false);
+});
+
+for (const mode of ['all','free','paid','none']) test(`film choice ${mode} respects price evidence and keeps uncertain cards visible`,async t=>{
+  const page=await open(t,{filmVisibility:mode});
+  await page.evaluate(()=>{
+    const rated=(id,label)=>{const card=addCard(id,{badge:label});const rating=document.createElement('span');rating.className='ytBadgeShapeBadgeText';rating.textContent='PG';card.append(rating);return card;};
+    rated('free','Free');rated('paid','Rent £3.49');
+    addCard('unknown',{movie:true});
+    const conflict=rated('conflict','Free');const paid=document.createElement('span');paid.className='ytBadgeShapeBadgeText';paid.textContent='Buy or rent';conflict.append(paid);
+    addCard('ordinary',{badge:'Pay to watch'});
+  });
+  await hidden(page,'free',mode==='paid'||mode==='none');
+  await hidden(page,'paid',mode==='free'||mode==='none');
+  for (const id of ['unknown','conflict']) await hidden(page,id,mode==='none');
+  await hidden(page,'ordinary',false);
+  if(mode==='free') {
+    await page.evaluate(()=>document.querySelector('#paid .yt-badge-shape__text').textContent='Free');
+    await hidden(page,'paid',false);
+  }
+});
+
 test('explicit native feed metadata filters independently and preserves recommended-extension content',async t=>{
-  const page=await open(t,{hideFeedLowViews:true,lowViewThreshold:'1000',hideFeedVods:true,hideFeedPlaylists:true,hideFeedDubbed:true,hideFeedCollaborations:true,hideFeedMovies:true});
+  const page=await open(t,{hideFeedLowViews:true,lowViewThreshold:'1000',hideFeedVods:true,hideFeedPlaylists:true,hideFeedDubbed:true,hideFeedCollaborations:true,filmVisibility:'none'});
   await page.evaluate(()=>{
     addCard('low');addCard('normal',{metadata:'2,500 views'});addCard('malformed',{metadata:'1,2 views'});
     addCard('vod',{metadata:'Streamed 2 days ago'});addCard('playlist',{href:'/playlist?list=PLfixture'});
@@ -167,6 +247,55 @@ test('one recycled card is reconciled without rescanning the feed or touching na
   assert.equal(await page.evaluate(()=>documentScans),0);
   assert.equal(await page.locator('#card50 #video-title').textContent(),'LIVE AI playlist collaboration auto-dubbed title');
   assert.equal(await page.locator('#card49 .cbCustomThumbnail').getAttribute('class'),'cbCustomThumbnail');
+});
+
+for(const otherFilters of [false,true])test(`film filtering ignores animation churn across a large feed with other filters ${otherFilters}`,async t=>{
+  const page=await open(t,{filmVisibility:'free',hideFeedLowViews:otherFilters,lowViewThreshold:'1000'});
+  await page.evaluate(()=>{for(let i=0;i<500;i++)addCard('card'+i,{metadata:'2K views'});});await settle(page);
+  await page.evaluate(async()=>{
+    filmClassifications=0;
+    for(let round=0;round<6;round++) {
+      for(let i=0;i<500;i++) {
+        const image=document.querySelector('#card'+i+' img');image.className='cbCustomThumbnail frame-'+round;
+        const likes=document.querySelector('#card'+i+' #return-youtube-dislike');likes.textContent=String(round);
+      }
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    }
+  });await settle(page);
+  assert.equal(await page.evaluate(()=>filmClassifications),0);
+  await page.evaluate(()=>{
+    const card=document.getElementById('card20');
+    for(const label of ['Rent £3.49','PG']){const badge=document.createElement('span');badge.className='ytBadgeShapeBadgeText';badge.textContent=label;card.append(badge);}
+  });await hidden(page,'card20');
+  assert.equal(await page.evaluate(()=>filmClassifications),1);
+});
+
+test('film cache invalidates removed badge classes, reinserted models and native data events',async t=>{
+  const page=await open(t,{filmVisibility:'free'});
+  await page.evaluate(()=>{
+    const card=addCard('recycled',{badge:'Pay to watch'}),rating=document.createElement('span');rating.id='rating';rating.className='ytBadgeShapeBadgeText';rating.textContent='PG';card.append(rating);
+  });await hidden(page,'recycled');
+  await page.evaluate(()=>document.getElementById('rating').className='ordinary');await hidden(page,'recycled',false);
+  await page.evaluate(()=>{
+    const card=document.getElementById('recycled');card.remove();
+    card.data={badges:[{metadataBadgeRenderer:{style:'BADGE_STYLE_TYPE_YPC',label:'Pay to watch'}}]};
+    document.querySelector('#contents').append(card);
+  });await hidden(page,'recycled');
+  await page.evaluate(()=>{document.getElementById('recycled').data=null;window.dispatchEvent(new Event('yt-page-data-updated'));});await hidden(page,'recycled',false);
+});
+
+test('watch-page data events do not scan retained Home cards or classify the active queue',async t=>{
+  const page=await open(t,{filmVisibility:'free'});
+  await page.evaluate(()=>{for(let i=0;i<500;i++)addCard('home'+i);});await settle(page);
+  await page.evaluate(()=>{
+    history.pushState({},'','/watch?v=aaaaaaaaaaa');window.dispatchEvent(new Event('yt-navigate-start'));window.dispatchEvent(new Event('yt-navigate-finish'));
+  });await settle(page);
+  await page.evaluate(()=>{
+    window.feedScans=0;filmClassifications=0;
+    const original=document.querySelectorAll;document.querySelectorAll=function(selector){if(selector.includes('ytd-rich-item-renderer'))feedScans++;return original.call(this,selector);};
+    for(let i=0;i<10;i++)window.dispatchEvent(new Event('yt-page-data-updated'));
+  });await settle(page);
+  assert.deepEqual(await page.evaluate(()=>({scans:feedScans,classifications:filmClassifications})),{scans:0,classifications:0});
 });
 
 test('thumbnail labels and views styling preserve durations, LIVE badges, creators and sidebar navigation',async t=>{

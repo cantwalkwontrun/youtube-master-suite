@@ -1283,7 +1283,7 @@ for (const layoutRefreshRequirement of [
 }
 assert.match(
   playerPreferencesSource,
-  /function handleNavigateStart\(\) \{\s+liveChatNavigationPending = true;\s+resetLiveChat\(\);\s+preferredQualityNavigationPending = true;\s+clearPreferredQualityAttempts\(\);\s+resetVideoMirror\(\);\s+document\.documentElement\?\.removeAttribute\(FULLSCREEN_COMMENTS_ATTRIBUTE\);\s+clearLiveChatCollapseAttempts\(\);\s+clearPlayerLayoutRefreshAttempts\(\);/,
+  /function handleNavigateStart\(\) \{\s+dynamicNavigationPending = true;\s+liveChatNavigationPending = true;\s+resetLiveChat\(\);\s+preferredQualityNavigationPending = true;\s+clearPreferredQualityAttempts\(\);\s+resetVideoMirror\(\);\s+document\.documentElement\?\.removeAttribute\(FULLSCREEN_COMMENTS_ATTRIBUTE\);\s+clearLiveChatCollapseAttempts\(\);\s+clearPlayerLayoutRefreshAttempts\(\);/,
   "Navigation start must clear live chat, quality attempts, mirroring, fullscreen-comment styling and pending player-layout retries",
 );
 for (const mutationAttribute of [
@@ -1330,12 +1330,12 @@ assert.match(
 );
 assert.match(
   playerPreferencesSource,
-  /function handleNavigateFinish\(\) \{[\s\S]+?applyRoutePreferences\(\);\s+configureDynamicMutationObserver\(\);/,
+  /function handleNavigateFinish\(\) \{[\s\S]+?applyRoutePreferences\(true\);\s+configureDynamicMutationObserver\(\);/,
   "Player Preferences must refresh its scoped observer after SPA navigation",
 );
 assert.match(
   playerPreferencesSource,
-  /"yt-page-data-updated",\s+\(\) => \{\s+scheduleVideoMirrorSync\(\);\s+scheduleLiveChatSync\(\);\s+schedulePreferredQualityAttempts\(\);\s+syncFullscreenComments\(\);\s+configureDynamicMutationObserver\(\);\s+scheduleApply\(document\);/,
+  /"yt-page-data-updated",\s+\(\) => \{\s+if \(dynamicNavigationPending \|\| videoMirrorPageSuspended\) return;\s+scheduleVideoMirrorSync\(\);\s+scheduleLiveChatSync\(\);\s+schedulePreferredQualityAttempts\(\);\s+syncFullscreenComments\(\);\s+configureDynamicMutationObserver\(\);\s+scheduleApply\(document\);/,
   "Player Preferences page-data fallback must reconcile mirroring and live chat, refresh observation roots and apply the full page",
 );
 assert.match(
