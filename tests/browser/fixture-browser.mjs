@@ -193,3 +193,38 @@ export async function waitForSuiteHealth(page, moduleCount, {
     throw new Error(`${error.message}\nSuite fixture health diagnostic: ${JSON.stringify(diagnostic)}`, { cause: error });
   }
 }
+
+// Language: en-GB. These synthetic watch fixtures start on a fresh blank page.
+// Verify the parsed document directly instead of depending on a Firefox load
+// event notification. Production-script health is checked separately afterwards.
+export async function navigateWatchFixture(page, { timeoutMs = 10000 } = {}) {
+  const url = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+  if (page.url() !== 'about:blank') throw new Error('Watch fixture navigation requires a fresh page');
+  const events = { response: 0, domcontentloaded: 0, load: 0 };
+  const response = value => { if (value.url() === url) events.response++; };
+  const dom = () => events.domcontentloaded++;
+  const load = () => events.load++;
+  page.on('response', response); page.on('domcontentloaded', dom); page.on('load', load);
+  try {
+    await page.goto(url, { waitUntil: 'commit', timeout: timeoutMs });
+    await page.waitForFunction(expected => location.href === expected &&
+      document.readyState !== 'loading' && Boolean(document.querySelector('ytd-app #movie_player video')) &&
+      typeof window.fixture === 'object' && window.fixture !== null,
+    url, { timeout: timeoutMs });
+  } catch (error) {
+    let state;
+    let timer;
+    try {
+      state = await Promise.race([
+        page.evaluate(expected => ({ expectedUrl: location.href === expected, readyState: document.readyState,
+          app: Boolean(document.querySelector('ytd-app')), player: Boolean(document.getElementById('movie_player')),
+          fixtureApi: typeof window.fixture === 'object', scriptInjected: Boolean(window.__ytmsFixtureUsesGM) }), url),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ unavailable: true }), 2000); }),
+      ]);
+    } catch { state = { unavailable: true }; }
+    finally { clearTimeout(timer); }
+    throw new Error(`Synthetic watch navigation failed: ${JSON.stringify({ events, state })}`, { cause: error });
+  } finally {
+    page.off('response', response); page.off('domcontentloaded', dom); page.off('load', load);
+  }
+}

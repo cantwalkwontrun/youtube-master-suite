@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, navigateWatchFixture } from './fixture-browser.mjs';
 
 const suite = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -30,7 +30,7 @@ async function fixture(t, { mode = 'large', clipStyle = '', tipStyle = '', scrol
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
     route.fulfill({contentType:'text/html',body:base.replace('</head>',css+'</head>').replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)}) : route.abort());
   // Explicit Suite health and geometry checks below define fixture readiness.
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await navigateWatchFixture(page);
   await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page, manifest.registeredModules, {timeoutMs:10000});
   await page.evaluate(({ clipStyle, tipStyle, scroll }) => {

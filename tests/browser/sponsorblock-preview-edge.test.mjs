@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, navigateWatchFixture } from './fixture-browser.mjs';
 
 const suite = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -47,7 +47,7 @@ for(const kind of ['none','sponsor','child','big','foreign']) test(`crossing a S
       .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)}) : route.abort());
   t.after(async()=>{try{assert.deepEqual(errors,[])}finally{await context.close()}});
   // Explicit Suite health and geometry checks below define fixture readiness.
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await navigateWatchFixture(page);
   await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   if(kind==='foreign')await page.addStyleTag({content:'#movie_player .ytp-tooltip.sponsorCategoryTooltipVisible{transform:translateY(-250px)!important}'});

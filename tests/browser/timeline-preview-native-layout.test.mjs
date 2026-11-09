@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, navigateWatchFixture } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const MANIFEST = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -43,7 +43,7 @@ async function fixture(t) {
       .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+MARKUP)}) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors,[]); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
-  await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await navigateWatchFixture(page);
   await page.addScriptTag({ content: SUITE });
   await waitForSuiteHealth(page,MANIFEST.registeredModules,{timeoutMs:10000,errors});
   return page;
