@@ -73,34 +73,6 @@ jobs:
       - name: Verify install-parity helper
         run: node verify-installed-master.mjs youtube-master-suite.user.js
 
-      - name: Install browser-test dependency
-        run: npm ci --ignore-scripts
-
-      - name: Install isolated Firefox
-        run: npx --no-install playwright install --with-deps firefox
-
-      - name: Run Firefox regression checks
-        env:
-          VERIFY_SCOPE: ${{ inputs.scope || 'full' }}
-        run: |
-          case "$VERIFY_SCOPE" in
-            preview)
-              node --test --test-concurrency=2 \
-                tests/browser/chapter-boundary-transition.test.mjs \
-                tests/browser/sponsorblock-continuous-edge.test.mjs \
-                tests/browser/sponsorblock-preview-compat.test.mjs \
-                tests/browser/sponsorblock-preview-edge.test.mjs \
-                tests/browser/timeline-hint-overflow.test.mjs \
-                tests/browser/timeline-preview-native-layout.test.mjs \
-                tests/browser/timeline-preview-reversion.test.mjs \
-                tests/browser/timeline-preview.test.mjs
-              ;;
-            full)
-              node --test --test-concurrency=2 tests/browser/*.test.mjs
-              ;;
-            *) echo "Unsupported verification scope" >&2; exit 1 ;;
-          esac
-
       - name: Check JavaScript syntax
         run: |
           node --check build-master.mjs
@@ -122,4 +94,55 @@ jobs:
           done
 
       - name: Confirm verification made no changes
+        run: git diff --exit-code
+
+  browser:
+    name: Firefox (${{ matrix.shard }}/4)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install browser-test dependency
+        run: npm ci --ignore-scripts
+
+      - name: Install isolated Firefox
+        run: npx --no-install playwright install --with-deps firefox
+
+      - name: Run Firefox regression checks
+        env:
+          VERIFY_SCOPE: ${{ inputs.scope || 'full' }}
+          VERIFY_SHARD: ${{ matrix.shard }}/4
+        run: |
+          case "$VERIFY_SCOPE" in
+            preview)
+              node --test --test-concurrency=1 --test-shard="$VERIFY_SHARD" \
+                tests/browser/chapter-boundary-transition.test.mjs \
+                tests/browser/sponsorblock-continuous-edge.test.mjs \
+                tests/browser/sponsorblock-preview-compat.test.mjs \
+                tests/browser/sponsorblock-preview-edge.test.mjs \
+                tests/browser/timeline-hint-overflow.test.mjs \
+                tests/browser/timeline-preview-native-layout.test.mjs \
+                tests/browser/timeline-preview-reversion.test.mjs \
+                tests/browser/timeline-preview.test.mjs
+              ;;
+            full)
+              node --test --test-concurrency=1 --test-shard="$VERIFY_SHARD" tests/browser/*.test.mjs
+              ;;
+            *) echo "Unsupported verification scope" >&2; exit 1 ;;
+          esac
+
+      - name: Confirm browser checks made no changes
         run: git diff --exit-code
