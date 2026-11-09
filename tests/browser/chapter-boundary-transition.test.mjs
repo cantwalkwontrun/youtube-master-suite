@@ -1,4 +1,3 @@
-import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Synthetic overlapping SponsorBlock chapter-boundary checks.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -45,11 +44,11 @@ for (const transition of [false, true]) for (const scenario of ['twoSponsorLabel
   await page.addInitScript(() => localStorage.setItem('yt-master-suite.settings.v1', JSON.stringify({version:1, values:{timelinePreviewSize:'large',theatreMode:false}})));
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
     ? route.fulfill({contentType:'text/html', body:base.replace('</head>', styles+'</head>')
-      .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup)
-      .replace('</body>', `<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
+      .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>'+markup)}) : route.abort());
   // Suite health and the geometry assertions below are the readiness contract;
   // unrelated image load completion is not required by this fixture.
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   await page.locator('.ytp-progress-bar').hover();
   await page.locator('.ytp-tooltip').evaluate((tip, useTransition) => {

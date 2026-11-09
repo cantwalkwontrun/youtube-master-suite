@@ -1,4 +1,3 @@
-import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Synthetic SponsorBlock tooltip and player compatibility checks.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -60,10 +59,11 @@ async function fixture(t, mode='large', {miniplayer=false}={}) {
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?')
     ? route.fulfill({ contentType:'text/html', body:base.replace('</head>', styles + '</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>' + markup)
-      .replace('</body>', `${miniplayer?floatingSetup:''}<script>${wrapFixtureUserscript(suite)}</script></body>`) }) : route.abort());
+      .replace('</body>', `${miniplayer?floatingSetup:''}</body>`) }) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page, manifest.registeredModules, {timeoutMs:10000, errors});
   await page.locator('.ytp-progress-bar').hover();
   await page.waitForTimeout(200);

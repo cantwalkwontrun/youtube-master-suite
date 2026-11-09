@@ -1,4 +1,3 @@
-import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
@@ -42,10 +41,11 @@ async function fixture(t, mode = 'auto', viewport = { width: 1920, height: 1080 
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
     route.fulfill({ contentType:'text/html', body:BASE.replace('</head>', CSS + '</head>')
       .replace('<video class="html5-main-video"></video>', '<video class="html5-main-video"></video>' + MARKUP)
-      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}<script>${wrapFixtureUserscript(SUITE)}</script></body>`) }) : route.abort());
+      .replace('</body>', `${miniplayer?FLOATING_SETUP:''}</body>`) }) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: SUITE });
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs:10000, errors });
   return page;
 }

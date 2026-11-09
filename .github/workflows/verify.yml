@@ -6,6 +6,14 @@ on:
       - main
       - 'publish/**'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Browser verification scope
+        type: choice
+        options:
+          - full
+          - preview
+        default: full
   pull_request:
 
 permissions:
@@ -72,7 +80,26 @@ jobs:
         run: npx --no-install playwright install --with-deps firefox
 
       - name: Run Firefox regression checks
-        run: node --test --test-concurrency=2 tests/browser/*.test.mjs
+        env:
+          VERIFY_SCOPE: ${{ inputs.scope || 'full' }}
+        run: |
+          case "$VERIFY_SCOPE" in
+            preview)
+              node --test --test-concurrency=2 \
+                tests/browser/chapter-boundary-transition.test.mjs \
+                tests/browser/sponsorblock-continuous-edge.test.mjs \
+                tests/browser/sponsorblock-preview-compat.test.mjs \
+                tests/browser/sponsorblock-preview-edge.test.mjs \
+                tests/browser/timeline-hint-overflow.test.mjs \
+                tests/browser/timeline-preview-native-layout.test.mjs \
+                tests/browser/timeline-preview-reversion.test.mjs \
+                tests/browser/timeline-preview.test.mjs
+              ;;
+            full)
+              node --test --test-concurrency=2 tests/browser/*.test.mjs
+              ;;
+            *) echo "Unsupported verification scope" >&2; exit 1 ;;
+          esac
 
       - name: Check JavaScript syntax
         run: |

@@ -1,4 +1,3 @@
-import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 // Language: en-GB. Synthetic moving seek-bar and SponsorBlock edge regression.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -45,11 +44,11 @@ for(const kind of ['none','sponsor','child','big','foreign']) test(`crossing a S
   await page.addInitScript(()=>localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{timelinePreviewSize:'large',theatreMode:false}})));
   await page.route('**/*',route=>route.request().url().startsWith('https://www.youtube.com/watch?')
     ?route.fulfill({contentType:'text/html',body:base.replace('</head>',styles+'</head>')
-      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)
-      .replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
+      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)}) : route.abort());
   t.after(async()=>{try{assert.deepEqual(errors,[])}finally{await context.close()}});
   // Explicit Suite health and geometry checks below define fixture readiness.
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page,manifest.registeredModules,{timeoutMs:10000,errors});
   if(kind==='foreign')await page.addStyleTag({content:'#movie_player .ytp-tooltip.sponsorCategoryTooltipVisible{transform:translateY(-250px)!important}'});
   if(kind==='big')await page.locator('#movie_player').evaluate(node=>{node.classList.add('ytp-big-mode');node.querySelector('.ytp-tooltip-title:not(.sponsorCategoryTooltip)').textContent=''});

@@ -1,4 +1,3 @@
-import { wrapFixtureUserscript } from './fixture-gm-storage.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
@@ -29,11 +28,11 @@ async function fixture(t) {
   await page.addInitScript(() => localStorage.setItem('yt-master-suite.settings.v1', JSON.stringify({version:1,values:{timelinePreviewSize:'large',theatreMode:false}})));
   await page.route('**/*', route => route.request().url().startsWith('https://www.youtube.com/watch?') ?
     route.fulfill({contentType:'text/html',body:base.replace('</head>',css+'</head>')
-      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)
-      .replace('</body>',`<script>${wrapFixtureUserscript(suite)}</script></body>`)}) : route.abort());
+      .replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+markup)}) : route.abort());
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   // Explicit Suite health and geometry checks below define fixture readiness.
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa', { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: suite });
   await waitForSuiteHealth(page, manifest.registeredModules, {timeoutMs:10000,errors});
   await page.locator('.ytp-progress-bar').hover();
   await page.waitForFunction(() => document.querySelector('.ytp-tooltip.ytp-preview').style.scale !== '');
