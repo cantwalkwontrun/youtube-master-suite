@@ -272,6 +272,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   const filmOnly = ['free','paid','none'].includes(p.filmVisibility) && !['hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideThumbnailBadges','hideViewsIcon','viewsSeparateLine','listChannelHeaders'].some(key=>p[key]);
   const filmBadges = 'ytd-badge-supported-renderer,.badge-style-type-ypc,.badge-style-type-ypc-green,.badge-style-type-ypc-transparent,.badge,.badge-label,.ytBadgeShapeBadgeText,.yt-badge-shape__text,.ytThumbnailOverlayBadgeViewModelHost';
   const filmStructure = cardSelector + ',ytd-rich-grid-media,' + filmBadges;
+  const searchAiSurfaces = ['yt-ai-search-input-view-model','yt-ai-search-result-section-renderer','yt-ai-search-ghost-card-view-model','ytd-shelf-renderer'].map(selector => 'ytd-search '+selector).join(',');
   function affectsFilm(record, element) {
     if (element.closest(filmBadges)) return true;
     if (record.type === 'attributes') {
@@ -289,6 +290,8 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
       const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
       if (!el || el.closest('#ytms-settings-dialog,#ytms-age-dialog,.html5-video-player')) continue;
       if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
+      if (['dark','light'].includes(p.interfaceTheme) && m.attributeName === 'class' && el.matches('style,link')) changed = true;
+      if (p.hideSearchAI && routeKind() === 'search' && el.closest(searchAiSurfaces)) changed = true;
       const card = canonicalCard(el);
       if (card) {
         if ((!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) && !filteredCards.has(card) && !cardDecorations.has(card) && !cardHeadings.has(card)) continue;
@@ -302,11 +305,15 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
         if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
+        if (p.hideSearchAI && routeKind() === 'search' && (node.matches(searchAiSurfaces) || node.querySelector(searchAiSurfaces))) changed = true;
       }
       // Native virtualisation can remove cards without adding a replacement.
       // Release detached owned markers in the next batch, without a feed scan.
       for (const node of m.removedNodes) if (node.nodeType === 1 &&
         (node.matches(cardSelector) || node.querySelector(cardSelector))) changed = true;
+      if (!changed && m.removedNodes.length && [...owned].some(node => !node.isConnected)) changed = true;
+      if (['dark','light'].includes(p.interfaceTheme) && [...m.removedNodes].some(node => node.nodeType === 1 &&
+        (node.matches('style.darkreader,link.darkreader') || node.querySelector('style.darkreader,link.darkreader')))) changed = true;
     }
     if (changed) schedule(false);
   });

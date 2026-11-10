@@ -67,8 +67,13 @@ export function createMenuEditor(document, layouts, options) {
     previewList.replaceChildren();
     function children(parent, target) {
       for (const node of layout.nodes.filter(item => item.parent === parent)) {
-        const item = el('li', label(node) + (!isGroup(node) && !node.visible ? ' (hidden)' : ''));
-        if (isGroup(node)) { const nested = el('ul'); children(node.id, nested); item.append(nested); }
+        if (!isGroup(node) && !node.visible) continue;
+        const item = el('li', label(node));
+        if (isGroup(node)) {
+          const nested = el('ul'); children(node.id, nested);
+          if (!nested.children.length) continue;
+          item.append(nested);
+        }
         target.append(item);
       }
     }

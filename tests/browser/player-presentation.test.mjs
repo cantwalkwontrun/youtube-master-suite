@@ -317,6 +317,21 @@ test('a blocked timer click is not retried on every media update', async t => {
   await page.evaluate(() => { for(let i=0;i<20;i++) document.querySelector('video').dispatchEvent(new Event('timeupdate')); });
   await settle(page); assert.equal((await snapshot(page)).text, '-15:04'); assert.equal((await snapshot(page)).clicks, 0);
 });
+
+for (const hide of ["document.querySelector('#movie_player').style.opacity='0'", "document.querySelector('ytd-miniplayer').style.opacity='0'"])
+test(`an opacity-hidden player does not receive timer clicks (${hide})`, async t => {
+  const page = await open(t, { timeDisplayMode: 'elapsed' }, hide);
+  assert.equal((await snapshot(page)).clicks, 0);
+});
+
+test('an opacity-hidden retained player does not block the visible timer preference', async t => {
+  const page = await open(t, { timeDisplayMode: 'elapsed' }, `(() => {
+    const retained = document.createElement('div'); retained.style.opacity='0';
+    retained.append(document.querySelector('#movie_player').cloneNode(true));
+    document.querySelector('ytd-app').append(retained);
+  })()`);
+  assert.equal((await snapshot(page)).clicks, 1);
+});
 for (const nativeIdentity of [true, false]) test(`a reused timer retries after a new SPA video (${nativeIdentity ? 'native identity' : 'watch URL fallback'})`, async t => {
   const page = await open(t, { timeDisplayMode: 'elapsed' }, `
     history.replaceState({}, '', '/watch?v=aaaaaaaaaaa');

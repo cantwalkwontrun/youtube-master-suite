@@ -812,7 +812,7 @@ test('returning from Channels restores main footer visibility without revealing 
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
 });
 
-test('Reload now warns about an unsaved channel draft and dismissal preserves it', async t => {
+test('Reload now warns inline about an unsaved channel draft and dismissal preserves it', async t => {
   const page = await openFixture(t, [], { width: 1280, height: 900 }, true);
   await openChannels(page);
   await addRule(page);
@@ -820,12 +820,16 @@ test('Reload now warns about an unsaved channel draft and dismissal preserves it
   await page.locator('#ytms-hideShorts').uncheck();
   await page.locator('#ytms-save-preview').click();
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
-  const confirmations = [];
-  page.on('dialog', async dialog => { confirmations.push(dialog.message()); await dialog.dismiss(); });
+  let nativeDialogs = 0;
+  page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
   await page.locator('#ytms-save-preview').click();
-  assert.equal(confirmations.length, 1);
-  assert.match(confirmations[0], /channel/i);
-  assert.match(confirmations[0], /unsaved|discard/i);
+  assert.equal(nativeDialogs, 0);
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+  const message = await page.locator('#ytms-reload-message').textContent();
+  assert.match(message, /channel/i);
+  assert.match(message, /unsaved|discard/i);
+  await page.locator('#ytms-cancel-reload').click();
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), false);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   await page.getByRole('tab', { name: 'Channels', exact: true }).click();
   assert.equal(await field(page, 'Channel ID or channel URL').inputValue(), FIRST);

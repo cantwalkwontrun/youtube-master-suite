@@ -583,6 +583,118 @@ test('collapsed Home queue is expanded and verified before adding, then moves th
   assert.equal((await snapshot(page)).adds.length, 1);
 });
 
+async function panelLessNativeQueue(page, fault = '') {
+  await page.evaluate(fault => {
+    const f = queueFixture, player = document.getElementById('movie_player');
+    const panel = f.mini.querySelector('ytd-playlist-panel-renderer');
+    panel.remove(); f.queueToggle.closest('ytd-miniplayer-info-bar').remove();
+    player.getPlaylistId = () => 'TLPQfixture';
+    player.getPlayerState = () => 2;
+    player.querySelector('video').dispatchEvent(new Event('ended', { bubbles: true }));
+    f.restoreCommands = 0;
+    const dispatch = endpoint => {
+      const command = endpoint.signalServiceEndpoint.actions[0].addToPlaylistCommand;
+      f.restoreCommands++;
+      if (command.openMiniplayer !== true) return false;
+      if (fault === 'rejected') return false;
+      if (fault === 'early-panel') { f.mini.append(panel); f.render(); }
+      f.resolveNative(endpoint);
+      if (fault === 'missing-panel') return true;
+      setTimeout(() => {
+        if (fault === 'wrong-order') f.ids.reverse();
+        if (fault === 'wrong-player') { f.current = 'bbbbbbbbbbb'; fixture.playerId = f.current; }
+        f.render();
+        if (fault === 'wrong-list') f.owner.data.playlistId = 'TLPQother';
+        if (fault === 'duplicate-entry') {
+          const videos = f.owner.data.contents.map(item => item.playlistPanelVideoRenderer);
+          videos[1].playlistSetVideoId = videos[0].playlistSetVideoId;
+        }
+        f.mini.append(panel);
+        window.dispatchEvent(new Event('yt-playlist-data-updated'));
+      }, 80);
+      return true;
+    };
+    document.querySelector('ytd-app').resolveCommand = dispatch;
+    if (f.popup.polymerController?.resolveCommand) f.popup.polymerController.resolveCommand = dispatch;
+  }, fault);
+}
+
+for (const suite of [false, true]) for (const sheet of [false, true]) test(`panel-less native queue is restored before Play next (${suite ? 'complete Suite' : 'source'}, ${sheet ? 'sheet' : 'legacy'})`,async t=>{
+  const page=await open(t,{suite,sheet,homeMiniplayer:true});
+  await panelLessNativeQueue(page);
+  const before=await snapshot(page);
+  await choose(page,D);
+  await page.waitForFunction(()=>queueFixture.moves.length===1);
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,D,B,C]);assert.equal(after.adds.length,1);
+  assert.equal(after.adds[0].openMiniplayer,true);
+  assert.equal(await page.evaluate(()=>queueFixture.restoreCommands),1);
+  assert.equal(after.playing,before.playing);assert.equal(after.url,before.url);
+  assert.equal(after.title,before.title);assert.equal(after.comments,before.comments);
+});
+
+for (const suite of [false, true]) for (const sheet of [false, true]) test(`panel-less restoration waits when the native panel returns before the append (${suite ? 'complete Suite' : 'source'}, ${sheet ? 'sheet' : 'legacy'})`, async t => {
+  const page = await open(t, { suite, sheet, homeMiniplayer: true, delay: 180 });
+  await panelLessNativeQueue(page, 'early-panel');
+  await choose(page, D);
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  const after = await snapshot(page);
+  assert.deepEqual(after.ids, [A, D, B, C]);
+  assert.equal(after.adds.length, 1);
+  assert.equal(await page.evaluate(() => queueFixture.restoreCommands), 1);
+});
+
+for(const fault of ['wrong-order','wrong-player','wrong-list','duplicate-entry']) test(`panel-less native queue refuses a changed ${fault} after one native append`,async t=>{
+  const page=await open(t,{sheet:true,homeMiniplayer:true});await panelLessNativeQueue(page,fault);
+  await choose(page,D);await page.waitForFunction(()=>queueFixture.ids.length===4);
+  await page.waitForTimeout(250);
+  assert.equal((await snapshot(page)).adds.length,1);assert.deepEqual((await snapshot(page)).moves,[]);
+  assert.equal(await page.evaluate(()=>queueFixture.restoreCommands),1);
+});
+
+test('panel-less native queue never appends an already queued target',async t=>{
+  const page=await open(t,{sheet:true,homeMiniplayer:true});await panelLessNativeQueue(page);
+  await choose(page,C);await page.waitForTimeout(100);
+  assert.equal((await snapshot(page)).adds.length,0);assert.deepEqual((await snapshot(page)).moves,[]);
+  assert.equal(await page.evaluate(()=>queueFixture.restoreCommands),0);
+});
+
+for (const fault of ['duplicate-ids', 'unknown-list', 'ad-showing']) test(`panel-less native queue refuses restoration for ${fault}`, async t => {
+  const page = await open(t, { sheet: true, homeMiniplayer: true });
+  await panelLessNativeQueue(page);
+  await page.evaluate(fault => {
+    const player = document.getElementById('movie_player');
+    if (fault === 'duplicate-ids') player.getPlaylist = () => ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'bbbbbbbbbbb'];
+    if (fault === 'unknown-list') player.getPlaylistId = () => '';
+    if (fault === 'ad-showing') player.classList.add('ad-showing');
+  }, fault);
+  await choose(page, D);
+  await page.waitForTimeout(100);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  assert.deepEqual((await snapshot(page)).moves, []);
+  assert.equal(await page.evaluate(() => queueFixture.restoreCommands), 0);
+});
+
+test('panel-less native queue does not retry a rejected restoration command', async t => {
+  const page = await open(t, { sheet: true, homeMiniplayer: true });
+  await panelLessNativeQueue(page, 'rejected');
+  await choose(page, D);
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => queueFixture.restoreCommands), 1);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  assert.deepEqual((await snapshot(page)).moves, []);
+});
+
+test('panel-less native queue times out without retrying when its panel never returns', { timeout: 15000 }, async t => {
+  const page = await open(t, { sheet: true, homeMiniplayer: true });
+  await panelLessNativeQueue(page, 'missing-panel');
+  await choose(page, D);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('could not move'), null, { timeout: 11000 });
+  assert.equal(await page.evaluate(() => queueFixture.restoreCommands), 1);
+  assert.equal((await snapshot(page)).adds.length, 1);
+  assert.deepEqual((await snapshot(page)).moves, []);
+});
+
 for (const fault of ['wrong-native-list', 'wrong-order', 'wrong-owner', 'missing-playlist-api', 'duplicate-current']) test(`Home miniplayer fails closed for ${fault} without appending`, async t => {
   const page = await open(t, { sheet: true, homeMiniplayer: true });
   await page.evaluate(fault => {
@@ -731,7 +843,7 @@ test('Home preparation does not use unrelated player expand controls or append w
     document.getElementById('movie_player').append(unrelated);
   });
   await choose(page, D);
-  assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /Open the miniplayer queue/);
+  assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /Expand the video player once/);
   assert.equal(await page.evaluate(() => Boolean(queueFixture.unrelatedClicked)), false);
   assert.equal((await snapshot(page)).adds.length, 0);
 });
@@ -1048,6 +1160,48 @@ test("a hidden stale player does not override the visible current video", async 
   await choose(page, C);
   await page.waitForFunction(() => queueFixture.moves.length === 1);
   assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+});
+
+for (const hiddenBy of ['player opacity', 'ancestor opacity', 'visibility', 'aria-hidden'])
+test(`a retained player hidden by ${hiddenBy} cannot block Play next`, async t => {
+  const page = await open(t);
+  await page.evaluate(hiddenBy => {
+    const retained = document.createElement('div');
+    const duplicate = document.createElement('div'); duplicate.id = 'movie_player';
+    duplicate.style.cssText = 'width:320px;height:180px';
+    duplicate.getVideoData = () => ({ video_id: 'zzzzzzzzzzz' });
+    retained.append(duplicate); document.body.prepend(retained);
+    if (hiddenBy === 'player opacity') duplicate.style.opacity = '0';
+    if (hiddenBy === 'ancestor opacity') retained.style.opacity = '0';
+    if (hiddenBy === 'visibility') retained.style.visibility = 'hidden';
+    if (hiddenBy === 'aria-hidden') retained.setAttribute('aria-hidden', 'true');
+  }, hiddenBy);
+  await choose(page, C);
+  await page.waitForFunction(() => queueFixture.moves.length === 1);
+  assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+});
+
+for (const hiddenBy of ['player opacity', 'ancestor opacity'])
+test(`a current player in ${hiddenBy} state cannot send transition queue commands`, async t => {
+  const page = await open(t);
+  await page.evaluate(hiddenBy => {
+    const player = document.querySelector('#movie_player');
+    if (hiddenBy === 'player opacity') player.style.opacity = '0';
+    else player.parentElement.style.opacity = '0';
+  }, hiddenBy);
+  await choose(page, D);
+  assert.equal((await snapshot(page)).adds.length, 0);
+  assert.deepEqual((await snapshot(page)).moves, []);
+});
+
+for (const suite of [false, true]) for (const sheet of [false, true])
+test(`a non-rendered retained player still permits native queue creation (${suite ? 'complete Suite' : 'source'}, ${sheet ? 'sheet' : 'legacy'})`, async t => {
+  const page = await open(t, { suite, sheet, ids: null });
+  await page.evaluate(() => { document.querySelector('#movie_player').style.display = 'none'; });
+  await choose(page, D);
+  await page.waitForFunction(() => queueFixture.adds.length === 1);
+  assert.equal((await snapshot(page)).adds.length, 1);
+  assert.deepEqual((await snapshot(page)).moves, []);
 });
 
 test("batch and mismatched queue commands retain only their original action", async t => {

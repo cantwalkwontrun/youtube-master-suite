@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.76
+// @version      1.80
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -1001,21 +1001,37 @@ ${buildQueueCompatibilityCss()}
       return { endpoint, command, videoId: ids[0], sourceItem: item, signature: boundedMenuSignature(command) };
     }
 
+    function isVisibleQueuePlayer(player) {
+      if (!player.isConnected || !player.getClientRects().length ||
+          player.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      for (let node = player; node; node = node.parentElement) {
+        const css = getComputedStyle(node);
+        if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
+      }
+      return true;
+    }
+
     function activeVideoId() {
       const ids = new Set();
       let visible = 0;
-      for (const player of document.querySelectorAll('#movie_player')) {
-        if (!player.isConnected || !player.getClientRects().length) continue;
+      const players = [...document.querySelectorAll('#movie_player')].filter(player => player.isConnected);
+      for (const player of players) {
+        if (!isVisibleQueuePlayer(player)) continue;
         visible++;
         const id = player.getVideoData?.()?.video_id;
         if (validId(id)) ids.add(id);
       }
-      return visible === 1 && ids.size === 1 ? [...ids][0] : visible ? undefined : null;
+      if (visible) return visible === 1 && ids.size === 1 ? [...ids][0] : undefined;
+      // A measurable fading player can still own a queue. Its temporary
+      // invisibility must not turn Play next into append-only queue creation.
+      // Closed/non-rendered retained players must still permit a new queue.
+      return players.some(player => player.getClientRects().length &&
+        validId(player.getVideoData?.()?.video_id)) ? undefined : null;
     }
 
     function activePlayer(anchor) {
       return [...document.querySelectorAll('#movie_player')].find(player =>
-        player.isConnected && player.getClientRects().length &&
+        isVisibleQueuePlayer(player) &&
         player.getVideoData?.()?.video_id === anchor);
     }
 
@@ -1233,6 +1249,16 @@ ${buildQueueCompatibilityCss()}
           finish("The queue changed; no item was moved.");
           return;
         }
+        if (operation.restore) {
+          const proof = operation.restore;
+          const ids = player?.getPlaylist?.();
+          if (player !== proof.player || player.closest('ytd-miniplayer') !== proof.mini ||
+              activeListId !== proof.listId || !Array.isArray(ids) ||
+              (!sameIds(ids, proof.ids) && !sameIds(ids, [...proof.ids, operation.videoId]))) {
+            finish("The queue changed; no item was moved.");
+            return;
+          }
+        }
         const queue = queueState(operation.anchor);
         if (pending !== operation) return;
         if (operation.preparing) {
@@ -1248,6 +1274,32 @@ ${buildQueueCompatibilityCss()}
           return;
         }
         if (!queue || queue.unavailable || queue.awaitingPanel) return;
+        if (operation.restore) {
+          const proof = operation.restore;
+          if (queue.mini !== proof.mini || queue.listId !== proof.listId ||
+              queue.currentIndex !== proof.currentIndex) {
+            finish("The queue changed; no item was moved.");
+            return;
+          }
+          const ids = queue.videos.map(video => video.videoId);
+          // Restoring the panel and accepting its append are separate native
+          // updates. The exact original queue is still a valid waiting state;
+          // only its verified append may progress to the reorder below.
+          if (sameIds(ids, proof.ids)) return;
+          if (!sameIds(ids, [...proof.ids, operation.videoId])) {
+            finish("The queue changed; no item was moved.");
+            return;
+          }
+          if (!reorderRows(queue)) return; // Native model and rows may stamp separately.
+          const entries = queueEntries(queue.videos);
+          if (entries.some(entry => typeof entry.playlistSetVideoId !== 'string' || !entry.playlistSetVideoId) ||
+              new Set(entries.map(entry => entry.playlistSetVideoId)).size !== entries.length) {
+            finish("Could not identify the queue entries. Please reorder them manually.");
+            return;
+          }
+          operation.appendProof = captureOrderProof(queue, player, entries.slice(0, -1), proof.ids);
+          operation.restore = null;
+        }
         if (operation.listId && queue.listId !== operation.listId) {
           finish("The queue changed; no item was moved.");
           return;
@@ -1380,19 +1432,34 @@ ${buildQueueCompatibilityCss()}
       return observer;
     }
 
-    function prepareMiniplayer(entry, popup, anchor, activation) {
-      const queue = miniplayerQueue(activePlayer(anchor), anchor);
+    function queueExpansionControl(queue) {
       const toggles = queue?.mini ? [...queue.mini.querySelectorAll("ytd-miniplayer-info-bar button[aria-expanded]")]
         .filter(button => button.closest("ytd-miniplayer") === queue.mini && button.getClientRects().length) : [];
-      if (toggles.length !== 1 || !["true", "false"].includes(toggles[0].getAttribute("aria-expanded"))) {
-        notify("Could not prepare Play next. Open the miniplayer queue and try again. Nothing was added.");
+      return toggles.length === 1 && ['true', 'false'].includes(toggles[0].getAttribute('aria-expanded')) ? toggles[0] : null;
+    }
+
+    function queueRestorationProof(queue, entry, anchor) {
+      const player = activePlayer(anchor);
+      const listId = player?.getPlaylistId?.();
+      if (!queue?.awaitingPanel || !queue.mini || player?.closest('ytd-miniplayer') !== queue.mini ||
+          typeof listId !== 'string' || !listId.startsWith('TLPQ') ||
+          player.classList.contains('ad-showing') || queue.ids.includes(entry.videoId) ||
+          new Set(queue.ids).size !== queue.ids.length) return null;
+      return { player, mini: queue.mini, listId, ids: [...queue.ids], currentIndex: queue.ids.indexOf(anchor) };
+    }
+
+    function prepareMiniplayer(entry, popup, anchor, activation) {
+      const queue = miniplayerQueue(activePlayer(anchor), anchor);
+      const toggle = queueExpansionControl(queue);
+      if (!toggle) {
+        notify("Could not prepare Play next. Expand the video player once, then try again. Nothing was added.");
         return;
       }
       pending = { anchor, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
         mini: queue.mini, ids: queue.ids, observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
       pending.timer = setTimeout(() => finish("Could not prepare Play next. Nothing was added; please try again."), 2000);
       // The native queue header is outside the player's unrelated expand controls.
-      if (toggles[0].getAttribute("aria-expanded") === "false") toggles[0].click();
+      if (toggle.getAttribute("aria-expanded") === "false") toggle.click();
       scheduleMove();
     }
 
@@ -1414,14 +1481,22 @@ ${buildQueueCompatibilityCss()}
       const queue = anchor ? queueState(anchor) : null;
       if (queue?.unavailable) { notify("The queue is still updating. Please try again."); return; }
       if (anchor === entry.videoId) { notify("This video is already playing."); return; }
+      let restore = null;
       if (queue?.awaitingPanel || (queue?.mini && !reorderRows(queue))) {
-        prepareMiniplayer(entry, popup, anchor, activation);
-        return;
+        // After end-of-video adoption YouTube can retain its queue in the
+        // player but discard both its panel and expansion control. A single
+        // original native append can restore that presentation. Require the
+        // exact old queue plus this one addition before attempting any move.
+        if (!queueExpansionControl(queue)) restore = queueRestorationProof(queue, entry, anchor);
+        if (!restore) {
+          prepareMiniplayer(entry, popup, anchor, activation);
+          return;
+        }
       }
       const playlist = anchor && activePlayer(anchor)?.getPlaylist?.();
-      const existing = queue?.videos.some(video => video.videoId === entry.videoId) ||
+      const existing = queue?.videos?.some(video => video.videoId === entry.videoId) ||
         (Array.isArray(playlist) && playlist.includes(entry.videoId));
-      if (queue && !existing && !reorderRows(queue)) {
+      if (queue && !existing && !restore && !reorderRows(queue)) {
         notify("The queue is still updating. Nothing was added; please try again.");
         return;
       }
@@ -1431,9 +1506,9 @@ ${buildQueueCompatibilityCss()}
       entry.used = activation; // Consume one opening, not a cached native model forever.
       const generation = ++operationGeneration;
       if (anchor) {
-        const operation = pending = { anchor, videoId: entry.videoId, listId: queue?.listId, mini: queue?.mini, generation,
+        const operation = pending = { anchor, videoId: entry.videoId, listId: restore?.listId || queue?.listId, mini: queue?.mini, generation, restore,
           observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-        if (!existing && queue?.mini) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
+        if (!existing && queue?.mini && !restore) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
         if (pending !== operation) return;
         operation.timer = setTimeout(() => {
           if (pending !== operation) return;
@@ -1445,7 +1520,7 @@ ${buildQueueCompatibilityCss()}
         }, 8000);
       }
       if (!existing) {
-        const command = { ...entry.command, openMiniplayer: anchor ? false : entry.command.openMiniplayer };
+        const command = { ...entry.command, openMiniplayer: restore ? true : anchor ? false : entry.command.openMiniplayer };
         const endpoint = {
           ...entry.endpoint,
           signalServiceEndpoint: { ...entry.endpoint.signalServiceEndpoint,

@@ -710,7 +710,7 @@ test('red settings accents remain readable in both themes and disabled Save stay
   }
 });
 
-test('pending reload survives Cancel and reopen, with confirmation required before applying saved settings', async t => {
+test('pending reload survives Cancel and reopen, with inline confirmation before applying saved settings', async t => {
   const page = await openFixture(t);
   await openPanel(page);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
@@ -721,10 +721,14 @@ test('pending reload survives Cancel and reopen, with confirmation required befo
   const action = page.locator('#ytms-save-preview');
   assert.equal(await action.textContent(), 'Reload now');
   assert.match(await page.locator('#ytms-settings-status').textContent(), /waiting for reload/);
-  let confirmation = '';
-  page.once('dialog', async dialog => { confirmation = dialog.message(); await dialog.dismiss(); });
+  let nativeDialogs = 0;
+  page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
   await action.click();
-  assert.equal(confirmation, 'Reload YouTube now? This will restart the current page and video.');
+  assert.equal(nativeDialogs, 0);
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+  assert.match(await page.locator('#ytms-reload-message').textContent(), /restart the current page and video/);
+  await page.locator('#ytms-cancel-reload').click();
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), false);
   assert.equal(await action.textContent(), 'Reload now');
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
@@ -733,11 +737,110 @@ test('pending reload survives Cancel and reopen, with confirmation required befo
   await page.locator('#ytms-cancel-panel').click();
   await openPanel(page);
   assert.equal(await action.textContent(), 'Reload now');
-  page.once('dialog', dialog => dialog.accept());
-  await Promise.all([page.waitForNavigation(), action.click()]);
+  await action.click();
+  await Promise.all([page.waitForNavigation(), page.locator('#ytms-confirm-reload').click()]);
   await healthy(page);
   await openPanel(page);
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
+});
+
+for (const [mode, selector] of [['page', '#page-fullscreen'], ['player', '.ytp-fullscreen-button']])
+test(`fullscreen reload confirmation stays responsive without native prompts (${mode})`, { timeout: 20000 }, async t => {
+  const page = await openFixture(t, { theatreMode: false, fullscreenComments: false });
+  await page.locator(selector).click();
+  await page.waitForFunction(() => Boolean(document.fullscreenElement));
+  await page.locator('#ytms-player-settings-button').click();
+  await page.getByRole('tab', { name: 'Layout', exact: true }).click();
+  await page.locator('#ytms-fullscreenComments').check();
+  const action = page.locator('#ytms-save-preview');
+  await action.click();
+  assert.equal(await action.textContent(), 'Reload now');
+  let nativeDialogs = 0;
+  page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
+  await action.click();
+  assert.equal(nativeDialogs, 0, 'Fullscreen reload must not open a blocking browser prompt');
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+  assert.equal(await page.evaluate(() => new Promise(resolve => setTimeout(() => resolve(true), 25))), true);
+  assert.equal(await page.evaluate(() => Boolean(document.fullscreenElement)), true);
+  await page.keyboard.press('Escape');
+  await page.locator('#ytms-reload-confirmation').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
+  assert.equal(await action.textContent(), 'Reload now');
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.fullscreenComments, KEY), true);
+});
+
+test('enabling fullscreen comments and confirming reload applies the saved feature', { timeout: 20000 }, async t => {
+  const page = await openFixture(t, { theatreMode: false, fullscreenComments: false });
+  await openPanel(page);
+  await page.getByRole('tab', { name: 'Layout', exact: true }).click();
+  await page.locator('#ytms-fullscreenComments').check();
+  await page.locator('#ytms-save-preview').click();
+  await page.locator('#ytms-save-preview').click();
+  await Promise.all([page.waitForNavigation(), page.locator('#ytms-confirm-reload').click()]);
+  await healthy(page);
+  await page.locator('#page-fullscreen').click();
+  await page.waitForFunction(() => document.fullscreenElement === document.documentElement &&
+    document.documentElement.hasAttribute('data-ytppl-fullscreen-comments'));
+  const box = await page.locator('#movie_player').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 500);
+  await page.waitForFunction(() => document.querySelector('ytd-app').scrollTop > 0);
+  assert.equal(await page.evaluate(() => document.fullscreenElement === document.documentElement), true);
+});
+
+test('editing preferences cancels an open reload confirmation without discarding the draft', async t => {
+  const page = await openFixture(t);
+  await openPanel(page);
+  await page.getByRole('tab', { name: 'Feed', exact: true }).click();
+  await page.locator('#ytms-hideShorts').uncheck();
+  await page.locator('#ytms-save-preview').click();
+  await page.locator('#ytms-save-preview').click();
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+  await page.locator('#ytms-hideMixes').uncheck();
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), false);
+  assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Save');
+  assert.equal(await page.locator('#ytms-hideMixes').isChecked(), false);
+  assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideMixes, KEY), true);
+});
+
+test('reload confirmation revalidates an undelivered external save or clear before navigating', async t => {
+  for (const external of [null, JSON.stringify({ version: 1, values: { hideMixes: false } })]) {
+    const page = await openFixture(t);
+    await openPanel(page);
+    await page.getByRole('tab', { name: 'Feed', exact: true }).click();
+    await page.locator('#ytms-hideShorts').uncheck();
+    await page.locator('#ytms-save-preview').click();
+    await page.locator('#ytms-save-preview').click();
+    assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+    await page.evaluate(({ key, external }) => {
+      if (external === null) fixtureStorage.removeItem(key); else fixtureStorage.setItem(key, external);
+    }, { key: KEY, external });
+    let navigations = 0;
+    page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++; });
+    await page.locator('#ytms-confirm-reload').click();
+    assert.equal(navigations, 0);
+    assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), false);
+    assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
+    assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), external);
+  }
+});
+
+test('a delivered cross-window settings change cancels an open reload confirmation', async t => {
+  const page = await openFixture(t);
+  await openPanel(page);
+  await page.getByRole('tab', { name: 'Feed', exact: true }).click();
+  await page.locator('#ytms-hideShorts').uncheck();
+  await page.locator('#ytms-save-preview').click();
+  await page.locator('#ytms-save-preview').click();
+  assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
+  const other = await page.context().newPage();
+  await other.goto(WATCH_URL); await healthy(other);
+  const external = JSON.stringify({ version: 1, values: { hideMixes: false } });
+  await other.evaluate(({ key, external }) => fixtureStorage.setItem(key, external), { key: KEY, external });
+  await page.waitForFunction(() => document.getElementById('ytms-reload-confirmation')?.hidden === true);
+  assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
+  assert.equal(await page.locator('#ytms-hideMixes').isChecked(), false);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), external);
 });
 
 test('failed settings writes keep the unsaved Save action and permit a successful retry', async t => {

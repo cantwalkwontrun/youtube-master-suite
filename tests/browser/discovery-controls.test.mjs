@@ -202,6 +202,37 @@ test('Dark Reader keeps theme ownership and disposal removes only Suite-owned st
   assert.equal(await page.locator('#ytms-discovery-controls-style').count(),0);assert.equal(await page.locator('html').getAttribute('data-unrelated-extension'),'preserve');
 });
 
+for (const change of ['removed','reclassified']) test(`Suite theme resumes when the final Dark Reader stylesheet is ${change}`,async t=>{
+  const page=await open(t,{interfaceTheme:'light'});
+  await page.evaluate(()=>{const sheet=document.createElement('style');sheet.id='darkreader-fixture';sheet.className='darkreader';document.head.append(sheet);});
+  await settle(page);
+  assert.equal(await page.locator('html').getAttribute('data-ytms-discovery-theme'),null);
+  await page.evaluate(change=>{const sheet=document.getElementById('darkreader-fixture');if(change==='removed')sheet.remove();else sheet.className='unrelated-sheet';},change);
+  await settle(page);
+  assert.equal(await page.locator('html').getAttribute('data-ytms-discovery-theme'),'light');
+});
+
+test('AI-only search results inserted after page setup are hidden without a page event',async t=>{
+  const page=await open(t,{hideSearchAI:true},'/results?search_query=fixture');
+  await page.evaluate(()=>{
+    const search=document.createElement('ytd-search');document.body.append(search);
+    window.searchFixture=search;
+  });
+  await settle(page);
+  await page.evaluate(()=>{const ai=document.createElement('yt-ai-search-result-section-renderer');ai.id='late-ai';ai.textContent='AI result';searchFixture.append(ai);});
+  await settle(page);
+  assert.equal(await page.locator('#late-ai').isVisible(),false);
+  await page.evaluate(()=>{const shelf=document.createElement('ytd-shelf-renderer');shelf.id='late-shelf';shelf.innerHTML='<h2 id="title">Related videos</h2>';searchFixture.append(shelf);});
+  await settle(page);
+  assert.equal(await page.locator('#late-shelf').isVisible(),true);
+  await page.evaluate(()=>document.querySelector('#late-shelf #title').firstChild.data='AI overview');
+  await settle(page);
+  assert.equal(await page.locator('#late-shelf').isVisible(),false);
+  await page.evaluate(()=>document.querySelector('#late-shelf #title').textContent='Related videos');
+  await settle(page);
+  assert.equal(await page.locator('#late-shelf').isVisible(),true);
+});
+
 test('AI search controls leave ordinary shelves and manually authored chapters intact',async t=>{
   const page=await open(t,{hideSearchAI:true,hideAIChapters:true},'/results?search_query=fixture');
   await page.evaluate(()=>{
@@ -357,6 +388,19 @@ test('Shorts metadata hides only while both pointer and keyboard focus are outsi
   await page.locator('#short').hover();assert.equal(await page.locator('#short-meta').evaluate(el=>getComputedStyle(el).opacity),'1');
   await page.mouse.move(0,0);await page.locator('#short-meta a').focus();assert.equal(await page.locator('#short-meta').evaluate(el=>getComputedStyle(el).opacity),'1');
   await page.locator('#short-meta a').evaluate(el=>el.blur());assert.equal(await page.locator('#short-meta').evaluate(el=>getComputedStyle(el).opacity),'0');
+});
+
+test('removing a standalone AI search result releases its owned marker without a page event', async t => {
+  const page = await open(t, { hideSearchAI: true }, '/results?search_query=fixture');
+  await page.evaluate(() => {
+    const search = document.createElement('ytd-search');
+    const ai = document.createElement('yt-ai-search-result-section-renderer');
+    ai.id = 'removed-ai'; search.append(ai); document.querySelector('ytd-app').append(search);
+  });
+  await hidden(page, 'removed-ai');
+  await page.evaluate(() => { window.detachedAi = document.getElementById('removed-ai'); detachedAi.remove(); });
+  await settle(page);
+  assert.equal(await page.evaluate(() => detachedAi.getAttribute('data-ytms-discovery-hidden')), null);
 });
 
 test('a pure native card removal releases detached ownership without an event or full feed scan',async t=>{

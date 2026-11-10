@@ -106,7 +106,25 @@ test('actions can be reordered, moved and hidden while keyboard focus and siblin
   await page.getByLabel('Show Share', { exact: true }).uncheck();
   assert.equal((await draft(page)).menuLayout.nodes.find(node => node.id === 'share').visible, false);
   await page.getByText('Menu preview', { exact: true }).click();
-  assert.match(await page.getByRole('list', { name: 'Menu preview', exact: true }).textContent(), /Share \(hidden\)/);
+  assert.doesNotMatch(await page.getByRole('list', { name: 'Menu preview', exact: true }).textContent(), /Share/);
+});
+
+test('preview excludes default hidden actions and recursively empty groups while retaining editable items', async t => {
+  const value = createMenuLayout().fromPreferences({});
+  value.nodes.push({ id: 'submenu-empty', name: 'Empty parent', parent: 'root' });
+  value.nodes.push({ id: 'submenu-nested', name: 'Empty nested', parent: 'submenu-empty' });
+  value.nodes.find(node => node.id === 'download').parent = 'submenu-nested';
+  const page = await open(t, { menuLayout: value });
+  await page.getByText('Menu preview', { exact: true }).click();
+  const preview = page.getByRole('list', { name: 'Menu preview', exact: true });
+  assert.doesNotMatch(await preview.textContent(), /Download|Empty parent|Empty nested|\(hidden\)/);
+  await page.getByLabel('Editing menu', { exact: true }).selectOption('submenu-nested');
+  assert.equal(await page.getByLabel('Show Download', { exact: true }).isChecked(), false);
+  await page.getByLabel('Show Download', { exact: true }).check();
+  assert.match(await preview.textContent(), /Empty parentEmpty nestedDownload/);
+  await page.getByLabel('Show Download', { exact: true }).uncheck();
+  assert.doesNotMatch(await preview.textContent(), /Download|Empty parent|Empty nested/);
+  assert.equal((await draft(page)).menuLayout.nodes.filter(node => node.id.startsWith('submenu-')).length, 2);
 });
 
 test('deleting a submenu promotes all children in order and retains nested descendants and every action', async t => {

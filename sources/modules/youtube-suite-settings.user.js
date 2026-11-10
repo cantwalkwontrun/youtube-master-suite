@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.62
+// @version      1.64
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -53,6 +53,7 @@
     const panelFooter = dialog.querySelector('footer');
 
     const $ = id => dialog.querySelector(`[id="ytms-${id}"]`);
+    let reloadWarnedChannelDraft = false;
     const DEFAULTS = settings.defaults;
     const GROUPS = {
       feed: [
@@ -437,6 +438,7 @@
     function updatePrimaryAction() {
       const state = primaryActionState();
       const reload = !externalConflict && !state.dirty && state.pendingReload;
+      if (!reload) clearReloadConfirmation();
       const button = $('save-preview'), label = reload ? 'Reload now' : 'Save', action = reload ? 'reload' : 'save';
       const disabled = externalConflict || state.invalid || state.inaccessible || (!state.dirty && !state.pendingReload);
       if (button.textContent !== label) button.textContent = label;
@@ -446,6 +448,7 @@
       return state;
     }
     function showConflictNotice() {
+      clearReloadConfirmation();
       $('settings-status').textContent = 'Settings changed in another window. Your draft has been kept. Cancel and reopen settings before saving or reloading.';
       $('settings-status').hidden = false;
     }
@@ -465,6 +468,7 @@
         }
         return !externalConflict;
       }
+      clearReloadConfirmation();
       if (externalConflict || primaryActionState().dirty) {
         externalConflict = true; updatePrimaryAction(); showConflictNotice();
         return false;
@@ -585,6 +589,7 @@
     }
     function openPanel() {
       if (dialog.open) return;
+      clearReloadConfirmation();
       saved = settings.read(); draft = { ...saved };
       externalConflict = false;
       supportPanel?.reset();
@@ -602,6 +607,7 @@
 
     for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
     dialog.addEventListener('close', () => {
+      clearReloadConfirmation();
       applyMiniplayerSize(settings.read());
       extraControls.close();
       closePicker(false); resetSearch(); channelEntry = 'settings'; channelManager.reset({ defer: true });
@@ -609,13 +615,23 @@
     dialog.addEventListener('keydown', event => {
       event.stopPropagation();
       if (event.key === 'Escape' && pickerTarget) { event.preventDefault(); closePicker(); }
+      else if (event.key === 'Escape' && !$('reload-confirmation').hidden) {
+        event.preventDefault(); clearReloadConfirmation(true);
+      }
     });
+    dialog.addEventListener('cancel', event => {
+      if (!$('reload-confirmation').hidden) {
+        event.preventDefault(); clearReloadConfirmation(true);
+      }
+    });
+    document.addEventListener('fullscreenchange', () => clearReloadConfirmation());
     dialog.addEventListener('click', event => {
       if (event.target !== dialog) return;
       const box = dialog.getBoundingClientRect();
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
     });
     function markDraftChanged() {
+      clearReloadConfirmation();
       if (externalConflict) showConflictNotice();
       else setHidden($('settings-status'), true);
       updatePrimaryAction();
@@ -645,15 +661,37 @@
     $('restore-defaults').addEventListener('click', () => {
       restoreDraftDefaults(Object.keys(DEFAULTS), 'All settings restored in this draft. Save to apply. Saved channel filters are unchanged.');
     });
+    function clearReloadConfirmation(restoreFocus = false) {
+      const group = $('reload-confirmation');
+      const focused = group.contains(document.activeElement);
+      setHidden(group, true);
+      reloadWarnedChannelDraft = false;
+      if ((restoreFocus || focused) && dialog.open) $('save-preview').focus();
+    }
+    function showReloadConfirmation() {
+      reloadWarnedChannelDraft = channelManager.hasDraft();
+      $('reload-message').textContent = reloadWarnedChannelDraft
+        ? 'Reload YouTube now? This will restart the current page and video. Unsaved channel-filter edits will be lost.'
+        : 'Reload YouTube now? This will restart the current page and video.';
+      setHidden($('reload-confirmation'), false);
+      $('cancel-reload').focus();
+    }
+    $('cancel-reload').addEventListener('click', () => clearReloadConfirmation(true));
+    $('confirm-reload').addEventListener('click', () => {
+      if (!dialog.open || $('reload-confirmation').hidden) return;
+      if (!reconcileStoredPreferences() || $('reload-confirmation').hidden) return;
+      const state = updatePrimaryAction();
+      if (externalConflict || state.dirty || !state.pendingReload) return;
+      if (channelManager.hasDraft() && !reloadWarnedChannelDraft) { showReloadConfirmation(); return; }
+      clearReloadConfirmation();
+      location.reload();
+    });
     $('save-preview').addEventListener('click', () => {
       if (!reconcileStoredPreferences()) return;
       const state = updatePrimaryAction();
       if ($('save-preview').disabled) return;
       if (!state.dirty) {
-        const message = channelManager.hasDraft()
-          ? 'Reload YouTube now? This will restart the current page and video. Unsaved channel-filter edits will be lost.'
-          : 'Reload YouTube now? This will restart the current page and video.';
-        if (state.pendingReload && window.confirm(message)) location.reload();
+        if (state.pendingReload) showReloadConfirmation();
         return;
       }
       const result = settings.save(draft);
@@ -667,6 +705,7 @@
     supportPanel = suite.createSettingsSupportPanel(document, suite, {
       hasDraft: () => externalConflict || primaryActionState().dirty || channelManager.hasDraft(),
       onRestored: result => {
+        clearReloadConfirmation();
         saved = result.values; draft = { ...saved }; externalConflict = false;
         closePicker(false); populate(); renderChannelRules();
         window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));

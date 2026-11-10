@@ -11,8 +11,13 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
   const previewRoute = () => disableVideoPreviews ? browseOrSearch() : keepHoverPreviews && home();
   function visible(element) {
     if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false;
-    const style = window.getComputedStyle(element);
-    return style.display !== 'none' && !['hidden', 'collapse'].includes(style.visibility);
+    // Native route changes can retain measurable players under an opacity-zero
+    // host. Do not toggle their timer or count them as a second active player.
+    for (let current = element; current; current = current.parentElement) {
+      const style = window.getComputedStyle(current);
+      if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || Number(style.opacity) === 0) return false;
+    }
+    return true;
   }
 
   function recompute(record) {

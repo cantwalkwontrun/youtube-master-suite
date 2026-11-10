@@ -576,6 +576,60 @@ test("a failed corner write rolls back the settings record and reports failure",
   assert.equal(data.has(settings.key), false);
 });
 
+test('a corner write that takes effect before throwing restores both original records', () => {
+  for (const previousCorner of [null, 'top-left']) {
+    const original = JSON.stringify({ version: 1, values: { hideChat: false } });
+    const { settings, storage, data } = fixture({
+      'yt-master-suite.settings.v1': original,
+      ...(previousCorner === null ? {} : { 'yt-master-suite.scroll-miniplayer.corner.v1': previousCorner }),
+    });
+    storage.setItem = (key, value) => {
+      data.set(key, value);
+      if (key === settings.cornerKey && value === 'bottom-left') throw Error('write acknowledgement failed');
+    };
+    assert.equal(settings.save({ ...settings.defaults, corner: 'bottom-left' }).ok, false);
+    assert.equal(data.get(settings.key), original);
+    assert.equal(data.get(settings.cornerKey) ?? null, previousCorner);
+  }
+});
+
+test('silent settings or corner writes cannot report a successful save', () => {
+  for (const failedKey of ['yt-master-suite.settings.v1', 'yt-master-suite.scroll-miniplayer.corner.v1']) {
+    const { settings, storage, data } = fixture();
+    storage.setItem = (key, value) => { if (key !== failedKey) data.set(key, value); };
+    assert.equal(settings.save({ ...settings.defaults, corner: 'bottom-left' }).ok, false);
+    assert.equal(data.has(settings.key), false);
+    assert.equal(data.has(settings.cornerKey), false);
+  }
+});
+
+test('a synchronised corner changed during a settings save is preserved', () => {
+  const { settings, storage, data } = fixture();
+  storage.setItem = (key, value) => {
+    data.set(key, value);
+    if (key === settings.key) data.set(settings.cornerKey, 'bottom-right');
+  };
+  assert.equal(settings.save({ ...settings.defaults, corner: 'bottom-left' }).ok, false);
+  assert.equal(data.has(settings.key), false);
+  assert.equal(data.get(settings.cornerKey), 'bottom-right');
+});
+
+test('corner recovery preserves a newer main record or clear even when its corner matches our write', () => {
+  for (const concurrent of [null, JSON.stringify({ version: 1, values: { hideRelated: false, corner: 'bottom-left' } })]) {
+    const { settings, storage, data } = fixture({ 'yt-master-suite.scroll-miniplayer.corner.v1': 'top-left' });
+    storage.setItem = (key, value) => {
+      data.set(key, value);
+      if (key === settings.cornerKey && value === 'bottom-left') {
+        if (concurrent === null) data.delete(settings.key); else data.set(settings.key, concurrent);
+        throw Error('Concurrent save during failed acknowledgement');
+      }
+    };
+    assert.equal(settings.save({ ...settings.defaults, corner: 'bottom-left' }).ok, false);
+    assert.equal(data.get(settings.key) ?? null, concurrent);
+    assert.equal(data.get(settings.cornerKey), 'bottom-left');
+  }
+});
+
 test("preset palettes adapt to theme; Off touches styling only", () => {
   const { settings } = fixture();
   const draft = { ...settings.defaults, colourMode: "preset" };

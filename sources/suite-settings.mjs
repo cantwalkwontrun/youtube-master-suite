@@ -187,20 +187,32 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
     const values = validate(input);
     const desired = JSON.stringify({ version: 1, values });
     if (desired.length > 8192) return { ok: false, error: "Saved settings would exceed the supported size. Shorten submenu names or remove unused submenus." };
-    let storage, previous;
+    let storage, previous, previousCorner;
+    let cornerAttempted = false;
     try {
       storage = getStorage(); previous = storage.getItem(key);
-      const previousCorner = storage.getItem(cornerKey);
+      previousCorner = storage.getItem(cornerKey);
       if (!savedSettingsAreWritable(previous) ||
           (previousCorner !== null && !choices.corner.includes(previousCorner))) {
         return { ok: false, error: "Saved settings are incompatible or damaged. Nothing was overwritten; recover the existing data before saving." };
       }
       storage.setItem(key, desired);
-      if (storage.getItem(cornerKey) !== values.corner) storage.setItem(cornerKey, values.corner);
+      if (storage.getItem(key) !== desired || storage.getItem(cornerKey) !== previousCorner) throw Error('Settings changed during save');
+      if (previousCorner !== values.corner) {
+        cornerAttempted = true;
+        storage.setItem(cornerKey, values.corner);
+      }
+      if (storage.getItem(key) !== desired || storage.getItem(cornerKey) !== values.corner) throw Error('Settings were not retained');
       return { ok: true, values };
     } catch {
-      // Roll back only our own partial write. A newer save or clear from another
-      // window must survive a failure while synchronising the legacy corner.
+      // A storage write may take effect before it throws. Restore both owned
+      // partial values, preserving a newer save or clear from another window.
+      try {
+        if (cornerAttempted && storage?.getItem(key) === desired && storage.getItem(cornerKey) === values.corner) {
+          if (previousCorner === null) storage.removeItem(cornerKey);
+          else storage.setItem(cornerKey, previousCorner);
+        }
+      } catch { /* Attempt main-record recovery even if corner recovery fails. */ }
       try {
         if (previous !== undefined && storage?.getItem(key) === desired) {
           if (previous === null) storage.removeItem(key);
