@@ -16,7 +16,7 @@ before(async () => {
 }, { timeout: 30000 });
 after(async () => { await browser?.close(); }, { timeout: 10000 });
 
-async function openFixture(t, settings) {
+async function openFixture(t, settings, { detailedDiagnostics = false } = {}) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 }, serviceWorkers: "block",
   });
@@ -24,8 +24,9 @@ async function openFixture(t, settings) {
   await context.route("**/*", route => route.request().url() === WATCH_URL
     ? route.fulfill({ contentType: "text/html", body: FIXTURE })
     : route.abort());
-  const content = settings === undefined ? SUITE :
-    `if (location.origin === "https://www.youtube.com") localStorage.setItem("yt-master-suite.settings.v1", ${JSON.stringify(JSON.stringify({ version: 1, values: settings }))});\n${SUITE}`;
+  const source = detailedDiagnostics ? SUITE.replace('const INCLUDE_DETAILED_DIAGNOSTICS = false;', 'const INCLUDE_DETAILED_DIAGNOSTICS = true;') : SUITE;
+  const content = settings === undefined ? source :
+    `if (location.origin === "https://www.youtube.com") localStorage.setItem("yt-master-suite.settings.v1", ${JSON.stringify(JSON.stringify({ version: 1, values: settings }))});\n${source}`;
   await context.addInitScript({ content });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -131,6 +132,15 @@ test("Firefox native pointer copy cleans the URL and preserves timestamp copying
   await page.locator(".ytp-contextmenu").waitFor({ state: "hidden" });
 });
 
+test('disabling clean video URL copy preserves the native playlist parameters', async t => {
+  const page = await openFixture(t, { theatreMode: false, enableCleanVideoUrlCopy: false });
+  await openMenu(page);
+  await page.locator('#copy-url').click();
+  assert.deepEqual(await page.evaluate(() => fixture.copies[0]), {
+    trusted: true, customised: false, value: 'https://youtu.be/aaaaaaaaaaa?list=fixture-queue&index=2',
+  });
+});
+
 test("Firefox trusted keyboard selection survives the native synthetic menu click", { timeout: 20000 }, async t => {
   const page = await openFixture(t);
   for (const key of ["Enter", "Space", "ArrowRight"]) {
@@ -173,7 +183,7 @@ test("a retained watch controller recovers current title and comments in the com
 });
 
 test("clear-queue selection dispatches one accepted-response reload for retained comments", { timeout: 20000 }, async t => {
-  const page = await openFixture(t);
+  const page = await openFixture(t, undefined, { detailedDiagnostics: true });
   assert.equal(await page.locator(".comment-message").innerText(), "Comment for Video A");
   await page.evaluate(() => {
     fixture.originalCommentNodes = [...document.querySelectorAll('ytd-comment-thread-renderer')];
@@ -249,7 +259,7 @@ test("clear-queue selection dispatches one accepted-response reload for retained
 });
 
 test("native page fullscreen scrolls to comments and releases its state on exit", { timeout: 20000 }, async t => {
-  const page = await openFixture(t);
+  const page = await openFixture(t, { wheelVolume: true, requireRightMouseButtonForWheelVolume: false });
   await page.locator("#page-fullscreen").click();
   await page.waitForFunction(() => document.fullscreenElement === document.documentElement &&
     document.documentElement.hasAttribute("data-ytppl-fullscreen-comments"));
@@ -257,6 +267,10 @@ test("native page fullscreen scrolls to comments and releases its state on exit"
   const initialBounds = await page.locator(".comment-message").boundingBox();
   assert.ok(initialBounds, "The comment must have real layout geometry");
   await page.locator("video").hover();
+  const volume = await page.locator('video').evaluate(video => video.volume);
+  const modifier = await page.locator('video').evaluate(video => video.dispatchEvent(
+    new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 50 })));
+  assert.equal(modifier, true);
   await page.mouse.wheel(0, Math.ceil(Math.max(200, initialBounds.y - 120)));
   await page.waitForFunction(() => {
     const bounds = document.querySelector(".comment-message").getBoundingClientRect();
@@ -264,11 +278,25 @@ test("native page fullscreen scrolls to comments and releases its state on exit"
       bounds.bottom > 0 && bounds.top < innerHeight;
   });
   assert.equal(await page.evaluate(() => document.fullscreenElement === document.documentElement), true);
+  assert.equal(await page.locator('video').evaluate(video => video.volume), volume);
   const bounds = await page.locator(".comment-message").boundingBox();
   assert.ok(bounds && bounds.y + bounds.height > 0 && bounds.y < 720, "Comments must enter the fullscreen viewport");
   await page.evaluate(() => document.exitFullscreen());
   await page.waitForFunction(() => !document.fullscreenElement &&
     !document.documentElement.hasAttribute("data-ytppl-fullscreen-comments"));
+});
+
+test('production coherence diagnostics omit URLs, titles and video identities', async t => {
+  const page = await openFixture(t);
+  const diagnostic = await page.evaluate(() => {
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+    const root = document.documentElement;
+    return { snapshot: window.__YT_MASTER_STATE__.snapshot(), events: window.__YT_MASTER_STATE__.events(),
+      published: root.getAttribute('data-yt-master-state') + root.getAttribute('data-yt-master-events') };
+  });
+  assert.equal(diagnostic.snapshot.confirmedCoherent, true);
+  assert.ok(diagnostic.events.length);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /aaaaaaaaaaa|Video A|https?:|videoId|title/i);
 });
 
 test("native player-only fullscreen never enables page-comment scrolling", { timeout: 20000 }, async t => {

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const MANIFEST = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -10,6 +10,7 @@ const HTML = readFileSync(new URL('./watch-page.html', import.meta.url), 'utf8')
 const WATCH_URL = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
 const SETTINGS = 'yt-master-suite.settings.v1', MIGRATION = 'yt-master-suite.storage-migration.v1';
 const GUARD = 'yt-master-suite.storage-migration-started.v1';
+const WRITE_REVISION = 'yt-master-suite.settings-write.v1';
 let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); });
@@ -61,10 +62,13 @@ test('all five legacy records migrate exactly and protected saves survive reload
   assert.deepEqual(migrated.origin, { ...migrated.original, [GUARD]: '1' });
   await page.locator('#ytms-settings-button').click(); await page.locator('#ytms-tab-feed').click();
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
-  await page.locator('#ytms-hideShorts').check(); await page.locator('#ytms-save-preview').click();
+  await page.locator('#ytms-hideShorts').check(); await saveFixtureSettings(page);
   const saved = await page.evaluate(key => fixtureGMStorage.getItem(key), SETTINGS);
   assert.equal(JSON.parse(saved).values.hideShorts, true);
-  assert.deepEqual(await page.evaluate(() => ({ ...localStorage })), { ...migrated.original, [GUARD]: '1' });
+  const originAfterSave = await page.evaluate(() => ({ ...localStorage }));
+  const revision = originAfterSave[WRITE_REVISION];
+  assert.match(revision, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+  assert.deepEqual(originAfterSave, { ...migrated.original, [GUARD]: '1', [WRITE_REVISION]: revision });
   await page.reload(); await healthy(page);
   assert.equal(await page.evaluate(key => fixtureGMStorage.getItem(key), SETTINGS), saved);
   const other = await page.context().newPage(); await other.goto(WATCH_URL); await healthy(other);
@@ -83,7 +87,7 @@ test('all five legacy records migrate exactly and protected saves survive reload
   await page.waitForFunction(() => document.getElementById('ytms-hideShorts').checked === false);
   assert.deepEqual(await page.evaluate(() => isolationPublicPayloads), [], 'GM notifications must not publish raw values through DOM events');
   const originAfterTamper = await page.evaluate(() => ({ ...localStorage }));
-  assert.deepEqual({ ...originAfterTamper, [SETTINGS]: migrated.original[SETTINGS] }, { ...migrated.original, [GUARD]: '1' });
+  assert.deepEqual({ ...originAfterTamper, [SETTINGS]: migrated.original[SETTINGS] }, originAfterSave);
 });
 
 for (const fault of ['missing API', 'migration write failure']) test(`${fault} stops before default settings and leaves all legacy records intact`, async t => {

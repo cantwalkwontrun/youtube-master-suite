@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Comment Cleaner
 // @namespace    Citizen.youtube.comment-cleaner
-// @version      1.30
+// @version      1.31
 // @description  Cleans YouTube comments, prevents stale comments across SPA navigation, preserves replies, compacts spacing, and colours commenter/uploader names.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -118,6 +118,8 @@
     "ytd-watch-metadata #owner",
     "ytd-watch-flexy ytd-video-owner-renderer",
     "ytd-watch-flexy #upload-info",
+    "ytd-pinned-comment-badge-renderer",
+    "#pinned-comment-badge",
   ].join(",");
   const UPLOADER_PATHS_FALLBACK_DELAY_MS = 3000;
 
@@ -761,7 +763,18 @@
   const readUploaderPaths = () => {
     const paths = new Set();
 
-    document
+    // Retained watch trees must not donate creator identities to this video.
+    const root = getActiveWatchFlexy();
+    const visibleRoots = Array.from(document.querySelectorAll("ytd-watch-flexy")).filter(isRenderedWatchFlexy);
+    const player = getActivePlayer();
+    const playerOwnsRoot = player?.closest("ytd-watch-flexy") === root &&
+      readPlayerVideoId(player) === getCurrentVideoId();
+    const floatingOwnsRoot = document.getElementById(SCROLL_PLAYER_PLACEHOLDER_ID)?.closest("ytd-watch-flexy") === root &&
+      readPlayerVideoId(player) === getCurrentVideoId();
+    if (!root || !isRenderedWatchFlexy(root) ||
+        (visibleRoots.length !== 1 && !playerOwnsRoot && !floatingOwnsRoot)) return paths;
+
+    root
       .querySelectorAll(
         `
       ytd-watch-metadata #owner a[href^="/@"],
@@ -774,7 +787,7 @@
         if (path.startsWith("/@")) paths.add(path);
       });
 
-    document
+    root
       .querySelectorAll(
         `
       ytd-pinned-comment-badge-renderer,
@@ -864,11 +877,16 @@
     });
   };
 
+  const getActiveCommentApplyRoot = () => {
+    const watch = getActiveWatchFlexy();
+    return watch?.querySelector("ytd-comments") || watch || document.querySelector("ytd-comments") || document;
+  };
+
   const applyAll = (root = document) => {
     if (!isWatchPath()) return;
 
     const applyRoot =
-      root === document ? document.querySelector("ytd-comments") || root : root;
+      root === document ? getActiveCommentApplyRoot() : root;
     // Share discovery only for this synchronous pass; later passes must find
     // newly stamped comments and open shadow roots. Preserve the uploader wait.
     const queryScopes = (
@@ -1093,7 +1111,7 @@ yt-comment-view-model #header-author-badges {
       }
 
       markUploaderPathsReady();
-      scheduleApply(document.querySelector("ytd-comments") || document);
+      scheduleApply(getActiveCommentApplyRoot());
       scheduleDelayedApply();
     }, UPLOADER_PATHS_FALLBACK_DELAY_MS);
   };
@@ -1142,6 +1160,13 @@ yt-comment-view-model #header-author-badges {
     }
 
     for (const mutation of mutations) {
+      if (mutation.type === "characterData") {
+        if (containsUploaderSource(mutation.target)) {
+          invalidateCachedUploaderPaths();
+          scheduleApply(getActiveCommentApplyRoot());
+        }
+        continue;
+      }
       if (mutation.type === "attributes") {
         if (
           mutation.attributeName === "video-id" &&
@@ -1160,7 +1185,7 @@ yt-comment-view-model #header-author-badges {
 
         if (containsUploaderSource(mutation.target)) {
           invalidateCachedUploaderPaths();
-          scheduleApply(document.querySelector("ytd-comments") || document);
+          scheduleApply(getActiveCommentApplyRoot());
         } else if (CONFIG.colourCommenters && mutation.attributeName === "href" &&
             mutation.target.matches?.(COMMENT_AUTHOR_SELECTOR)) {
           // Recycled authors can retain their text/children while changing
@@ -1171,6 +1196,11 @@ yt-comment-view-model #header-author-badges {
       }
 
       collectCommentsVideoGuardRoots(commentsVideoGuardRoots, mutation.target);
+      if (containsUploaderSource(mutation.target) ||
+          Array.from(mutation.removedNodes).some(containsUploaderSource)) {
+        invalidateCachedUploaderPaths();
+        scheduleApply(getActiveCommentApplyRoot());
+      }
       if (!mutation.addedNodes.length) continue;
 
       mutation.addedNodes.forEach((node) => {
@@ -1184,7 +1214,7 @@ yt-comment-view-model #header-author-badges {
 
         if (containsUploaderSource(node)) {
           invalidateCachedUploaderPaths();
-          scheduleApply(document.querySelector("ytd-comments") || document);
+          scheduleApply(getActiveCommentApplyRoot());
         }
       });
     }
@@ -1201,6 +1231,7 @@ yt-comment-view-model #header-author-badges {
       attributeFilter: ["href", "video-id"],
       attributes: true,
       childList: true,
+      characterData: true,
       subtree: true,
     });
     observing = true;
@@ -1264,7 +1295,7 @@ yt-comment-view-model #header-author-badges {
       bindCommentsVideoGuardDestination();
       syncCommentsVideoGuard();
       scheduleCommentsVideoGuardRecovery();
-      scheduleApply(document.querySelector("ytd-comments") || document);
+      scheduleApply(getActiveCommentApplyRoot());
       scheduleDelayedApply();
     },
     true,

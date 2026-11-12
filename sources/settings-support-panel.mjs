@@ -42,6 +42,8 @@ export function createSettingsSupportPanel(document, suite, hooks) {
   let downloadUrl = null;
   let downloadTimer = null;
   let disposed = false;
+  let restoring = false;
+  const isActive = () => !disposed && (typeof hooks.isActive !== 'function' || hooks.isActive());
   function clearDownload() {
     if (downloadTimer !== null) document.defaultView.clearTimeout(downloadTimer);
     if (downloadUrl) document.defaultView.URL.revokeObjectURL(downloadUrl);
@@ -61,7 +63,8 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     supportStatus.textContent = '';
     updatePreview?.();
   }
-  exportButton.addEventListener('click', () => {
+  exportButton.addEventListener('click', event => {
+    if (!event.isTrusted || !isActive()) return;
     const result = suite.backup.exportData();
     if (!result.ok) { setBackupStatus(result.error, true); return; }
     try {
@@ -121,10 +124,20 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     updatePreview = update;
     check.addEventListener('change', update);
     cancel.addEventListener('click', () => { clearPreview(); setBackupStatus('Restore cancelled. Nothing has been changed.'); });
-    restore.addEventListener('click', () => {
+    restore.addEventListener('click', async event => {
+      if (!event.isTrusted || !isActive() || restoring) return;
       if (hooks.hasDraft()) { update(); return; }
       if (!check.checked || restore.disabled || !token) return;
-      const restored = suite.backup.restore(token);
+      const confirmed = token;
+      restore.disabled = true;
+      const write = () => isActive() && token === confirmed && check.checked && !hooks.hasDraft()
+        ? suite.backup.restore(confirmed) : { ok: false, error: 'The restore preview changed. Review it and try again.' };
+      let restored;
+      restoring = true;
+      try { restored = suite.writeSettings ? await suite.writeSettings(write, suite.writeChannelFilters) : write(); }
+      catch { restored = { ok: false, error: 'The backup could not be restored. Review your saved settings before retrying.' }; }
+      finally { restoring = false; }
+      if (token !== confirmed) return;
       clearPreview();
       if (!restored.ok) { setBackupStatus(restored.error, true); return; }
       hooks.onRestored(restored);
@@ -134,6 +147,7 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     update();
   }
   fileInput.addEventListener('change', async () => {
+    if (!isActive()) return;
     const file = fileInput.files?.[0];
     token = null; updatePreview = null; preview.replaceChildren(); preview.hidden = true;
     const request = ++generation;
@@ -142,22 +156,28 @@ export function createSettingsSupportPanel(document, suite, hooks) {
     setBackupStatus('Reading backup for preview…');
     try {
       const text = await file.text();
-      if (request !== generation || disposed) return;
+      if (request !== generation) return;
+      if (!isActive()) { fileInput.value = ''; setBackupStatus('Preview cancelled. Choose the file again.'); return; }
       const result = suite.backup.preview(text);
       if (result.ok) showPreview(result); else setBackupStatus(result.error, true);
-    } catch { if (request === generation && !disposed) setBackupStatus('The selected file could not be read.', true); }
+    } catch {
+      if (request !== generation) return;
+      if (!isActive()) { fileInput.value = ''; setBackupStatus('Preview cancelled. Choose the file again.'); return; }
+      setBackupStatus('The selected file could not be read.', true);
+    }
   });
   refreshButton.addEventListener('click', refresh);
-  copyButton.addEventListener('click', async () => {
+  copyButton.addEventListener('click', async event => {
+    if (!event.isTrusted || !isActive()) return;
     refresh();
     const request = generation;
     try {
       const clipboard = document.defaultView.navigator.clipboard;
       if (!clipboard?.writeText) throw new Error('Clipboard unavailable');
       await clipboard.writeText(report.value);
-      if (!disposed && request === generation) supportStatus.textContent = 'Report copied. Review it before sharing.';
+      if (!disposed && request === generation && isActive()) supportStatus.textContent = 'Report copied. Review it before sharing.';
     } catch {
-      if (disposed || request !== generation) return;
+      if (disposed || request !== generation || !isActive()) return;
       report.focus(); report.select();
       supportStatus.textContent = 'Clipboard access is unavailable. The report is selected; copy it manually.';
     }
@@ -166,6 +186,7 @@ export function createSettingsSupportPanel(document, suite, hooks) {
   for (const type of ['input', 'change']) root.addEventListener(type, event => event.stopPropagation());
   return Object.freeze({
     element: root,
+    isSaving: () => restoring,
     refresh,
     updateDraftState() { updatePreview?.(); },
     reset() {

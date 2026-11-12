@@ -109,6 +109,7 @@ test('the prefilled latest release checks without typing and clearing a custom s
   const { page, network } = await pageFor(t, { initialSource: JSON.stringify({ version: 1, url: 'https://other.example.invalid/release-manifest.json' }) });
   assert.equal(await page.locator('#ytms-updates-source').inputValue(), 'https://other.example.invalid/release-manifest.json');
   await page.locator('#ytms-updates-source').fill('');
+  await page.locator('#ytms-updates-save-source').click();
   await page.locator('#ytms-updates-check').click();
   await page.locator('#ytms-updates-install').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#ytms-updates-source').inputValue(), SOURCE_URL);
@@ -122,13 +123,13 @@ test('the prefilled latest release checks without typing and clearing a custom s
   assert.equal(network.requests.length, 2);
 });
 
-test('explicit checking saves only the local source and exposes a safe newer-release install link', async t => {
+test('checking reads the saved source without writing it and exposes a newer-release install link', async t => {
   const { page, network } = await pageFor(t);
   const mainBefore = await page.evaluate(key => localStorage.getItem(key), SETTINGS_KEY);
   await checkNewer(page);
   assert.equal(network.requests.length, 1);
   assert.equal(network.requests[0].url(), API_URL);
-  assert.deepEqual(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SOURCE_KEY), { version: 1, url: SOURCE_URL });
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), SOURCE_KEY), null);
   assert.equal(await page.locator('#ytms-updates-latest').textContent(), 'Latest version: 1.2.62');
   assert.match(await page.locator('#ytms-updates-status').textContent(), /update is available/);
   const install = page.locator('#ytms-updates-install');
@@ -147,11 +148,28 @@ test('invalid or credential-bearing source input cannot initiate a request or ov
   const raw = JSON.stringify({ version: 1, url: SOURCE_URL });
   const { page, network } = await pageFor(t, { initialSource: raw });
   await page.locator('#ytms-updates-source').fill('https://name:password@updates.example.invalid/release-manifest.json');
-  await page.locator('#ytms-updates-check').click();
+  await page.locator('#ytms-updates-save-source').click();
   assert.match(await page.locator('#ytms-updates-status').textContent(), /without credentials/);
   assert.equal(network.requests.length, 0);
   assert.equal(await page.evaluate(key => localStorage.getItem(key), SOURCE_KEY), raw);
   assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'), null);
+});
+
+test('page-script clicks cannot change the release source or check for updates', async t => {
+  const { page, network } = await pageFor(t);
+  const edited = 'https://other.example.invalid/release-manifest.json';
+  await page.locator('#ytms-updates-source').fill(edited);
+  await page.evaluate(() => {
+    document.getElementById('ytms-updates-save-source').click();
+    document.getElementById('ytms-updates-check').click();
+  });
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), SOURCE_KEY), null);
+  assert.equal(network.requests.length, 0);
+  await page.locator('#ytms-updates-check').click();
+  assert.match(await page.locator('#ytms-updates-status').textContent(), /Save the edited/);
+  await page.locator('#ytms-updates-save-source').click();
+  assert.equal(await page.evaluate(key => JSON.parse(localStorage.getItem(key)).url, SOURCE_KEY), edited);
+  assert.equal(network.requests.length, 0);
 });
 
 for (const [version, status] of [['1.2.61', /latest version/], ['1.2.60', /installed version is newer/]]) {

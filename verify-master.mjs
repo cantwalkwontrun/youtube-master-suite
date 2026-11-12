@@ -601,13 +601,13 @@ assert(
 );
 assert.match(
   userscript,
-  /const mo = new MutationObserver\(\(muts\) => \{[\s\S]{0,800}?if \(observedControls\?\.isConnected && getPlayerEl\(\)\?\.contains\(observedControls\)\) return;/,
-  "Miniplayer Button Restorer must leave current-toolbar mutations to its narrow observer",
+  /const mo = new MutationObserver\(\(muts\) => \{[\s\S]{0,1000}?if \(observedControls\?\.isConnected && getPlayerEl\(\)\?\.contains\(observedControls\) &&\s*!muts.some\(mutation => \[\.\.\.mutation.addedNodes, \.\.\.mutation.removedNodes\].some\(node =>\s*node.matches\?\.\(RIGHT_CONTROLS_SELECTOR\) \|\| node.querySelector\?\.\(RIGHT_CONTROLS_SELECTOR\)\)\)\) return;/,
+  "Miniplayer Button Restorer must leave current-toolbar mutations to its narrow observer while discovering replacement toolbars",
 );
 assert.match(
   userscript,
-  /hideTooltipForMutations\(muts\);[\s\S]{0,600}?if \(observedControls\?\.isConnected && muts.length && muts.every\(isCommentContentMutation\)\) return;/,
-  "Miniplayer comment-only discovery shortcut must retain tooltip checks and connected-control ownership",
+  /hideTooltipForMutations\(muts\);[\s\S]{0,600}?if \(observedControls\?\.isConnected && muts.length && muts.every\(isUnrelatedContentMutation\)\) return;/,
+  "Miniplayer content-only discovery shortcut must retain tooltip checks and connected-control ownership",
 );
 assert.match(
   userscript,
@@ -969,7 +969,7 @@ for (const navigationRequirement of [
 }
 assert.match(
   scrollMiniplayerSource,
-  /window\.addEventListener\("yt-navigate-start", \(\) => \{\s+beginNavigationLock\(\);\s+deactivateImmediately\(\);/,
+  /window\.addEventListener\("yt-navigate-start", \(\) => \{\s+cornerWriteGeneration\+\+;\s+beginNavigationLock\(\);\s+deactivateImmediately\(\);/,
   "Scroll Miniplayer must lock before navigation cleanup",
 );
 assert.match(
@@ -989,8 +989,8 @@ assert.match(
 );
 assert.match(
   scrollMiniplayerSource,
-  /window\.addEventListener\("pageshow", \(\) => \{[\s\S]{0,180}?finishNavigationLock\(\);/,
-  "Scroll Miniplayer must recover its navigation lock after BFCache restore",
+  /window\.addEventListener\("pageshow", \(\) => \{[\s\S]{0,400}?if \(pageWasHidden\) \{\s+pageWasHidden = false;\s+finishNavigationLock\(\);\s+\} else if \(!navigationInProgress\) scheduleRouteSync\(\);/,
+  "Scroll Miniplayer must recover after actual BFCache restoration without unlocking a newer SPA navigation",
 );
 const routeSyncIndex = scrollMiniplayerSource.indexOf(
   "function syncRouteState()",
@@ -1043,7 +1043,7 @@ for (const lifecycleRequirement of [
   "if (!urlVideoId) return null;",
   "if (replacementVideoId !== urlVideoId) return null;",
   "function canDiscardOffRouteOrphan(player)",
-  "function isRenderedWatchRoot(root)",
+  "function isRenderedWatchRoot(root, requireBox = true)",
   ".querySelector(`#${PLACEHOLDER_ID}`)",
   'const PLAYER_RECOVERY_HOST_ID = "ytsmp-player-recovery-host"',
   "function ensurePlayerRecoveryHost()",
@@ -1142,7 +1142,7 @@ for (const cornerRequirement of [
   'button.setAttribute("aria-expanded", "false")',
   'menu.setAttribute("role", "group")',
   'setCornerMenuOpen(control, true);',
-  "persistCorner(currentCorner);",
+  "await suite.writeCorner(write)",
   'const handleStoredCorner = (event) => {',
   'if (typeof suite === "undefined") window.addEventListener("storage", handleStoredCorner);',
   'else suite.storage.subscribe(handleStoredCorner);',
@@ -1169,8 +1169,8 @@ assert.match(
 );
 assert.match(
   scrollMiniplayerSource,
-  /function applyCornerSelection\(corner, control\) \{[\s\S]+?currentCorner = corner;[\s\S]+?persistCorner\(currentCorner\);[\s\S]+?renderCornerOptions\(control\);[\s\S]+?focus\(\{ preventScroll: true \}\);[\s\S]+?setCornerMenuOpen\(control, false\);[\s\S]+?setBodyBoxVars\(\);[\s\S]+?dispatchResize\(\);/,
-  "Direct corner selection must persist, retain focus, close the chooser and update the player position",
+  /async function applyCornerSelection\(corner, control\) \{[\s\S]+?persistCorner\(corner\)[\s\S]+?await suite\.writeCorner\(write\)[\s\S]+?if \(!result.ok\)[\s\S]+?currentCorner = corner;[\s\S]+?renderCornerOptions\(control\);[\s\S]+?focus\(\{ preventScroll: true \}\);[\s\S]+?setCornerMenuOpen\(control, false\);[\s\S]+?setBodyBoxVars\(\);[\s\S]+?dispatchResize\(\);/,
+  "Direct corner selection must confirm persistence before moving, retain focus and close the chooser",
 );
 assert.match(
   scrollMiniplayerSource,
@@ -1283,8 +1283,8 @@ for (const layoutRefreshRequirement of [
 }
 assert.match(
   playerPreferencesSource,
-  /function handleNavigateStart\(\) \{\s+dynamicNavigationPending = true;\s+liveChatNavigationPending = true;\s+resetLiveChat\(\);\s+preferredQualityNavigationPending = true;\s+clearPreferredQualityAttempts\(\);\s+resetVideoMirror\(\);\s+document\.documentElement\?\.removeAttribute\(FULLSCREEN_COMMENTS_ATTRIBUTE\);\s+clearLiveChatCollapseAttempts\(\);\s+clearPlayerLayoutRefreshAttempts\(\);/,
-  "Navigation start must clear live chat, quality attempts, mirroring, fullscreen-comment styling and pending player-layout retries",
+  /function handleNavigateStart\(\) \{\s+dynamicNavigationPending = true;\s+liveChatNavigationPending = true;\s+resetLiveChat\(\);\s+preferredQualityNavigationPending = true;\s+clearTheaterModeAttempts\(\);\s+clearPreferredQualityAttempts\(\);\s+resetVideoMirror\(\);\s+document\.documentElement\?\.removeAttribute\(FULLSCREEN_COMMENTS_ATTRIBUTE\);\s+clearLiveChatCollapseAttempts\(\);\s+clearPlayerLayoutRefreshAttempts\(\);/,
+  "Navigation start must clear live chat, theatre and quality attempts, mirroring, fullscreen-comment styling and pending player-layout retries",
 );
 for (const mutationAttribute of [
   "aria-label",
@@ -1481,7 +1481,7 @@ assert.match(
 );
 assert.match(
   userscript,
-  /function reportModuleError\(ownerId, label, error\) \{[\s\S]+?\[\$\{ownerId\}\]/,
+  /function reportModuleError\(ownerId, label\) \{[\s\S]+?\[\$\{ownerId\}\]/,
   "Shared runtime errors must identify their owning module",
 );
 assert.match(
@@ -1582,7 +1582,7 @@ assert.match(
 );
 assert.match(
   userscript,
-  /function recordRuntimeError\(ownerId, operation, error\) \{[\s\S]+?if \(runtimeErrors\.length > MAX_RUNTIME_ERRORS\)/,
+  /function recordRuntimeError\(ownerId, operation\) \{[\s\S]+?if \(runtimeErrors\.length > MAX_RUNTIME_ERRORS\)/,
   "Runtime error reporting must remain bounded",
 );
 assert(

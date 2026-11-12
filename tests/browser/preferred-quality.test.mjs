@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const MANIFEST = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -198,6 +198,36 @@ test('unsupported player contracts are left alone without errors', async t => {
   assert.deepEqual(await page.evaluate(() => qualityFixture.calls), []);
 });
 
+test('cached restoration clears interrupted navigation only for a coherent new quality target',async t=>{
+  const page=await openFixture(t,{preferredVideoQuality:'hd1080'});
+  await page.waitForFunction(()=>qualityFixture.quality==='hd1080');
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-navigate-start'));
+    fixture.playerId='bbbbbbbbbbb';history.replaceState({},'','/watch?v=bbbbbbbbbbb');
+    document.querySelector('ytd-watch-flexy').setAttribute('video-id','bbbbbbbbbbb');qualityFixture.quality='medium';
+    window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('pageshow'));
+    document.querySelector('video').dispatchEvent(new Event('loadedmetadata',{bubbles:true}));
+  });
+  await page.waitForFunction(()=>qualityFixture.quality==='hd1080');
+  assert.deepEqual(await page.evaluate(()=>qualityFixture.calls.map(call=>call.videoId)),['aaaaaaaaaaa','bbbbbbbbbbb']);
+});
+
+test('initial pageshow cannot clear pending quality navigation and a cached same-video manual choice survives restoration',async t=>{
+  const page=await openFixture(t,{preferredVideoQuality:'hd1080'},'ignored=1');
+  await page.waitForFunction(()=>qualityFixture.calls.length>0);
+  await page.locator('.ytp-settings-button').click();await page.locator('#fixture-quality-choice').click();
+  const before=await page.evaluate(()=>qualityFixture.calls.length);
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-navigate-start'));window.dispatchEvent(new Event('pageshow'));
+    document.querySelector('video').dispatchEvent(new Event('loadedmetadata',{bubbles:true}));
+  });
+  await page.waitForTimeout(350);
+  assert.equal(await page.evaluate(()=>qualityFixture.calls.length),before);
+  await page.evaluate(()=>{window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('pageshow'));});
+  await page.waitForTimeout(1100);
+  assert.deepEqual(await page.evaluate(()=>({quality:qualityFixture.quality,calls:qualityFixture.calls.length})),{quality:'large',calls:before});
+});
+
 test('Player quality setting persists on reload and keeps the panel size and existing hashtag preference', async t => {
   const page = await openFixture(t, { disableTitleHashtagLinks: true });
   await page.locator('#ytms-settings-button').click();
@@ -207,7 +237,7 @@ test('Player quality setting persists on reload and keeps the panel size and exi
   assert.equal(await select.inputValue(), 'off');
   assert.deepEqual(await select.locator('option').allTextContents(),
     ['YouTube default', 'Highest available', '144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p (4K)']);
-  await select.selectOption('hd1080'); await page.locator('#ytms-save-preview').click();
+  await select.selectOption('hd1080'); await saveFixtureSettings(page);
   assert.deepEqual(await dialog.boundingBox(), bounds);
   assert.deepEqual(await page.evaluate(() => qualityFixture.calls), [], 'Save must not change the running video');
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), true);

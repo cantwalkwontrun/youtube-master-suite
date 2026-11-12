@@ -154,6 +154,23 @@ test('full-window theatre follows the native theatre state and restores the head
   await remainsIntact(page);
 });
 
+for (const [key, target] of [
+  ['hideFullscreenTitle', '.ytp-chrome-top'], ['hideFullscreenRelated', '.ytp-pause-overlay'],
+  ['hideFullscreenEndscreen', '.ytp-endscreen-content'], ['hideFullscreenVoting', 'yt-like-button-view-model'],
+  ['hideFullscreenMoreActions', '.ytp-overflow-button'], ['hideFullscreenControls', '.ytp-chrome-bottom'],
+]) for (const enabled of [false, true]) test(`${key} ${enabled} acts independently only in fullscreen`, async t => {
+  const page = await open(t, { [key]: enabled });
+  assert.equal(await page.locator(target).isVisible(), true);
+  await page.locator('#movie_player').evaluate(node => node.classList.add('ytp-fullscreen'));
+  assert.equal(await page.locator(target).isVisible(), !enabled);
+  for (const unaffected of ['#share', '.ryd-counter', '.cbCustomTitle', '#sponsorblockNotice']) {
+    assert.equal(await page.locator(unaffected).isVisible(), true, unaffected);
+  }
+  await page.evaluate(() => layoutFixture.dispose());
+  assert.equal(await page.locator(target).isVisible(), true);
+  await remainsIntact(page);
+});
+
 test('fullscreen controls are individually scoped and preserve extension voting and notices', async t => {
   const page = await open(t, { hideFullscreenTitle: true, hideFullscreenRelated: true, hideFullscreenEndscreen: true,
     hideFullscreenVoting: true, hideFullscreenMoreActions: true, hideFullscreenControls: true, hideChatFullscreen: true });

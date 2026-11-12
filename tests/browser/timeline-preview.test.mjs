@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth, navigateWatchFixture } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, navigateWatchFixture, saveFixtureSettings } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const MANIFEST = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -506,7 +506,7 @@ test('Player settings expose the size selector with normal save, revert and defa
   assert.equal(await control.inputValue(),'auto');
   await control.selectOption('large'); assert.equal(await page.locator('#ytms-save-preview').isEnabled(),true);
   await control.selectOption('auto'); assert.equal(await page.locator('#ytms-save-preview').isDisabled(),true);
-  await control.selectOption('medium'); await page.locator('#ytms-save-preview').click();
+  await control.selectOption('medium'); await saveFixtureSettings(page);
   assert.equal(await page.evaluate(KEY=>JSON.parse(fixtureStorage.getItem(KEY)).values.timelinePreviewSize,KEY),'medium');
 });
 

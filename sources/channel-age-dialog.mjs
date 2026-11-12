@@ -73,6 +73,9 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
   const collator = new Intl.Collator('en-GB', { numeric: true, sensitivity: 'base' });
   let saved = [], draft = [];
   let loaded = false, rowSequence = 0;
+  const isActive = () => typeof options.isActive === 'function' ? options.isActive() : loaded && (embedded || dialog.open);
+  let sessionGeneration = 0, saving = false;
+  const write = typeof options.write === 'function' ? options.write : callback => callback();
   let newRules = new WeakSet(), origin = null, editingRule = null;
   let importGeneration = 0, importToken = null, importText = null, updateImportPreview = null;
   let downloadUrl = null, downloadTimer = null;
@@ -80,7 +83,7 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
   const copy = rules => rules.map(rule => ({ ...rule }));
   const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const hasDraft = () => loaded && !same(draft, saved);
-  function updateSaveState() { save.disabled = embedded && !hasDraft() && !editingRule; updateImportPreview?.(); }
+  function updateSaveState() { save.disabled = saving || embedded && !hasDraft() && !editingRule; updateImportPreview?.(); }
   function markChanged() {
     status.hidden = true; status.classList.remove('ytms-age-error'); updateSaveState();
   }
@@ -119,7 +122,7 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     const changed = filters.added || filters.changed || filters.removed || orderChanged;
     const update = () => {
       const dirty = hasDraft();
-      applyImport.disabled = !acknowledgement.checked || !changed || dirty;
+      applyImport.disabled = saving || !acknowledgement.checked || !changed || dirty;
       if (dirty) setTransferStatus('Save or discard your channel edits before importing. Your draft has been kept.', true);
       else if (!changed) setTransferStatus('This import would not change your saved channels.');
       else setTransferStatus('Preview only. Other settings are unchanged; nothing has been imported yet.');
@@ -127,12 +130,23 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     updateImportPreview = update;
     acknowledgement.addEventListener('change', update);
     cancelImport.addEventListener('click', () => { clearTransfer(); setTransferStatus('Import cancelled. Nothing has been changed.'); });
-    applyImport.addEventListener('click', () => {
+    applyImport.addEventListener('click', async event => {
+      if (!event.isTrusted || !isActive() || saving) return;
       if (hasDraft()) { update(); return; }
       if (!acknowledgement.checked || applyImport.disabled || !importToken) return;
+      const confirmed = importToken, request = importGeneration, session = sessionGeneration;
+      saving = true; updateSaveState();
       let restored;
-      try { restored = options.channelBackup.restoreChannels(importToken); }
+      try { restored = await write(() => {
+        if (!isActive() || session !== sessionGeneration || request !== importGeneration || confirmed !== importToken ||
+            !loaded || !acknowledgement.checked || hasDraft()) {
+          return { ok: false, error: 'The channel import changed while waiting. Review the preview and try again.' };
+        }
+        return options.channelBackup.restoreChannels(confirmed);
+      }); }
       catch { restored = { ok: false, error: 'Channels could not be imported. Review the saved list before trying again.' }; }
+      finally { saving = false; updateSaveState(); }
+      if (session !== sessionGeneration || request !== importGeneration || confirmed !== importToken) return;
       clearTransfer();
       if (!restored?.ok) {
         // A concurrent write or incomplete rollback may have changed the saved
@@ -149,6 +163,7 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     update();
   }
   function prepareImportPreview() {
+    if (!isActive()) return;
     importToken = null; updateImportPreview = null; importPreview.replaceChildren(); importPreview.hidden = true;
     if (importText === null) return;
     let result;
@@ -158,6 +173,7 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     else setTransferStatus(result?.error || 'The channel export could not be read. No channels were changed.', true);
   }
   importFile.addEventListener('change', async () => {
+    if (!isActive()) return;
     const file = importFile.files?.[0];
     importToken = null; importText = null; updateImportPreview = null; importPreview.replaceChildren(); importPreview.hidden = true;
     const request = ++importGeneration;
@@ -167,12 +183,18 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     try {
       const text = await file.text();
       if (request !== importGeneration) return;
+      if (!isActive()) { importFile.value = ''; setTransferStatus('Preview cancelled. Choose the file again.'); return; }
       importText = text; prepareImportPreview();
-    } catch { if (request === importGeneration) setTransferStatus('The selected file could not be read. No channels were changed.', true); }
+    } catch {
+      if (request !== importGeneration) return;
+      if (!isActive()) { importFile.value = ''; setTransferStatus('Preview cancelled. Choose the file again.'); return; }
+      setTransferStatus('The selected file could not be read. No channels were changed.', true);
+    }
   });
   importMode.addEventListener('change', prepareImportPreview);
-  fullBackup.addEventListener('click', () => options.openFullBackup?.());
-  exportChannels.addEventListener('click', () => {
+  fullBackup.addEventListener('click', event => { if (event.isTrusted && isActive()) options.openFullBackup?.(); });
+  exportChannels.addEventListener('click', event => {
+    if (!event.isTrusted || !isActive() || !loaded) return;
     let result;
     try { result = options.channelBackup.exportChannels(); }
     catch { result = { ok: false, error: 'The channel export could not be created.' }; }
@@ -300,11 +322,13 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     newRules.add(rule); draft.push(rule); search.value = ''; markChanged(); render(rule, true); return rule;
   }
   function loadSaved(clearView = false) {
+    sessionGeneration++;
     saved = service.read(); draft = copy(saved); loaded = true; newRules = new WeakSet(); editingRule = null;
     if (clearView) { search.value = ''; sort.value = 'saved'; }
     markChanged(); render(null);
   }
   function reset({ defer = false } = {}) {
+    sessionGeneration++;
     clearTransfer(true);
     origin = null;
     if (!defer) { loadSaved(true); return; }
@@ -313,6 +337,7 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     columns.hidden = true; count.textContent = ''; empty.hidden = true; markChanged();
   }
   function close() {
+    sessionGeneration++;
     clearTransfer(true);
     origin = null;
     if (embedded) reset();
@@ -328,22 +353,23 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     saved = latest; draft = copy(saved); loaded = true; newRules = new WeakSet(); render(null);
   }
   function add() { if (!loaded) loadSaved(); if (validateDraft()) appendRule(); }
-  addButton.addEventListener('click', add);
+  addButton.addEventListener('click', event => { if (event.isTrusted && isActive()) add(); });
   search.addEventListener('input', () => render());
   sort.addEventListener('change', () => render());
   clearSearch.addEventListener('click', () => { search.value = ''; render(); search.focus(); });
-  function cancelChanges() {
+  function cancelChanges(event) {
+    if (!event?.isTrusted || !isActive()) return;
     const state = { hadEditor: Boolean(editingRule), hadDraft: hasDraft() };
     close(); options.onCancel?.(state);
   }
   closeButton.addEventListener('click', cancelChanges); cancel.addEventListener('click', cancelChanges);
-  dialog.addEventListener('close', () => { if (!dialog.open) { clearTransfer(true); origin = null; loaded = false; editingRule = null; } });
+  dialog.addEventListener('close', () => { if (!dialog.open) { sessionGeneration++; clearTransfer(true); origin = null; loaded = false; editingRule = null; } });
   dialog.addEventListener('keydown', event => event.stopPropagation());
   for (const type of ['input', 'change']) dialog.addEventListener(type, event => event.stopPropagation());
   dialog.addEventListener('click', event => {
     if (embedded || event.target !== dialog) return;
     const bounds = dialog.getBoundingClientRect();
-    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) cancelChanges();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) cancelChanges(event);
   });
   function validateDraft() {
     const ids = new Set();
@@ -361,16 +387,32 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     }
     return true;
   }
-  save.addEventListener('click', () => {
+  save.addEventListener('click', async event => {
+    if (!event.isTrusted || !isActive() || saving || !loaded) return;
     if (!validateDraft()) return;
+    const confirmed = copy(draft), baseline = copy(saved), request = sessionGeneration, savedOrigin = origin;
+    saving = true; updateSaveState();
     let result;
-    try { result = service.save(draft, saved); }
-    catch { showStatus('Could not save channel upload filters. Your previous filters are unchanged.', true); return; }
+    try { result = await write(() => {
+      if (!isActive() || request !== sessionGeneration || !loaded || !same(draft, confirmed) || !same(saved, baseline)) {
+        return { ok: false, error: 'Channel edits changed while waiting to save. Review your draft and try again.' };
+      }
+      return service.save(confirmed, baseline);
+    }); }
+    catch { result = { ok: false, error: 'Could not save channel upload filters. Your previous filters are unchanged.' }; }
+    finally { saving = false; updateSaveState(); }
+    if (request !== sessionGeneration || !loaded) return;
     if (!result?.ok) { showStatus(result?.error || 'Could not save channel upload filters. Your previous filters are unchanged.', true); return; }
     clearTransfer();
-    const change = { origin, previousRules: saved, rules: service.getRules() };
+    const change = { origin: savedOrigin, previousRules: baseline, rules: service.getRules() };
     // A UI acknowledgement failure must not undo a successful storage write.
     try { onSaved?.(change); } catch { /* Filtering still applies if its card disappeared. */ }
+    if (!same(draft, confirmed)) {
+      saved = change.rules; updateSaveState();
+      showStatus('Your earlier channel edits were saved. Current edits are still unsaved.');
+      document.defaultView.dispatchEvent(new document.defaultView.CustomEvent('yt-master-channel-age-changed'));
+      return;
+    }
     saved = change.rules; draft = copy(saved); newRules = new WeakSet(); origin = null; render(null);
     showStatus('Saved. Channel upload filters apply immediately; no reload is needed.');
     document.defaultView.dispatchEvent(new document.defaultView.CustomEvent('yt-master-channel-age-changed'));
@@ -400,6 +442,6 @@ export function createChannelAgeDialog(document, service, onSaved, options = {})
     },
     // reset/close discard drafts; refresh never overwrites one. View controls
     // are session-only and never reorder the persisted rule array.
-    close, refresh, reset, hasDraft, add,
+    close, refresh, reset, hasDraft, add, isSaving: () => saving,
   };
 }

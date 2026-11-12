@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const MANIFEST = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -133,23 +133,30 @@ test('Custom slider and number preview valid widths, reject invalid input and sa
   await widthIs(page, 1200); assert.equal(await number.inputValue(), '1200');
   await number.fill('1000'); await widthIs(page, 1000);
   assert.equal(await slider.inputValue(), '1000');
+  const preferenceStatus = page.locator('#ytms-preference-status');
+  const widthBadge = page.locator('label[for="ytms-miniplayerWidth"] .preference-badge');
+  assert.equal(await preferenceStatus.textContent(), 'Unsaved changes.');
+  assert.equal(await widthBadge.textContent(), 'Unsaved');
   const height = await page.locator('#movie_player').evaluate(player => player.getBoundingClientRect().height);
   assert.ok(Math.abs(height - 563) < 1, String(height));
   for (const value of ['319', '1201', '640.5', '']) {
     await number.fill(value);
     assert.equal(await number.getAttribute('aria-invalid'), 'true', value);
     assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true, value);
+    assert.equal(await preferenceStatus.textContent(), 'Unsaved changes.', value);
     await widthIs(page, 1000);
   }
   assert.equal((await stored(page)).miniplayerWidth, undefined, 'preview must not save');
   await number.fill('1000');
   assert.equal(await number.getAttribute('aria-invalid'), 'false');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const values = await stored(page);
   assert.equal(values.miniplayerSizeMode, 'custom'); assert.equal(values.miniplayerWidth, 1000);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Save');
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   assert.equal(await page.locator('#ytms-settings-status').textContent(), 'Saved. No reload needed.');
+  assert.equal(await preferenceStatus.textContent(), 'Saved settings are active on this page.');
+  assert.equal(await widthBadge.count(), 0);
   await playbackIsUnchanged(page, before);
 });
 
@@ -179,7 +186,7 @@ test('Automatic remains usable after an invalid custom width and retains the las
   assert.equal(await width.inputValue(), '720', 'Cancel discards the retained draft width');
   await width.fill('960'); await width.fill('');
   await mode.selectOption('auto');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const values = await stored(page);
   assert.equal(values.miniplayerSizeMode, 'auto'); assert.equal(values.miniplayerWidth, 960);
   assert.equal(await page.locator('#ytms-settings-status').textContent(), 'Saved. No reload needed.');
@@ -235,7 +242,7 @@ test('Miniplayer defaults preview Automatic, Cancel restores custom, and Save ke
   await page.locator('#ytms-cancel-panel').click(); await widthIs(page, 900);
   await openMiniplayerSettings(page);
   await page.locator('#ytms-restore-section-defaults').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const values = await stored(page);
   assert.equal(values.miniplayerSizeMode, 'auto'); assert.equal(values.miniplayerWidth, 720);
   assert.equal(values.hideShorts, false, 'defaults for another section remain saved');

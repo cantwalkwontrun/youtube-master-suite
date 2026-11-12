@@ -52,6 +52,35 @@ test('search finds settings in other tabs case-insensitively and activates the r
   assert.equal(await page.locator('#ytms-timelinePreviewSize').evaluate(el => document.activeElement === el), true);
 });
 
+test('search highlights literal keywords without changing result text, controls or drafts', async t => {
+  const page = await pageFor(t);
+  const search = page.locator('#ytms-settings-search');
+  const result = page.locator('#ytms-settings-search-results [data-target="timelinePreviewSize"]');
+  await search.fill('TIMELINE PREVIEW');
+  const original = await result.textContent();
+  assert.deepEqual(await result.locator('.settings-search-title mark').allTextContents(), ['Timeline', 'preview']);
+  await search.fill('prev PREVIEW preview');
+  assert.equal(await result.textContent(), original);
+  assert.deepEqual(await result.locator('.settings-search-title mark').allTextContents(), ['preview']);
+  await search.fill('SponsorBlock segments');
+  assert.deepEqual(await result.locator('.settings-search-description mark').allTextContents(), ['SponsorBlock', 'segments']);
+  await search.fill('player');
+  assert.deepEqual(await result.locator('.settings-search-section mark').allTextContents(), ['Player']);
+  await search.fill('.');
+  const dots = await page.locator('#ytms-settings-search-results mark').allTextContents();
+  assert.ok(dots.length > 0);
+  assert.ok(dots.every(text => text === '.'), 'Regular-expression punctuation remains literal');
+  for (const query of ['[', '\\', '.*', '<img/onerror=alert(1)>']) {
+    await search.fill(query);
+    assert.equal(await page.locator('#ytms-settings-search-results img, #ytms-settings-search-results script').count(), 0);
+  }
+  await search.fill('timeline preview');
+  await result.locator('mark').first().click();
+  assert.equal(await page.locator('#ytms-timelinePreviewSize').evaluate(el => document.activeElement === el), true);
+  assert.equal(await search.inputValue(), '');
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+});
+
 test('search includes descriptive text and can reveal a collapsed context-menu control', async t => {
   const page = await pageFor(t);
   const search = page.locator('#ytms-settings-search');
@@ -102,6 +131,9 @@ test('typing or clearing search never dirties settings or removes a saved status
   await page.locator('#ytms-hideLiveVideos').check();
   await save.click();
   const status = page.locator('#ytms-settings-status');
+  // Saving uses the cross-tab write lock; confirm persistence before its UI acknowledgement.
+  await page.waitForFunction(key => JSON.parse(GM_getValue(key, 'null'))?.values.hideLiveVideos === true, settingsKey);
+  await status.waitFor({ state: 'visible' });
   assert.equal(await status.isVisible(), true);
   const before = await status.textContent();
   await search.fill('captions');
@@ -166,8 +198,10 @@ for (const light of [false, true]) {
       const dialog = el.closest('dialog');
       const input = dialog.querySelector('#ytms-settings-search');
       const container = dialog.querySelector('.content');
+      const mark = el.querySelector('mark');
       return { color: getComputedStyle(el).color, surface: getComputedStyle(dialog).backgroundColor,
         input: getComputedStyle(input).color, inputBackground: getComputedStyle(input).backgroundColor,
+        markColor: getComputedStyle(mark).color, markBackground: getComputedStyle(mark).backgroundColor,
         scrollWidth: container.scrollWidth, clientWidth: container.clientWidth };
     });
     const luminance = colour => {
@@ -182,6 +216,7 @@ for (const light of [false, true]) {
     };
     assert.ok(contrast(appearance.color, appearance.surface) >= 4.5, JSON.stringify(appearance));
     assert.ok(contrast(appearance.input, appearance.inputBackground) >= 4.5, JSON.stringify(appearance));
+    assert.ok(contrast(appearance.markColor, appearance.markBackground) >= 4.5, JSON.stringify(appearance));
     assert.ok(appearance.scrollWidth <= appearance.clientWidth + 1, JSON.stringify(appearance));
     await result.click();
     assert.equal(await page.locator('#ytms-settings-dialog nav').isVisible(), true);

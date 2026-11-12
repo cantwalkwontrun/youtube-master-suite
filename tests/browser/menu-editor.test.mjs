@@ -59,7 +59,7 @@ async function addNamed(page, name) {
 test('opening the editor preserves legacy grouping, order and visibility without creating a custom draft', async t => {
   const prefs = { menuItemOrder: ['share', 'channelTools', 'playNext'], menuShowReport: false, menuShowDownload: true };
   const page = await open(t, prefs);
-  assert.deepEqual(await currentIds(page), ['share', 'channelTools', 'playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'notInterested']);
+  assert.deepEqual(await currentIds(page), ['share', 'channelTools', 'playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'notInterested']);
   assert.equal(await page.getByLabel('Show Download', { exact: true }).isChecked(), true);
   await page.getByLabel('Editing menu', { exact: true }).selectOption('channelTools');
   assert.deepEqual(await currentIds(page), ['channelAge', 'dontRecommend', 'report']);
@@ -88,6 +88,7 @@ test('users can create and name three nested submenus and place actions in the d
   assert.equal(await page.evaluate(() => Boolean(layouts.validate(editorFixture.draft.menuLayout))), true);
   await page.getByText('Menu preview', { exact: true }).click();
   const preview = page.getByRole('list', { name: 'Menu preview', exact: true });
+  await preview.getByText('Share', { exact: true }).waitFor();
   assert.match(await preview.textContent(), /Saving & sharingMore choicesExtra choicesShare/);
 });
 
@@ -103,10 +104,16 @@ test('actions can be reordered, moved and hidden while keyboard focus and siblin
   await page.getByLabel('Menu for Share', { exact: true }).selectOption('channelTools');
   await page.getByLabel('Editing menu', { exact: true }).selectOption('channelTools');
   assert.equal((await currentIds(page)).includes('share'), true);
-  await page.getByLabel('Show Share', { exact: true }).uncheck();
+  const shareVisibility = page.getByLabel('Show Share', { exact: true });
+  await shareVisibility.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await shareVisibility.isChecked(), false);
+  assert.equal(await shareVisibility.evaluate(node => node === document.activeElement), true);
   assert.equal((await draft(page)).menuLayout.nodes.find(node => node.id === 'share').visible, false);
   await page.getByText('Menu preview', { exact: true }).click();
-  assert.doesNotMatch(await page.getByRole('list', { name: 'Menu preview', exact: true }).textContent(), /Share/);
+  const preview = page.getByRole('list', { name: 'Menu preview', exact: true });
+  await preview.getByText('Add to queue', { exact: true }).waitFor();
+  assert.doesNotMatch(await preview.textContent(), /Share/);
 });
 
 test('preview excludes default hidden actions and recursively empty groups while retaining editable items', async t => {
@@ -117,6 +124,7 @@ test('preview excludes default hidden actions and recursively empty groups while
   const page = await open(t, { menuLayout: value });
   await page.getByText('Menu preview', { exact: true }).click();
   const preview = page.getByRole('list', { name: 'Menu preview', exact: true });
+  await preview.getByText('Add to queue', { exact: true }).waitFor();
   assert.doesNotMatch(await preview.textContent(), /Download|Empty parent|Empty nested|\(hidden\)/);
   await page.getByLabel('Editing menu', { exact: true }).selectOption('submenu-nested');
   assert.equal(await page.getByLabel('Show Download', { exact: true }).isChecked(), false);
@@ -183,6 +191,28 @@ test('invalid submenu names block edits and leaving the menu until corrected, wi
   await page.getByLabel('Submenu name', { exact: true }).press('Tab');
   assert.equal(await page.evaluate(() => menuEditor.isValid()), true);
   assert.equal((await draft(page)).menuLayout.nodes.find(node => node.id === id).name, 'Corrected name');
+});
+
+for (const control of ['visibility', 'parent']) test(`an invalid submenu name cannot leave a rejected ${control} change visible in the editor`, async t => {
+  const layout = createMenuLayout().fromPreferences({});
+  layout.nodes.push({ id: 'submenu-edit', name: 'Editing', parent: 'root' });
+  layout.nodes.find(node => node.id === 'share').parent = 'submenu-edit';
+  const page = await open(t, { menuLayout: layout });
+  await page.getByLabel('Editing menu', { exact: true }).selectOption('submenu-edit');
+  await page.getByLabel('Submenu name', { exact: true }).fill('');
+  if (control === 'visibility') {
+    await page.getByLabel('Show Share', { exact: true }).click();
+    assert.equal(await page.getByLabel('Show Share', { exact: true }).isChecked(), true);
+  } else {
+    await page.getByLabel('Menu for Share', { exact: true }).selectOption('root');
+    assert.equal(await page.getByLabel('Menu for Share', { exact: true }).inputValue(), 'submenu-edit');
+  }
+  assert.equal(await page.getByLabel('Submenu name', { exact: true }).evaluate(node => node === document.activeElement), true);
+  const share = (await draft(page)).menuLayout.nodes.find(node => node.id === 'share');
+  assert.equal(share.visible, true); assert.equal(share.parent, 'submenu-edit');
+  await page.getByLabel('Submenu name', { exact: true }).fill('Corrected');
+  assert.equal(await page.getByLabel('Show Share', { exact: true }).isChecked(), true);
+  assert.equal(await page.getByLabel('Menu for Share', { exact: true }).inputValue(), 'submenu-edit');
 });
 
 test('reset and external cancellation restore the appropriate draft without changing saved preferences', async t => {

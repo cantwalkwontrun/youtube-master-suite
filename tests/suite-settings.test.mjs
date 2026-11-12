@@ -266,7 +266,7 @@ test("previous default menu order adopts filter-first channel tools without chan
   assert.equal(settings.initial.watchedThreshold, '95');
   assert.equal(settings.initial.menuShowDownload, true);
   const customised = ['share', ...previous.filter(id => id !== 'share')];
-  assert.deepEqual(settings.validate({ menuItemOrder: customised }).menuItemOrder, customised);
+  assert.deepEqual(settings.validate({ menuItemOrder: customised }).menuItemOrder, [...customised,'hype']);
   assert.deepEqual(previous.slice(-4), ['dontRecommend', 'report', 'channelAge', 'channelTools']);
 });
 

@@ -128,6 +128,68 @@ async function open(t, { view = 'desktop', suite = false, configure = null, conf
 const row = (page, id) => page.locator(`#items > ytd-playlist-panel-video-renderer[data-video-id="${id}"]`);
 const arrow = (page, id, direction) => row(page, id).locator(`[data-ywlc-queue-step="${direction}"]`);
 async function ready(page) { await page.locator('#items [data-ywlc-queue-step="down"]').first().waitFor(); }
+
+for (const hiddenBy of ['player opacity', 'ancestor opacity', 'ancestor visibility'])
+test(`retained player hidden by ${hiddenBy} cannot remove queue-step controls`, async t => {
+  const page = await open(t); await ready(page);
+  const expected = await page.locator('#items [data-ywlc-queue-step]').count();
+  await page.evaluate(hiddenBy => {
+    const host = document.createElement('div'); host.id = 'retained-player-fixture';
+    const player = document.createElement('div'); player.id = 'movie_player';
+    player.style.cssText = 'width:320px;height:180px';
+    player.getVideoData = () => ({ video_id: 'zzzzzzzzzzz' });
+    host.append(player); document.body.prepend(host);
+    if (hiddenBy === 'player opacity') player.style.opacity = '0';
+    else if (hiddenBy === 'ancestor opacity') host.style.opacity = '0';
+    else host.style.visibility = 'hidden';
+    fixture.notifyQueue();
+  }, hiddenBy);
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('#items [data-ywlc-queue-step]').count(), expected);
+  await clickArrow(page, 'queue000001', 'up');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
+
+for (const suite of [false, true]) for (const onAncestor of [false, true])
+test(`zero-area retained player preserves queue-step controls (${suite ? 'Suite' : 'source'}, ancestor ${onAncestor})`, async t => {
+  const page = await open(t, { suite }); await ready(page);
+  const expected = await page.locator('#items [data-ywlc-queue-step]').count();
+  await page.evaluate(onAncestor => {
+    const host = document.createElement('div'); host.id = 'retained-player-fixture';
+    const player = document.createElement('div'); player.id = 'movie_player';
+    player.style.cssText = 'width:320px;height:180px';
+    (onAncestor ? host : player).style.transform = 'scale(0)';
+    player.getVideoData = () => ({ video_id: 'zzzzzzzzzzz' });
+    host.append(player); document.body.prepend(host); fixture.notifyQueue();
+  }, onAncestor);
+  await page.evaluate(async () => { for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame); });
+  assert.equal(await page.locator('#items [data-ywlc-queue-step]').count(), expected);
+  await clickArrow(page, 'queue000001', 'up');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
+
+test('two rendered players keep queue-step controls unavailable until ownership is unique', async t => {
+  const page = await open(t); await ready(page);
+  await page.evaluate(() => {
+    const player = document.createElement('div'); player.id = 'movie_player';
+    player.setAttribute('data-retained-player-fixture', '');
+    player.style.cssText = 'width:320px;height:180px';
+    player.getVideoData = () => ({ video_id: 'zzzzzzzzzzz' });
+    document.body.prepend(player); fixture.notifyQueue();
+  });
+  await page.waitForFunction(() => !document.querySelector('#items [data-ywlc-queue-step]'));
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 0);
+  await page.evaluate(() => {
+    document.querySelector('[data-retained-player-fixture]').remove(); fixture.notifyQueue();
+  });
+  await ready(page);
+  await clickArrow(page, 'queue000001', 'up');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
+
 async function clickArrow(page, id, direction) {
   await row(page, id).hover();
   await arrow(page, id, direction).click();
@@ -610,6 +672,44 @@ test('a tracked queue recovers native row restamping without a global queue even
   await unchangedPlayback(page);
 });
 
+for (const suite of [false, true])
+test(`delayed queue confirmation preserves a later focus choice inside the queue (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite, configure: () => {
+    fixture.dropMode = 'delay'; fixture.dropDelay = 400;
+    const control = document.createElement('button');
+    control.id = 'fixture-other-queue-action'; control.textContent = 'Another queue action';
+    fixture.panel.prepend(control);
+  } }); await ready(page);
+  await arrow(page, 'queue000001', 'up').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#fixture-other-queue-action').focus();
+  await page.waitForFunction(() => fixture.commits.length === 1 &&
+    !document.querySelector('[data-video-id="queue000001"] [data-ywlc-queue-step="down"]')?.disabled);
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'fixture-other-queue-action');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
+
+for (const suite of [false, true])
+test(`delayed confirmation does not reclaim focus after a later native action restamps (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite, configure: () => {
+    fixture.dropMode = 'delay'; fixture.dropDelay = 600;
+    const control = document.createElement('button');
+    control.id = 'fixture-later-native-action'; control.textContent = 'Later native action';
+    fixture.items.querySelector('[data-video-id="queue000002"]').append(control);
+  } }); await ready(page);
+  await arrow(page, 'queue000001', 'up').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#fixture-later-native-action').focus();
+  await page.evaluate(() => fixture.restamp(true));
+  await page.waitForFunction(() => fixture.commits.length === 1 &&
+    !document.querySelector('[data-video-id="queue000001"] [data-ywlc-queue-step="down"]')?.disabled);
+  assert.equal(await page.evaluate(() => document.activeElement === document.body), true,
+    'The old arrow cannot reclaim focus after the user chose another native action');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
+
 test('native restamping during confirmation restores keyboard focus to the same queue item', async t => {
   const page = await open(t, { configure: () => {
     const nativeDrop = fixture.owner.handleDrop;
@@ -692,6 +792,27 @@ for (const [suspend, resume] of [['yt-navigate-start', 'yt-navigate-finish'], ['
     await unchangedPlayback(page);
   });
 }
+
+for (const suite of [false, true]) for (const pageFirst of [false, true]) for (const bothPending of [false, true])
+test(`queue-step suspension survives an unrelated resume signal (${suite ? 'Suite' : 'source'}, page first ${pageFirst}, both pending ${bothPending})`, async t => {
+  const page = await open(t, { suite }); await ready(page);
+  await page.evaluate(({pageFirst, bothPending}) => {
+    dispatchEvent(new Event(pageFirst ? 'pagehide' : 'yt-navigate-start'));
+    if (bothPending) dispatchEvent(new Event(pageFirst ? 'yt-navigate-start' : 'pagehide'));
+    dispatchEvent(new Event(pageFirst ? 'yt-navigate-finish' : 'pageshow'));
+    fixture.notifyQueue();
+  }, {pageFirst, bothPending});
+  await page.evaluate(async () => { for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame); });
+  assert.equal(await page.locator('#items [data-ywlc-queue-step]').count(), 0,
+    'unrelated lifecycle completion must not revive suspended controls');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 0);
+  await page.evaluate(pageFirst => dispatchEvent(new Event(pageFirst ? 'pageshow' : 'yt-navigate-finish')), pageFirst);
+  await ready(page);
+  assert.equal(await page.locator('#items [data-ywlc-queue-step]').count(), 36);
+  await clickArrow(page, 'queue000001', 'up');
+  assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+  await unchangedPlayback(page);
+});
 
 test('navigation abandons an unconfirmed move and restores only its owned DOM change', async t => {
   const page = await open(t, { configure: () => { fixture.dropMode = 'ignore'; } }); await ready(page);

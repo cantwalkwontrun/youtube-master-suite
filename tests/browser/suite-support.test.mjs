@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { createSuiteSettings } from '../../sources/suite-settings.mjs';
 import { createMenuLayout } from '../../sources/menu-layout.mjs';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const FIXTURE = readFileSync(new URL('./watch-page.html', import.meta.url), 'utf8');
@@ -42,6 +42,11 @@ async function stored(page) {
   return page.evaluate(([a, b, c]) => [fixtureStorage.getItem(a), fixtureStorage.getItem(b), fixtureStorage.getItem(c)], [KEY, FILTER_KEY, CORNER_KEY]);
 }
 
+async function restoreBackup(page) {
+  await page.locator('#ytms-restore-backup').click();
+  await page.locator('#ytms-backup-preview').waitFor({ state: 'hidden' });
+}
+
 test('full restore permits and explains channel-order-only changes', async t => {
   const page = await openFixture(t);
   const other = { ...channel, channelId: 'UC' + 'b'.repeat(22), name: 'Second channel' };
@@ -52,7 +57,7 @@ test('full restore permits and explains channel-order-only changes', async t => 
   assert.match(await page.locator('#ytms-backup-preview').innerText(), /Channel filter order will change/);
   await page.locator('#ytms-confirm-restore').check();
   assert.equal(await page.locator('#ytms-restore-backup').isEnabled(), true);
-  await page.locator('#ytms-restore-backup').click();
+  await restoreBackup(page);
   assert.deepEqual(JSON.parse((await stored(page))[1]).rules, [other, channel]);
 });
 
@@ -86,7 +91,7 @@ test('restore requires a preview and acknowledgement, updates filters, and never
   assert.deepEqual(await stored(page), initial);
   assert.equal(await page.locator('#ytms-restore-backup').isDisabled(), true);
   await page.locator('#ytms-confirm-restore').check();
-  await page.locator('#ytms-restore-backup').click();
+  await restoreBackup(page);
   const saved = await stored(page);
   assert.equal(JSON.parse(saved[0]).values.hideRelated, false);
   assert.deepEqual(JSON.parse(saved[1]).rules, [channel]);
@@ -113,7 +118,7 @@ test('restore refuses unsaved drafts and storage changes made after preview', as
   assert.equal(await page.locator('#ytms-backup-preview').isHidden(), true);
   await importBackup(page, envelope()); await page.locator('#ytms-confirm-restore').check();
   await page.evaluate(key => fixtureStorage.setItem(key, 'bottom-left'), CORNER_KEY);
-  await page.locator('#ytms-restore-backup').click();
+  await restoreBackup(page);
   assert.match(await page.locator('#ytms-backup-status').innerText(), /changed/i);
   assert.equal((await stored(page))[2], 'bottom-left');
   assert.equal((await stored(page))[1], null);
@@ -137,10 +142,10 @@ test('saving or reverting an unrelated draft immediately updates restore availab
   await page.locator('#ytms-tab-support').click(); await importBackup(page, envelope());
   await page.locator('#ytms-confirm-restore').check();
   assert.equal(await page.locator('#ytms-restore-backup').isDisabled(), true);
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-restore-backup').isEnabled(), true);
   // Saving changed the preview's storage baseline; restore must still reject it.
-  await page.locator('#ytms-restore-backup').click();
+  await restoreBackup(page);
   assert.match(await page.locator('#ytms-backup-status').innerText(), /changed after this preview/);
   await importBackup(page, envelope()); await page.locator('#ytms-confirm-restore').check();
   await page.locator('#ytms-tab-layout').click(); await page.locator('#ytms-hideRelated').check();
@@ -214,6 +219,6 @@ test('backup preview describes custom submenu names and hidden actions without o
   await preview.getByText('Review setting changes',{exact:true}).click();
   const text=await preview.innerText();assert.match(text,/Research & notes/);assert.match(text,/Share \(hidden\)/);
   assert.doesNotMatch(text,/\[object Object\]/);
-  await page.locator('#ytms-confirm-restore').check();await page.locator('#ytms-restore-backup').click();
+  await page.locator('#ytms-confirm-restore').check();await restoreBackup(page);
   assert.deepEqual(JSON.parse((await stored(page))[0]).values.menuLayout,layout);
 });

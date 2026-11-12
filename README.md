@@ -60,6 +60,8 @@ configured Tampermonkey synchronisation remains a userscript-manager setting.
 
 - Edit your preferences, then select **Save**. Returning a setting to its saved
   value removes that unsaved change.
+- Search finds settings across sections and highlights matching words in their
+  names, descriptions and section labels. Selecting a result opens its control.
 - Most changes take effect after reloading. **Reload now** restarts the current
   video; saving alone does not reload it.
 - **Cancel** discards unsaved changes. **Restore this section** and **Restore all
@@ -147,12 +149,34 @@ Queue titles use at most two lines. Hover over a truncated title to read it in a
 small floating tooltip; keyboard focus also reveals it. The tooltip never expands
 the row.
 
+## Custom JavaScript
+
+Open **Suite settings → Custom JS** to enter code that runs once after the DOM
+is ready on a full YouTube page load. This feature is disabled by default.
+Review the warning, turn it on, acknowledge the risks and choose **Save JavaScript**.
+Saving applies the code on the next full load. Internal YouTube navigation keeps
+the existing execution, so code can register its own navigation listeners if needed.
+
+Only run code you understand and trust. It can read page data, make requests,
+act through your signed-in session, interfere with other extensions or playback,
+and freeze the tab. Long loops cannot be stopped safely by the Suite.
+If a saved script prevents normal use, disable the Suite in Tampermonkey or append
+`ytms-custom-js=off` to the URL query before loading YouTube. For example,
+`https://www.youtube.com/?ytms-custom-js=off` skips custom code for that load.
+You can then open settings and turn it off. Browser security policies can also
+block dynamic scripts, in which case the JavaScript section reports a failure.
+
+Code is held in scoped Tampermonkey storage and saved separately from other
+settings. Suite backups and **Restore all settings** cover the main settings
+and channel filters. Keep a separate local copy of custom code if you need one.
+
 ## Updates
 
 **Updates are manual.** In **Credits → Script updates**, the latest stable GitHub
 release is selected by default. Choose **Check for updates** without entering a
-URL. You can use a different public GitHub Releases page or an HTTPS
-`release-manifest.json` URL; clearing it restores the default. If a newer release
+URL. To use a different public GitHub Releases page or an HTTPS
+`release-manifest.json` URL, edit the field and choose **Save release source**.
+Save an empty field to restore the default. If a newer release
 is available, **Install update** opens its userscript
 in Tampermonkey. Complete installation there and reload YouTube when convenient.
 You can also download the script from this repository's **Releases** page.
@@ -199,6 +223,12 @@ source. It preserves a migration snapshot in Tampermonkey storage. Subsequent
 saves use private records and are not mirrored back into YouTube storage. Missing
 storage permissions or a failed migration do not silently switch new saves back
 to YouTube storage.
+
+Main settings saves and full backup restores coordinate across tabs with a Web
+Lock. A page-visible revision token contains no settings. The matching receipt
+stays in Tampermonkey storage. A tab whose local cache is behind keeps its draft
+and reports a conflict instead of overwriting a newer save. Reload after clearing
+YouTube site data so the Suite can re-establish the revision from protected storage.
 
 First migration uses a Web Lock and one page-visible coordination flag containing
 only the constant `1`. A tab with a delayed Tampermonkey cache waits for the

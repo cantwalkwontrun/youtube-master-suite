@@ -4,7 +4,7 @@ import { after, before, test } from 'node:test';
 import { createChannelAgeDialog } from '../../sources/channel-age-dialog.mjs';
 import { createChannelAgeService } from '../../sources/channel-age.mjs';
 import { createSuiteSettings } from '../../sources/suite-settings.mjs';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const CSS = readFileSync(new URL('../../assets/settings-panel.css', import.meta.url), 'utf8');
 const SUITE = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
@@ -72,6 +72,77 @@ async function openChannels(page) {
   await page.getByRole('tab', { name: 'Channels', exact: true }).click();
   await page.locator('#ytms-channel-search').waitFor();
 }
+
+async function holdChannelWriteLock(page) {
+  await page.evaluate(() => {
+    window.channelWriteLockHeld = false;
+    navigator.locks.request('yt-master-suite.channel-filters-write.v1', async () => {
+      window.channelWriteLockHeld = true;
+      await new Promise(resolve => { window.releaseChannelWriteLock = resolve; });
+    });
+  });
+  await page.waitForFunction(() => window.channelWriteLockHeld);
+}
+
+async function releaseChannelWriteLock(page) {
+  await page.evaluate(async () => {
+    window.releaseChannelWriteLock();
+    await navigator.locks.request('yt-master-suite.channel-filters-write.v1', () => {});
+  });
+}
+
+test('page-script clicks cannot save a prepared channel draft to protected storage', async t => {
+  const page = await openFixture(t, [], undefined, true);
+  await openChannels(page); await addRule(page);
+  await page.evaluate(() => document.getElementById('ytms-age-save').click());
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
+  await page.locator('#ytms-age-save').click();
+  await page.waitForFunction(key => fixtureStorage.getItem(key) !== null, KEY);
+  assert.equal(JSON.parse(await page.evaluate(key => fixtureStorage.getItem(key), KEY)).rules[0].channelId, FIRST);
+});
+
+test('channel changes while waiting for the write lock preserve the newer draft without saving an older snapshot', async t => {
+  const page = await openFixture(t, [], undefined, true);
+  await openChannels(page); await addRule(page);
+  await holdChannelWriteLock(page);
+  await page.locator('#ytms-age-save').click();
+  await field(page, 'Maximum age').fill('5');
+  await releaseChannelWriteLock(page);
+  await page.waitForFunction(() => document.getElementById('ytms-age-status').textContent.includes('changed while waiting'));
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
+  assert.equal(await field(page, 'Maximum age').inputValue(), '5');
+  assert.equal(await page.locator('#ytms-age-save').isEnabled(), true);
+});
+
+test('closing and reopening settings cancels a channel save still waiting for its write lock', async t => {
+  const page = await openFixture(t, [], undefined, true);
+  await openChannels(page); await addRule(page);
+  await holdChannelWriteLock(page);
+  await page.locator('#ytms-age-save').click();
+  await page.locator('#ytms-close-panel').click(); await openChannels(page);
+  await releaseChannelWriteLock(page);
+  assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
+  assert.equal(await page.locator('.ytms-age-rule').count(), 0);
+  assert.equal(await page.locator('#ytms-age-status').isVisible(), false);
+});
+
+test('a channel editor with delayed GM record and receipt delivery cannot overwrite another tab', async t => {
+  const initial = { channelId: FIRST, name: 'First channel', maxAge: 1, unit: 'weeks', enabled: true, blocked: false };
+  const page = await openFixture(t, [initial], undefined, true);
+  const other = await page.context().newPage();
+  await other.goto(WATCH_URL);
+  await waitForSuiteHealth(other, MANIFEST.registeredModules, { timeoutMs: 7000 });
+  await openChannels(page); await openChannels(other);
+  await addRule(other, `UC${'c'.repeat(22)}`, '3', 'weeks', 'Third channel draft');
+  await other.evaluate(() => { window.__ytmsFixtureReceiveGM = () => {}; });
+  await addRule(page, SECOND, '2', 'weeks', 'Second channel');
+  await page.locator('#ytms-age-save').click();
+  await page.waitForFunction(key => JSON.parse(fixtureStorage.getItem(key)).rules.length === 2, KEY);
+  await other.locator('#ytms-age-save').click();
+  await other.waitForFunction(() => /synchronising|another tab/.test(document.getElementById('ytms-age-status').textContent));
+  assert.deepEqual(JSON.parse(await page.evaluate(key => fixtureStorage.getItem(key), KEY)).rules.map(rule => rule.channelId), [FIRST, SECOND]);
+  assert.equal(await field(other, 'Channel name', 1).inputValue(), 'Third channel draft');
+});
 
 test('Channels explains the limited overlap with BlockTube without claiming its rules are transferred', async t => {
   const page = await openFixture(t, [], undefined, true);
@@ -342,7 +413,7 @@ test('integrated Feed manager does not save unrelated draft changes and menu ord
   await page.locator('#ytms-menu-location').selectOption('channelTools');
   await page.getByLabel('Menu for Report', { exact: true }).selectOption('root');
   await page.locator('#ytms-menu-location').selectOption('root');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, SETTINGS_KEY);
   assert.equal(saved.menuLayout.nodes.find(node => node.id === 'download').visible, true);
   assert.equal(saved.menuLayout.nodes.find(node => node.id === 'report').parent, 'root');
@@ -818,11 +889,11 @@ test('Reload now warns inline about an unsaved channel draft and dismissal prese
   await addRule(page);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
   let nativeDialogs = 0;
   page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(nativeDialogs, 0);
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
   const message = await page.locator('#ytms-reload-message').textContent();
@@ -1088,6 +1159,18 @@ test('storage failure during channel import leaves prior channels and unrelated 
   assert.match(await page.locator('#ytms-channel-transfer-status').textContent(), /could not|failed|unavailable/i);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
   await page.evaluate(() => restoreTransferStorage());
+});
+
+test('page-script clicks cannot commit an acknowledged channel import', async t => {
+  const page = await transferFixture(t);
+  const before = await channelTransferRaw(page);
+  await importChannels(page, channelFile([transferRule(SECOND)]));
+  await transferPreview(page);
+  await page.locator('#ytms-confirm-channel-import').check();
+  await page.evaluate(() => document.getElementById('ytms-apply-channel-import').click());
+  assert.deepEqual(await channelTransferRaw(page), before);
+  await confirmChannelImport(page);
+  assert.equal(JSON.parse((await channelTransferRaw(page))[2]).rules.length, 2);
 });
 
 test('stale asynchronous file reads cannot replace a newer preview or update reopened settings', async t => {

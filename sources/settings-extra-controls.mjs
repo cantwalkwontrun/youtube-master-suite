@@ -12,6 +12,9 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
   };
   let opened = false, generation = 0, updateGeneration = 0, markerDraft = null, markerChanged = false, markerPreparing = false, markerConflict = false, markerBaseline = null, updateResult = null, sourceBaseline = '';
   let unsubscribeStorage = null;
+  let markerSaving = false, sourceSaving = false;
+  const writeMarker = suite.writeMarker || (callback => callback());
+  const writeSource = suite.writeUpdateSource || (callback => callback());
   const marker = make('section', 'playhead-marker'); marker.className = 'extra-settings';
   const markerHeading = make('h3', 'playhead-marker-heading', 'Playback marker image');
   const markerNote = make('p', null, 'Replace the red playback dot with a small image. Your image stays in this browser profile and is saved separately from other settings.');
@@ -35,8 +38,9 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     if (markerDraft) preview.src = markerDraft.dataUrl;
     else preview.removeAttribute('src');
     markerSize.value = String(markerDraft?.size || suite.playheadMarker.defaultSize);
-    markerSizeValue.value = `${markerSize.value} px`; markerSize.disabled = markerPreparing || !markerDraft;
-    markerSave.disabled = markerPreparing || markerConflict || !markerDraft || !markerChanged;
+    markerSizeValue.value = `${markerSize.value} px`; markerSize.disabled = markerSaving || markerPreparing || !markerDraft;
+    markerSave.disabled = markerSaving || markerPreparing || markerConflict || !markerDraft || !markerChanged;
+    markerRemove.disabled = markerSaving || markerConflict || !markerDraft;
   }
   function resetMarker() {
     const result = suite.playheadMarker.read();
@@ -53,6 +57,10 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     markerStatus.textContent = current.ok ? 'The saved marker changed in another window. Close and reopen settings before saving or restoring the red dot.' : current.error;
     return false;
   }
+  function markerWriteFailure(result) {
+    if (!result.conflict) markerStatus.textContent = result.error;
+    else if (markerPreflight()) markerStatus.textContent = 'The marker is still synchronising or changed in another window. Keep your draft and try again.';
+  }
   file.addEventListener('change', async () => {
     const token = ++generation, selected = file.files?.[0];
     if (!selected) { markerPreparing = false; markerStatus.textContent = ''; renderMarker(); return; }
@@ -65,46 +73,88 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     renderMarker();
   });
   markerSize.addEventListener('input', () => {
-    if (!markerDraft || markerPreparing) return;
+    if (!markerDraft || markerPreparing || markerSaving) return;
+    ++generation;
     markerDraft = { ...markerDraft, size: Number(markerSize.value) }; markerChanged = true; renderMarker();
   });
-  markerSave.addEventListener('click', () => {
-    if (!markerDraft || markerPreparing || markerSave.disabled || !markerPreflight()) return;
-    const result = suite.playheadMarker.save(markerDraft);
+  markerSave.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || markerSaving || !markerDraft || markerPreparing || markerSave.disabled) return;
+    const token = generation, confirmed = { ...markerDraft }, baseline = markerBaseline;
+    markerSaving = true; renderMarker();
+    let result;
+    try { result = await writeMarker(() => {
+      if (!opened || token !== generation || baseline !== markerBaseline || JSON.stringify(markerDraft) !== JSON.stringify(confirmed)) return { ok: false, error: 'The marker draft changed while waiting. Review it and try again.' };
+      return markerPreflight() ? suite.playheadMarker.save(confirmed) : { ok: false, error: markerStatus.textContent };
+    }); } catch { result = { ok: false, error: 'The marker could not be saved. Keep your draft and try again.' }; }
+    finally { markerSaving = false; renderMarker(); }
+    if (!opened || token !== generation) return;
     if (result.ok) { resetMarker(); markerStatus.textContent = 'Playback marker saved. No reload needed.'; }
-    else markerStatus.textContent = result.error;
+    else markerWriteFailure(result);
   });
-  markerRemove.addEventListener('click', () => {
-    if (!markerPreflight()) return;
-    const result = suite.playheadMarker.remove();
+  markerRemove.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || markerSaving || markerRemove.disabled) return;
+    const token = generation, baseline = markerBaseline;
+    markerSaving = true; renderMarker();
+    let result;
+    try { result = await writeMarker(() => {
+      if (!opened || token !== generation || baseline !== markerBaseline) return { ok: false, error: 'The marker draft changed while waiting. Review it and try again.' };
+      return markerPreflight() ? suite.playheadMarker.remove() : { ok: false, error: markerStatus.textContent };
+    }); } catch { result = { ok: false, error: 'The marker could not be removed. Review the saved marker and try again.' }; }
+    finally { markerSaving = false; renderMarker(); }
+    if (!opened || token !== generation) return;
     if (result.ok) { ++generation; resetMarker(); markerStatus.textContent = 'The native red playback dot is restored.'; }
-    else markerStatus.textContent = result.error;
+    else markerWriteFailure(result);
   });
 
   const updates = make('section', 'updates'); updates.className = 'extra-settings';
   const updatesHeading = make('h3', 'updates-heading', 'Script updates');
-  const updatesNote = make('p', null, 'The latest stable GitHub release is selected by default. You can change the source to another public GitHub Releases page or a hosted release-manifest.json. Installation opens in Tampermonkey.');
+  const updatesNote = make('p', null, 'The latest stable GitHub release is selected by default. Save a different source only if you trust its publisher. The check reads release metadata. Installation opens in Tampermonkey.');
   updatesNote.className = 'section-note';
   const sourceLabel = make('label', null, 'Release source URL'); sourceLabel.htmlFor = 'ytms-updates-source';
   const source = make('input', 'updates-source'); source.type = 'url'; source.maxLength = 2048; source.autocomplete = 'off'; source.spellcheck = false;
   const latest = make('p', 'updates-latest', 'Latest version: Not checked'); latest.className = 'section-note';
   const updateActions = make('div'); updateActions.className = 'extra-settings-controls';
   const check = button('updates-check', 'Check for updates');
+  const saveSource = button('updates-save-source', 'Save release source');
+  saveSource.disabled = true;
+  let trustedSourceDraft = null;
+  const renderSource = () => { saveSource.disabled = sourceSaving || trustedSourceDraft === null || trustedSourceDraft === sourceBaseline; };
   const install = make('a', 'updates-install', 'Install update'); install.className = 'text-button extension-link';
   install.target = '_blank'; install.rel = 'noopener noreferrer'; install.hidden = true;
-  updateActions.append(check, install);
+  updateActions.append(saveSource, check, install);
   const updateStatus = make('p', 'updates-status'); updateStatus.className = 'section-note'; updateStatus.setAttribute('role', 'status');
   updates.append(updatesHeading, updatesNote, sourceLabel, source, latest, updateActions, updateStatus); find('section-credits').append(updates);
   function cancelUpdate() {
-    ++updateGeneration; suite.updates.cancel(); updateResult = null; install.hidden = true; install.removeAttribute('href'); check.disabled = false;
+    ++updateGeneration; suite.updates.cancel(); updateResult = null; install.hidden = true; install.removeAttribute('href'); check.disabled = sourceSaving;
   }
-  source.addEventListener('input', () => { cancelUpdate(); latest.textContent = 'Latest version: Not checked'; updateStatus.textContent = ''; });
-  check.addEventListener('click', async () => {
+  source.addEventListener('input', event => {
+    cancelUpdate(); latest.textContent = 'Latest version: Not checked'; updateStatus.textContent = '';
+    trustedSourceDraft = event.isTrusted ? source.value : null;
+    renderSource();
+  });
+  saveSource.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || sourceSaving || trustedSourceDraft === null || trustedSourceDraft !== source.value) return;
+    const token = updateGeneration, confirmed = trustedSourceDraft, baseline = sourceBaseline;
+    sourceSaving = true; renderSource(); check.disabled = true;
+    let saved;
+    try { saved = await writeSource(() => {
+      if (!opened || token !== updateGeneration || trustedSourceDraft !== confirmed || source.value !== confirmed || sourceBaseline !== baseline) return { ok: false, error: 'The release source draft changed while waiting. Review it and try again.' };
+      const current = suite.updates.readSource();
+      if (!current.ok || current.url !== baseline) return { ok: false, error: 'The saved release source changed. Reopen settings before saving.' };
+      return suite.updates.saveSource(confirmed);
+    }); } catch { saved = { ok: false, error: 'The release source could not be saved. Keep your draft and try again.' }; }
+    finally { sourceSaving = false; renderSource(); check.disabled = false; }
+    if (!opened || token !== updateGeneration) return;
+    if (!saved.ok) { updateStatus.textContent = saved.conflict ? 'The release source is still synchronising or changed in another window. Keep your draft and try again.' : saved.error; return; }
+    source.value = sourceBaseline = saved.url;
+    trustedSourceDraft = null; saveSource.disabled = true;
+    updateStatus.textContent = saved.url ? `Release source saved. Checks use ${new URL(saved.url).host}.` : 'Release source cleared.';
+  });
+  check.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || sourceSaving) return;
     cancelUpdate();
     latest.textContent = 'Latest version: Not checked';
-    const saved = suite.updates.saveSource(source.value);
-    if (!saved.ok) { updateStatus.textContent = saved.error; return; }
-    source.value = sourceBaseline = saved.url;
+    if (source.value !== sourceBaseline) { updateStatus.textContent = 'Save the edited release source before checking.'; return; }
     const token = updateGeneration; check.disabled = true; updateStatus.textContent = 'Checking for updates…';
     const result = await suite.updates.check();
     if (!opened || token !== updateGeneration) return;
@@ -112,13 +162,13 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     if (!result.ok) { updateStatus.textContent = result.error; return; }
     updateResult = result; latest.textContent = `Latest version: ${result.latestVersion}`;
     const url = suite.updates.installationUrl(result);
-    if (url) { install.href = url; install.hidden = false; }
+    if (url) { install.href = url; install.hidden = false; install.textContent = `Install update from ${new URL(url).host}`; }
     updateStatus.textContent = result.status === 'newer' ? 'An update is available. Complete installation in Tampermonkey, then reload YouTube.' :
       result.status === 'older' ? 'Your installed version is newer than this release source.' : 'You have the latest version from this source.';
   });
   const validateInstall = event => {
     const url = suite.updates.installationUrl(updateResult);
-    if (!url) { event.preventDefault(); cancelUpdate(); updateStatus.textContent = 'Check for updates again before installing.'; }
+    if (!event.isTrusted || !url) { event.preventDefault(); cancelUpdate(); updateStatus.textContent = 'Check for updates again before installing.'; }
     else install.href = url;
   };
   install.addEventListener('click', validateInstall);
@@ -131,6 +181,7 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     const result = suite.updates.readSource();
     if (!hasDraft && result.ok) source.value = result.url;
     sourceBaseline = result.ok ? result.url : '';
+    trustedSourceDraft = null; saveSource.disabled = true;
     updateStatus.textContent = result.ok ? 'The release source changed in another window. Check again before installing.' : result.error;
   }
   for (const section of [marker, updates]) {
@@ -138,9 +189,15 @@ export function createSettingsExtraControls(document, window, suite, dialog) {
     section.addEventListener('change', event => event.stopPropagation());
   }
   return {
+    draftCategories: () => opened ? [
+      (markerPreparing || markerChanged && JSON.stringify(markerDraft) !== markerBaseline) && 'playback marker edits',
+      source.value !== sourceBaseline && 'release source edits',
+    ].filter(Boolean) : [],
+    savingCategories: () => [markerSaving && 'playback marker', sourceSaving && 'release source'].filter(Boolean),
     open() {
       opened = true; ++generation; resetMarker(); cancelUpdate();
       const result = suite.updates.readSource(); source.value = sourceBaseline = result.ok ? result.url : '';
+      trustedSourceDraft = null; saveSource.disabled = true;
       unsubscribeStorage?.();
       if (suite.storage?.subscribe) unsubscribeStorage = suite.storage.subscribe(sourceChanged);
       else {

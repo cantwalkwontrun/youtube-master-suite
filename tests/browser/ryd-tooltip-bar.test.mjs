@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from "./fixture-browser.mjs";
 
 const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
 const MANIFEST = JSON.parse(readFileSync(new URL("../../release-manifest.json", import.meta.url), "utf8"));
@@ -216,7 +216,7 @@ test("RYD setting keeps drafts private and applies persisted show/hide choices a
   await openInterface(page);
   assert.equal(await toggle.isChecked(), false);
   await toggle.check();
-  await page.locator("#ytms-save-preview").click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showRydTooltipBar, KEY), true);
   await assertBars(page, false);
   await page.reload();
@@ -232,7 +232,7 @@ test("RYD setting keeps drafts private and applies persisted show/hide choices a
   await openInterface(page);
   assert.equal(await toggle.isChecked(), true);
   await toggle.uncheck();
-  await page.locator("#ytms-save-preview").click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showRydTooltipBar, KEY), false);
   await assertBars(page, true);
   await page.reload();

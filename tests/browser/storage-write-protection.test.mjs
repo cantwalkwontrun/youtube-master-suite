@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
-import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const suite = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../../release-manifest.json', import.meta.url), 'utf8'));
@@ -41,7 +41,7 @@ for (const [name, raw] of [
     await page.getByRole('tab', { name: 'Feed', exact: true }).click();
     const toggle = page.locator('#ytms-hideShorts');
     await toggle.setChecked(!(await toggle.isChecked()));
-    await page.locator('#ytms-save-preview').click();
+    await saveFixtureSettings(page);
     assert.match(await page.locator('#ytms-settings-status').textContent(), /incompatible or damaged.*nothing was overwritten/i);
     assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), settingsKey), raw);
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
@@ -77,7 +77,7 @@ test('valid version-1 settings remain editable', async t => {
   const page = await openFixture(t, settingsKey, raw);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideShorts, settingsKey), false);
 });
 

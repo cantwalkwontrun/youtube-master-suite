@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Scroll Miniplayer
 // @namespace    Citizen.youtube.scroll-miniplayer
-// @version      5.33
+// @version      5.42
 // @description  Floats the active YouTube player with compact queue context, YouTube-style controls, and synchronised corner selection across open windows.
 // @author       Citizen
 // @updateURL    none
@@ -145,6 +145,7 @@
   let navigationStartPlayerVideoId = "";
   let suppressedUntilVisible = false;
   let navigationInProgress = false;
+  let pageWasHidden = false;
   let navigationFinishPending = false;
   let mutationObserverActive = false;
   let playerAdoptionObserverActive = false;
@@ -158,6 +159,8 @@
   let restoreParent = null;
   let restoreNextSibling = null;
   let currentCorner = readStoredCorner();
+  let cornerWritePending = false;
+  let cornerWriteGeneration = 0;
 
   function isValidCorner(value) {
     return VALID_CORNERS.includes(value);
@@ -182,8 +185,10 @@
 
     try {
       const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+      const previous = storage.getItem(CORNER_STORAGE_KEY);
+      if (previous !== null && !isValidCorner(previous)) return false;
       storage.setItem(CORNER_STORAGE_KEY, corner);
-      return true;
+      return storage.getItem(CORNER_STORAGE_KEY) === corner;
     } catch {
       return false;
     }
@@ -215,30 +220,27 @@
     );
   }
 
-  function isRenderedWatchRoot(root) {
-    if (
-      !root?.isConnected ||
-      root.hidden ||
-      root.getAttribute("aria-hidden") === "true"
-    ) {
-      return false;
-    }
+  function isRenderedWatchRoot(root, requireBox = true) {
+    if (!root?.isConnected) return false;
 
     try {
-      const style = getComputedStyle(root);
-      if (
-        style.display === "none" ||
-        style.visibility === "hidden" ||
-        style.visibility === "collapse"
-      ) {
-        return false;
+      for (let element = root; element; element = element.parentElement) {
+        if (element.hidden || element.hasAttribute("inert") ||
+            element.getAttribute("aria-hidden") === "true") return false;
+        const style = getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" ||
+            style.visibility === "collapse" || Number(style.opacity) === 0) return false;
       }
     } catch {
       return false;
     }
 
+    // A transform-collapsed retained watch still has client rects. It cannot
+    // donate a player; a legitimate floating owner's height may remain zero.
+    if (requireBox !== false && typeof root.getBoundingClientRect === "function" &&
+        !(root.getBoundingClientRect().width > 0)) return false;
     return (
-      typeof root.getClientRects !== "function" ||
+      requireBox === false || typeof root.getClientRects !== "function" ||
       root.getClientRects().length > 0
     );
   }
@@ -499,8 +501,17 @@
 
   function canFloatPlayer() {
     if (!CONFIG.enabled || !isEligiblePath() || isFullscreen() || isNativeMiniplayerVisible()) return false;
+    // Connected retained roots remain available to restoration bookkeeping,
+    // but cannot donate their hidden player to the visible document body.
+    const floatingOwner = floatedPlayer && (playerPlaceholder?.closest(WATCH_ROOT_SELECTOR) ||
+      restoreParent?.closest?.(WATCH_ROOT_SELECTOR));
+    if (!isRenderedWatchRoot(floatedPlayer ? floatingOwner : getWatchRoot())) return false;
 
     const player = getPlayer();
+    // The native host can be hidden independently of its watch root. Inspect
+    // its ancestry without requiring a box: floating may leave an empty host.
+    const origin = floatedPlayer ? (playerPlaceholder?.parentElement || restoreParent) : player?.parentElement;
+    if (!isRenderedWatchRoot(origin, false)) return false;
     // Native ownership survives hidden/zero-size activation transitions.
     // Taking its player during that interval causes competing resize loops.
     if (!player || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
@@ -943,6 +954,7 @@
   }
 
   function finishPlayerRestore() {
+    stopFloatedWatchObservation();
     clearPlayerRestoreRetries();
     clearPlayerOrphanFinaliseTimer();
     removePlayerPlaceholder();
@@ -1291,6 +1303,7 @@
     );
     button.setAttribute("aria-label", label);
     button.title = label;
+    button.removeAttribute("aria-description");
   }
 
   function renderCornerOptions(control) {
@@ -1315,6 +1328,7 @@
         icon.style.transform = `rotate(${CORNER_ICON_ROTATIONS[corner]}deg)`;
         option.appendChild(icon);
         option.addEventListener("click", (event) => {
+          if (!event.isTrusted) return;
           event.preventDefault();
           event.stopPropagation();
           applyCornerSelection(corner, control);
@@ -1326,11 +1340,30 @@
     menu.dataset.currentCorner = currentCorner;
   }
 
-  function applyCornerSelection(corner, control) {
-    if (!isValidCorner(corner) || corner === currentCorner) return;
-
+  async function applyCornerSelection(corner, control) {
+    if (!isValidCorner(corner) || corner === currentCorner || cornerWritePending || navigationInProgress) return;
+    const previous = currentCorner, storedBefore = readStoredCorner(), generation = cornerWriteGeneration;
+    const button = control?.querySelector(`#${CORNER_BUTTON_ID}`);
+    const write = () => {
+      if (generation !== cornerWriteGeneration || !control?.isConnected || navigationInProgress ||
+          currentCorner !== previous || readStoredCorner() !== storedBefore) {
+        return { ok: false, error: "Miniplayer position changed. Please try again." };
+      }
+      return persistCorner(corner) ? { ok: true } : { ok: false, error: "Miniplayer position could not be saved. Please try again." };
+    };
+    cornerWritePending = true;
+    button?.setAttribute("aria-busy", "true");
+    let result;
+    try { result = typeof suite === "undefined" ? write() : await suite.writeCorner(write); }
+    catch { result = { ok: false, error: "Miniplayer position could not be saved. Please try again." }; }
+    finally { cornerWritePending = false; button?.removeAttribute("aria-busy"); }
+    if (generation !== cornerWriteGeneration || !control?.isConnected) return;
+    if (!result.ok) {
+      if (button) { button.title = result.error; button.setAttribute("aria-description", result.error); }
+      return;
+    }
+    button?.removeAttribute("aria-description");
     currentCorner = corner;
-    persistCorner(currentCorner);
     updateCornerButton();
     renderCornerOptions(control);
     control?.querySelector(`#${CORNER_BUTTON_ID}`)?.focus({ preventScroll: true });
@@ -1657,6 +1690,7 @@
   function setActive(active) {
     const body = document.body;
     if (!body) return;
+    if (!active) stopFloatedWatchObservation();
 
     const wasActive = body.classList.contains(ACTIVE_CLASS);
     const wasExiting = body.classList.contains(EXITING_CLASS);
@@ -1677,6 +1711,7 @@
       setBodyBoxVars();
       body.classList.remove(EXITING_CLASS);
       body.classList.add(ACTIVE_CLASS);
+      syncFloatedWatchObservation();
       scheduleCompactQueueInfoSync();
 
       if (!wasActive) {
@@ -1725,6 +1760,7 @@
   function deactivateImmediately() {
     const body = document.body;
     if (!body) return;
+    stopFloatedWatchObservation();
 
     const wasFloating = isBodyFloating();
     clearTimeout(fadeOutTimer);
@@ -1803,6 +1839,7 @@
     syncQueuePanelObservation();
     ensureStyles();
     if (isBodyActive()) {
+      syncFloatedWatchObservation();
       scheduleCompactQueueInfoSync();
     }
     scheduleScrollSync();
@@ -1899,6 +1936,35 @@
     queuePanelObservers.clear();
   }
 
+  // The floated player no longer inherits its watch root's visibility. Observe
+  // only that root and its current ancestors so a native hide restores ownership.
+  // Use a separate native observer: merging these registrations with global
+  // child discovery would subscribe to unrelated subtree attribute churn.
+  const floatedWatchObserver = new window.MutationObserver(scheduleScrollSync);
+  let floatedWatchTargets = [];
+  function stopFloatedWatchObservation() {
+    floatedWatchObserver.disconnect();
+    floatedWatchTargets = [];
+  }
+
+  function syncFloatedWatchObservation() {
+    const targets = [];
+    if (floatedPlayer && isBodyFloating()) {
+      const owner = playerPlaceholder?.parentElement || restoreParent;
+      for (let element = owner; element; element = element.parentElement) targets.push(element);
+    }
+    if (targets.length === floatedWatchTargets.length &&
+        targets.every((target, index) => target === floatedWatchTargets[index])) return;
+    stopFloatedWatchObservation();
+    floatedWatchTargets = targets;
+    for (const target of targets) floatedWatchObserver.observe(target, {
+      attributes: true, attributeFilter: ["hidden", "inert", "aria-hidden", "class", "style"],
+    });
+    // Reparenting beneath an already-hidden ancestor has no later attribute
+    // mutation to deliver. Reconcile once when the ownership chain changes.
+    if (targets.length) scheduleScrollSync();
+  }
+
   function replaceObserverRegistrations(targetObserver, registrations) {
     if (typeof targetObserver.replaceRegistrations === "function") {
       targetObserver.replaceRegistrations(registrations);
@@ -1980,6 +2046,7 @@
     if (reconcileTrackedPlayer()) {
       scheduleRouteSync();
     }
+    if (floatedPlayer) syncFloatedWatchObservation();
     if (navigationInProgress || !isEligiblePath()) return;
 
     const queuePanelTopologyChanged = mutations.some(
@@ -2097,6 +2164,7 @@
   }, true);
 
   window.addEventListener("yt-navigate-start", () => {
+    cornerWriteGeneration++;
     beginNavigationLock();
     deactivateImmediately();
   }, true);
@@ -2112,9 +2180,16 @@
     scheduleRouteSync();
   }, true);
   window.addEventListener("pagehide", cancelScheduledAnimationFrames, true);
+  window.addEventListener("pagehide", stopFloatedWatchObservation, true);
+  window.addEventListener("pagehide", () => { pageWasHidden = true; cornerWriteGeneration++; }, true);
   window.addEventListener("pageshow", () => {
     // A BFCache restore may not emit a matching YouTube navigation finish.
-    finishNavigationLock();
+    // Initial pageshow can arrive during a newer SPA handoff, which it must
+    // not unlock or adopt back into the scroll player.
+    if (pageWasHidden) {
+      pageWasHidden = false;
+      finishNavigationLock();
+    } else if (!navigationInProgress) scheduleRouteSync();
   }, true);
 
   syncRouteState();

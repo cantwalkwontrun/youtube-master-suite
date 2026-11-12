@@ -101,6 +101,73 @@ async function settlePlayerFrames(page) {
   });
 }
 
+for (const suite of [false, true]) for (const restoration of [false, true]) {
+  test(`${restoration ? "actual BFCache restoration releases" : "late initial pageshow preserves"} the pending scroll-miniplayer navigation lock (${suite ? "complete Suite" : "source"})`, async t => {
+    const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });
+    await page.evaluate(restoration => {
+      window.dispatchEvent(new Event("yt-navigate-start"));
+      if (restoration) window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: restoration }));
+    }, restoration);
+    await settlePlayerFrames(page);
+    assert.equal(await page.evaluate(() => document.body.classList.contains("ytsmp-scroll-miniplayer-active")), restoration);
+    if (!restoration) {
+      assert.equal(await page.locator("ytd-watch-flexy #movie_player").count(), 1);
+      await page.evaluate(() => window.dispatchEvent(new Event("yt-navigate-finish")));
+      await page.waitForFunction(() => document.body.classList.contains("ytsmp-scroll-miniplayer-active"));
+    }
+    assert.equal(await page.locator("body > #movie_player").count(), 1);
+  });
+}
+
+for (const suite of [false, true]) test(`a scale-hidden retained watch cannot donate or lose its player during a current-watch handoff (${suite ? 'complete Suite' : 'source'})`, async t => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
+  await context.route("**/*", route => route.request().url() === WATCH_URL
+    ? route.fulfill({ contentType: "text/html", body: FIXTURE }) : route.abort());
+  const page = await context.newPage(), errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
+  await page.goto(WATCH_URL);
+  await page.evaluate(() => {
+    const old = document.querySelector("ytd-watch-flexy");
+    const host = old.querySelector("#player"), anchor = document.createElement("div");
+    anchor.id = "single-column-container"; host.before(anchor); anchor.append(host);
+    old.style.cssText = "position:absolute;top:0;left:0;width:1280px;transform:scale(0);transform-origin:0 0";
+    const current = document.createElement("ytd-watch-flexy");
+    current.style.cssText = "position:absolute;top:100px;left:0;width:1280px";
+    current.innerHTML = '<div id="single-column-container"><div id="player" style="width:640px;height:360px"><div id="movie_player" class="html5-video-player"><video class="html5-main-video"></video><div class="ytp-right-controls"><button class="ytp-settings-button ytp-button">Settings</button></div></div></div></div>';
+    const player = current.querySelector("#movie_player");
+    player.getVideoData = () => ({ video_id: fixture.playerId });
+    old.after(current);
+    window.handoffFixture = { oldPlayer: host.querySelector("#movie_player"), oldHost: host,
+      current, player, currentHost: current.querySelector("#player"), oldAdoptions: 0 };
+    new MutationObserver(records => {
+      handoffFixture.oldAdoptions += records.filter(record => [...record.addedNodes].includes(handoffFixture.oldPlayer)).length;
+    }).observe(document.body, { childList: true });
+  });
+  await page.addScriptTag({ content: suite ? SUITE : MINIPLAYER });
+  if (suite) await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000, requireReady: true });
+  await settlePlayerFrames(page);
+  assert.deepEqual(await page.evaluate(() => ({
+    oldAdoptions: handoffFixture.oldAdoptions,
+    oldOwner: handoffFixture.oldPlayer.parentElement === handoffFixture.oldHost,
+    oldConnected: handoffFixture.oldPlayer.isConnected,
+    currentOwner: handoffFixture.player.parentElement === handoffFixture.currentHost,
+  })), { oldAdoptions: 0, oldOwner: true, oldConnected: true, currentOwner: true });
+  await page.evaluate(() => {
+    handoffFixture.current.style.top = "-600px";
+    window.dispatchEvent(new Event("resize"));
+  });
+  await page.waitForFunction(() => handoffFixture.player.parentElement === document.body);
+  assert.equal(await page.evaluate(() => handoffFixture.oldPlayer.parentElement === handoffFixture.oldHost), true);
+  await page.evaluate(() => {
+    handoffFixture.current.style.top = "100px";
+    window.dispatchEvent(new Event("resize"));
+  });
+  await page.waitForFunction(() => handoffFixture.player.parentElement === handoffFixture.currentHost);
+  assert.equal(await page.evaluate(() => handoffFixture.oldAdoptions), 0);
+});
+
 for (const suite of [false, true]) {
   for (const hiddenStyle of ["opacity:0", "display:none", "width:0;height:0"]) {
     test(`hidden native miniplayer ownership prevents floating takeover (${hiddenStyle}, ${suite ? "complete Suite" : "source"})`, async t => {

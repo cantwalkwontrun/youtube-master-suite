@@ -5,9 +5,9 @@ import { readFileSync } from 'node:fs';
 import { classifyCatalogueFilm } from '../../sources/catalogue-film.mjs';
 import { installDiscoveryControls } from '../../sources/discovery-controls.mjs';
 import { launchFixtureBrowser } from './fixture-browser.mjs';
-let browser;
-before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
-after(async () => { await browser?.close(); }, { timeout: 10000 });
+let browser, browserLaunch;
+before(async () => { browser = await (browserLaunch = launchFixtureBrowser()); }, { timeout: 30000 });
+after(async () => { await (await browserLaunch)?.close(); }, { timeout: 10000 });
 const html = `<!doctype html><html lang="en-GB"><head><style>
 ytd-app,ytd-masthead,ytd-browse,ytd-search,ytd-rich-grid-renderer,ytd-rich-item-renderer,ytd-rich-grid-media,ytd-playlist-panel-renderer,ytd-guide-renderer,ytd-guide-section-renderer,ytd-channel-video-player-renderer {display:block}
 ytd-rich-item-renderer{min-height:40px} #movie_player{width:640px;height:360px}
@@ -52,7 +52,7 @@ async function settle(page) {
     requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }));
 }
-async function hidden(page,id,expected=true){await page.waitForFunction(({id,expected})=>(document.getElementById(id)?.getAttribute('data-ytms-discovery-hidden')==='1')===expected,{id,expected});await settle(page);assert.equal(await page.locator('#'+id).isVisible(),!expected);}
+async function hidden(page,id,expected=true){await page.waitForFunction(({id,expected})=>['data-ytms-discovery-hidden','data-ytms-discovery-ui-hidden'].some(name=>document.getElementById(id)?.getAttribute(name)==='1')===expected,{id,expected});await settle(page);assert.equal(await page.locator('#'+id).isVisible(),!expected);}
 
 for (const enabled of [false,true]) test(`comment GIF preference ${enabled} handles native attachments while preserving comment content`,async t=>{
   const page=await open(t,{hideCommentGifs:enabled},'/watch?v=aaaaaaaaaaa');
@@ -162,6 +162,63 @@ test('recycled metadata clears filters and the shared reveal control remains rev
   await hidden(page,'history',false);assert.equal(await page.locator('#row').getAttribute('data-ytms-discovery-reason'),null);
 });
 
+test('temporary card reveal preserves sidebar and AI-panel hiding and disposal restores all owned surfaces',async t=>{
+  const page=await open(t,{hideFeedLowViews:true,lowViewThreshold:'1000',hideSidebarSubscriptions:true,hideAIChapters:true});
+  await page.evaluate(()=>{
+    addCard('filtered-card');
+    const sidebar=document.createElement('ytd-guide-section-renderer');sidebar.id='hidden-sidebar';sidebar.innerHTML='<h3 id="guide-section-title">Subscriptions</h3><span>Channel list</span>';
+    document.querySelector('ytd-guide-renderer').append(sidebar);
+    const ai=document.createElement('ytd-engagement-panel-section-list-renderer');ai.id='hidden-ai';ai.style.display='block';ai.setAttribute('target-id','engagement-panel-macro-markers-description-chapters');ai.innerHTML='<div id="header">AI-generated chapters</div>';
+    document.body.append(ai);
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+  });
+  for(const id of ['filtered-card','hidden-sidebar','hidden-ai'])await hidden(page,id);
+  await page.evaluate(()=>document.documentElement.setAttribute('data-yt-master-show-filtered','1'));
+  assert.equal(await page.locator('#filtered-card').isVisible(),true);
+  assert.equal(await page.locator('#hidden-sidebar').isVisible(),false);
+  assert.equal(await page.locator('#hidden-ai').isVisible(),false);
+  await page.evaluate(()=>document.documentElement.removeAttribute('data-yt-master-show-filtered'));
+  assert.equal(await page.locator('#filtered-card').isVisible(),false);
+  await page.evaluate(()=>disposeDiscovery());
+  for(const id of ['filtered-card','hidden-sidebar','hidden-ai']){
+    assert.equal(await page.locator('#'+id).isVisible(),true,id);
+    assert.equal(await page.locator('#'+id).getAttribute('data-ytms-discovery-hidden'),null,id);
+    assert.equal(await page.locator('#'+id).getAttribute('data-ytms-discovery-ui-hidden'),null,id);
+  }
+});
+
+test('hidden AI search surfaces do not create a card-reveal count or override its card-only action',async t=>{
+  const page=await open(t,{hideSearchAI:true,hideFeedLowViews:true,lowViewThreshold:'1000'},'/results?search_query=fixture');
+  await page.evaluate(()=>{
+    const search=document.createElement('ytd-search');search.innerHTML='<ytd-two-column-search-results-renderer><div id="search-contents"><yt-ai-search-result-section-renderer id="search-ai" style="display:block">AI summary</yt-ai-search-result-section-renderer></div></ytd-two-column-search-results-renderer>';
+    search.querySelector('#search-contents').id='contents';document.body.append(search);window.auditSearchContents=search.querySelector('#contents');
+  });
+  await hidden(page,'search-ai');
+  const feed=readFileSync(new URL('../../sources/modules/youtube-feed-ui-cleaner.user.js',import.meta.url),'utf8');
+  await page.evaluate(()=>{window.GM_addStyle=css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);};});
+  await page.addScriptTag({content:feed});await settle(page);
+  assert.equal(await page.locator('#yt-master-filter-toggle').count(),0,'An AI surface is not a hidden video card');
+  await page.evaluate(()=>auditSearchContents.append(addCard('search-low-view-card')));
+  await hidden(page,'search-low-view-card');
+  await page.locator('#yt-master-filter-toggle').waitFor();
+  assert.match(await page.locator('#yt-master-filter-toggle').textContent(),/Filtered: 1/);
+  assert.doesNotMatch(await page.locator('#yt-master-filter-toggle').getAttribute('title'),/AI search/);
+  await page.locator('#yt-master-filter-toggle').click();
+  assert.equal(await page.locator('#search-low-view-card').isVisible(),true);
+  assert.equal(await page.locator('#search-ai').isVisible(),false);
+});
+
+for(const threshold of ['100','1000','10000'])for(const enabled of [false,true])test(`low-view filter ${enabled} respects the ${threshold}-view boundary`,async t=>{
+  const page=await open(t,{hideFeedLowViews:enabled,lowViewThreshold:threshold});
+  await page.evaluate(threshold=>{
+    addCard('below',{metadata:(Number(threshold)-1)+' views'});
+    addCard('boundary',{metadata:threshold+' views'});
+    addCard('unknown',{metadata:'A newly published video'});
+  },threshold);
+  await hidden(page,'below',enabled);
+  await hidden(page,'boundary',false);await hidden(page,'unknown',false);
+});
+
 for(const [language,count] of [['fr','1,2K vues'],['de','1.234 Aufrufe']])test(`view metadata uses ${language} separators conservatively`,async t=>{
   const page=await open(t,{hideFeedLowViews:true,lowViewThreshold:'10000'});
   await page.evaluate(({language,count})=>{document.documentElement.lang=language;addCard('local',{metadata:count});}, {language,count});await hidden(page,'local');
@@ -253,9 +310,57 @@ test('a paused channel trailer can be stopped once when autoplay starts, while m
     window.dispatchEvent(new Event('yt-page-data-updated'));
   });await settle(page);assert.equal(await page.evaluate(()=>trailerPauses),0);
   await page.evaluate(()=>{started=true;trailer.dispatchEvent(new Event('play'));});assert.equal(await page.evaluate(()=>trailerPauses),1);
-  await page.evaluate(()=>{trailer.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));started=true;trailer.dispatchEvent(new Event('play'));});
+  await page.locator('ytd-channel-video-player-renderer video').click();
+  await page.evaluate(()=>{started=true;trailer.dispatchEvent(new Event('play'));});
   assert.equal(await page.evaluate(()=>trailerPauses),1);
   assert.equal(await page.locator('#movie_player video').evaluate(video=>video.paused),true);
+});
+
+test('recycled channel trailers reset pause state and manual consent for a new route or media source',async t=>{
+  const page=await open(t,{pauseChannelTrailers:true},'/@fixture');
+  await page.evaluate(()=>{
+    const host=document.createElement('ytd-channel-video-player-renderer');
+    window.trailer=document.createElement('video');host.append(trailer);document.body.append(host);
+    window.trailerPauses=0;window.started=false;Object.defineProperties(trailer,{paused:{get:()=>!started},ended:{get:()=>false}});
+    trailer.pause=()=>{trailerPauses++;started=false;};
+    trailer.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+    started=true;trailer.dispatchEvent(new Event('play'));
+  });
+  assert.equal(await page.evaluate(()=>trailerPauses),1,'synthetic pointer input cannot grant manual consent');
+  await page.locator('ytd-channel-video-player-renderer video').click();
+  await page.evaluate(()=>{started=true;trailer.dispatchEvent(new Event('play'));});
+  assert.equal(await page.evaluate(()=>trailerPauses),1);
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('pageshow'));
+    started=true;trailer.dispatchEvent(new Event('play'));
+  });await settle(page);
+  assert.equal(await page.evaluate(()=>trailerPauses),1,'cached-page restore preserves manual intent for the same trailer');
+  await page.evaluate(()=>{
+    window.dispatchEvent(new Event('yt-navigate-start'));history.pushState({},'','/@another-fixture');
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+    started=true;trailer.dispatchEvent(new Event('play'));
+  });
+  assert.equal(await page.evaluate(()=>trailerPauses),2,'another channel using the same video node must be paused');
+  await page.locator('ytd-channel-video-player-renderer video').click();
+  await page.evaluate(()=>{
+    trailer.src='data:video/mp4;base64,AAAA';
+    trailer.dispatchEvent(new Event('emptied'));trailer.dispatchEvent(new Event('loadedmetadata'));
+    started=true;trailer.dispatchEvent(new Event('play'));
+  });
+  assert.equal(await page.evaluate(()=>trailerPauses),3,'a replacement source must not inherit manual consent');
+});
+
+for(const prefs of [{interfaceTheme:'dark'},{hideCommentGifs:true}]) test(`presentation-only discovery preferences skip feed-card traversal (${Object.keys(prefs)[0]})`,async t=>{
+  const page=await open(t,prefs);await page.evaluate(()=>addCard('presentation-card'));await settle(page);
+  await page.evaluate(()=>{
+    window.cardScans=0;window.cardFilterChecks=0;
+    const query=document.querySelectorAll;document.querySelectorAll=function(selector){if(selector.includes('ytd-rich-item-renderer'))cardScans++;return query.call(this,selector);};
+    const closest=Element.prototype.closest;Element.prototype.closest=function(selector){if(this.matches('ytd-rich-item-renderer')&&selector.includes('ytd-miniplayer'))cardFilterChecks++;return closest.call(this,selector);};
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+  });await settle(page);
+  await page.evaluate(()=>{document.querySelector('#presentation-card #metadata-line span').textContent='3K views';});await settle(page);
+  assert.deepEqual(await page.evaluate(()=>({scans:cardScans,checks:cardFilterChecks})),{scans:0,checks:0});
+  if(prefs.interfaceTheme) assert.equal(await page.locator('html').getAttribute('data-ytms-discovery-theme'),'dark');
 });
 
 test('native channel-tab default requests only the same channel Videos tab once',async t=>{
@@ -352,6 +457,9 @@ for(const enabled of [true,false])test(`existing feed cleanup groups can all be 
     window.GM_addStyle=css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);};
     document.querySelector('ytd-masthead').insertAdjacentHTML('beforeend','<button id="voice-search-button">Voice</button><button id="notification-button">Notifications</button><button id="create-button">Create</button>');
     document.querySelector('ytd-browse').insertAdjacentHTML('beforeend','<ytd-feed-filter-chip-bar-renderer style="display:block"><div id="chips-content" class="ytd-feed-filter-chip-bar-renderer">Chips</div></ytd-feed-filter-chip-bar-renderer>');
+    document.querySelector('ytd-guide-renderer #sections').insertAdjacentHTML('beforeend','<ytd-guide-section-renderer id="sidebar-extra" class="ytd-guide-renderer style-scope" style="display:block">Other sidebar section</ytd-guide-section-renderer>');
+    document.querySelector('ytd-guide-renderer').insertAdjacentHTML('beforeend','<div id="footer">Guide footer</div>');
+    document.querySelector('ytd-browse ytd-rich-grid-renderer').insertAdjacentHTML('beforeend','<ytd-rich-section-renderer id="feed-shelf" style="display:block">Shelf</ytd-rich-section-renderer><ytd-rich-item-renderer id="feed-nudge" style="display:block"><ytd-feed-nudge-renderer>Nudge</ytd-feed-nudge-renderer></ytd-rich-item-renderer>');
     document.body.insertAdjacentHTML('beforeend','<ytd-two-column-browse-results-renderer><div id="secondary"><ytd-browse-feed-actions-renderer><div id="contents"><button id="feedback">Send feedback</button><button id="clear-history">Clear all watch history</button></div></ytd-browse-feed-actions-renderer></div></ytd-two-column-browse-results-renderer>');
   });
   const source=readFileSync(new URL('../../sources/modules/youtube-feed-ui-cleaner.user.js',import.meta.url),'utf8');
@@ -359,7 +467,7 @@ for(const enabled of [true,false])test(`existing feed cleanup groups can all be 
   const config=Object.fromEntries(keys.map(key=>[key,enabled]));
   await page.addScriptTag({content:source.replace('  // Standalone module installs',`  Object.assign(CONFIG,${JSON.stringify(config)});\n  // Standalone module installs`)});
   await settle(page);
-  for(const selector of ['#voice-search-button','#notification-button','#create-button','#chips-content','#feedback'])assert.equal(await page.locator(selector).isVisible(),!enabled,selector);
+  for(const selector of ['#voice-search-button','#notification-button','#create-button','#chips-content','#feedback','#sidebar-extra','#footer','#feed-shelf','#feed-nudge'])assert.equal(await page.locator(selector).isVisible(),!enabled,selector);
   assert.equal(await page.locator('#clear-history').isVisible(),true);
 });
 
@@ -400,7 +508,7 @@ test('removing a standalone AI search result releases its owned marker without a
   await hidden(page, 'removed-ai');
   await page.evaluate(() => { window.detachedAi = document.getElementById('removed-ai'); detachedAi.remove(); });
   await settle(page);
-  assert.equal(await page.evaluate(() => detachedAi.getAttribute('data-ytms-discovery-hidden')), null);
+  assert.equal(await page.evaluate(() => detachedAi.getAttribute('data-ytms-discovery-ui-hidden')), null);
 });
 
 test('a pure native card removal releases detached ownership without an event or full feed scan',async t=>{

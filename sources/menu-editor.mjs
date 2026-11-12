@@ -35,9 +35,13 @@ export function createMenuEditor(document, layouts, options) {
   list.setAttribute('aria-describedby', note.id);
   const preview = el('details', undefined, 'menu-editor-preview');
   preview.append(el('summary', 'Menu preview'));
+  const appliedPreview = button('Preview active layout');
+  const previewNote = el('p', '', 'section-note');
+  if (options.getAppliedPreferences) preview.append(appliedPreview);
+  preview.append(previewNote);
   const previewList = el('ul'); previewList.setAttribute('aria-label', 'Menu preview'); preview.append(previewList);
   section.append(heading, note, toolbar, groupFields, status, list, preview);
-  let current = 'root', invalid = false;
+  let current = 'root', invalid = false, showApplied = false;
   const effective = () => layouts.fromPreferences(options.getPreferences());
   const isGroup = node => !layouts.actionIds.includes(node.id);
   function label(node) { return isGroup(node) ? node.name : layouts.labels[node.id]; }
@@ -63,7 +67,11 @@ export function createMenuEditor(document, layouts, options) {
       return Boolean(layouts.validate(next));
     });
   }
-  function drawPreview(layout) {
+  function drawPreview(draftLayout) {
+    if (!preview.open) return;
+    const layout = showApplied ? layouts.fromPreferences(options.getAppliedPreferences()) : draftLayout || effective();
+    appliedPreview.textContent = showApplied ? 'Preview draft layout' : 'Preview active layout';
+    previewNote.textContent = `${showApplied ? 'Layout loaded on this page.' : 'Layout with your current edits.'} Available actions depend on the video and YouTube’s menu.`;
     previewList.replaceChildren();
     function children(parent, target) {
       for (const node of layout.nodes.filter(item => item.parent === parent)) {
@@ -78,7 +86,10 @@ export function createMenuEditor(document, layouts, options) {
       }
     }
     children('root', previewList);
+    if (!previewList.children.length) previewList.append(el('li', 'All customisable actions are hidden.'));
   }
+  preview.addEventListener('toggle', () => drawPreview());
+  appliedPreview.addEventListener('click', () => { showApplied = !showApplied; drawPreview(); });
   function render(focusId, direction) {
     const layout = effective();
     if (current !== 'root' && !layout.nodes.some(node => node.id === current && isGroup(node))) current = 'root';
@@ -108,10 +119,12 @@ export function createMenuEditor(document, layouts, options) {
       } else {
         const visible = el('input'); visible.type = 'checkbox'; visible.checked = node.visible;
         visible.setAttribute('aria-label', `Show ${label(node)}`);
-        const legacyIds = { download:'menuShowDownload', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
+        const legacyIds = { download:'menuShowDownload', hype:'menuShowHype', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
         visible.id = 'ytms-' + (legacyIds[node.id] || 'menu-action-' + node.id);
         visible.addEventListener('change', () => {
-          const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked; commit(next);
+          if (invalid) { visible.checked = node.visible; name.focus(); return; }
+          const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked;
+          commit(next, node.id, 'visibility');
         });
         const visibleLabel = el('label'); visibleLabel.append(visible, el('span', label(node))); title.replaceChildren(visibleLabel);
       }
@@ -120,7 +133,9 @@ export function createMenuEditor(document, layouts, options) {
       for (const target of targets(layout, node)) { const option = el('option', path(target, layout)); option.value = target; parent.append(option); }
       parent.value = node.parent;
       parent.addEventListener('change', () => {
+        if (invalid) { parent.value = node.parent; name.focus(); return; }
         const next = effective(); next.nodes.find(entry => entry.id === node.id).parent = parent.value; commit(next);
+        location.focus();
       });
       item.append(parent);
       for (const [word, symbol, offset] of [['up','↑',-1],['down','↓',1]]) {
@@ -135,7 +150,7 @@ export function createMenuEditor(document, layouts, options) {
       }
       list.append(item);
       if (focusId === node.id) {
-        const preferred = item.querySelector(`[data-direction="${direction}"]`);
+        const preferred = item.querySelector(direction === 'visibility' ? 'input[type="checkbox"]' : `[data-direction="${direction}"]`);
         (preferred?.disabled ? item.querySelector('button:not(:disabled)') : preferred)?.focus();
       }
     }

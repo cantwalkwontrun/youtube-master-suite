@@ -5,9 +5,9 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   const p = preferences, root = document.documentElement;
   const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
   if (!root || (!['free','paid','none'].includes(p.filmVisibility) && !keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
-  const attr = 'data-ytms-discovery-hidden', reasonAttr = 'data-ytms-discovery-reason';
+  const attr = 'data-ytms-discovery-hidden', uiAttr = 'data-ytms-discovery-ui-hidden', reasonAttr = 'data-ytms-discovery-reason';
   const owned = new Set(), filteredCards = new Set(), pendingCards = new Set(), badgeNodes = new Set(), viewNodes = new Set(), headings = new Set(), restoredNavigation = new Set(), cardHeadings = new WeakMap(), cardDecorations = new WeakMap(), decorationOwners = new WeakMap(), rootOwned = new Map(), logoRecords = new Map(), attemptedRoutes = new Set();
-  const manuallyPlayed = new WeakSet(), pausedTrailers = new WeakSet();
+  const trailerStates = new WeakMap();
   let filmResults = new WeakMap();
   const outerCardSelector = 'ytd-rich-item-renderer,ytd-video-renderer,ytd-grid-video-renderer,ytd-playlist-renderer,ytd-movie-renderer';
   const cardSelector = outerCardSelector+',yt-lockup-view-model';
@@ -33,20 +33,27 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   const hide = (el, reason, found) => {
     if (!el || el.closest(excluded)) return;
     found.add(el); owned.add(el);
-    if (el.getAttribute(attr) !== '1') el.setAttribute(attr,'1');
+    if (el.getAttribute(uiAttr) !== '1') el.setAttribute(uiAttr,'1');
     if (el.getAttribute(reasonAttr) !== reason) el.setAttribute(reasonAttr,reason);
   };
   const style = document.createElement('style'); style.id = 'ytms-discovery-controls-style';
   const rules = [];
   const add = (enabled, selector, css = 'display:none!important') => { if (enabled) rules.push(`${selector}{${css}}`); };
   add(true, `:root:not([data-yt-master-show-filtered="1"]) [${attr}="1"]`);
+  // Temporary card reveal must not override independent sidebar/AI settings.
+  add(true, `[${uiAttr}="1"]`);
   add(p.hideAllComments, 'ytd-watch-flexy ytd-comments,ytd-watch-grid ytd-comments');
   // Native comment GIFs can be proxied or served as WebP, without a GIF URL.
   // Hide the attachment host so its reserved space disappears as well. CSS
   // covers lazy-loaded replies without observing or scanning every comment.
   add(p.hideCommentGifs, ':is(ytd-comment-view-model,yt-comment-view-model,ytd-comment-renderer) :is(.ytwCommentImageAttachmentViewModelHost,.ytwCommentImageAttachmentViewModelImageContainer,yt-comment-image-view-model)');
   add(p.hideCommentGifs, 'ytd-comments img:is([src*="tenor.com" i],[src*="giphy.com" i],[src$=".gif" i],[src*=".gif?" i],[src*=".gif#" i]):not(:is(#author-thumbnail,yt-avatar-shape,.yt-spec-avatar-shape,#creator-heart,ytd-creator-heart-renderer) *):not(.emoji,.yt-core-attributed-string__image-element)');
-  add(p.hideHomePosts, '[data-ytms-discovery-route="home"] ytd-browse ytd-post-renderer,[data-ytms-discovery-route="home"] ytd-browse ytd-backstage-post-thread-renderer');
+  const outsideExcluded = `:not(${excluded.split(',').map(selector => selector+' *').join(',')})`;
+  const homePost = '[data-ytms-discovery-route="home"] ytd-browse ';
+  add(p.hideHomePosts, ['ytd-post-renderer','ytd-backstage-post-thread-renderer'].map(selector => homePost+selector+outsideExcluded).join(','));
+  // Removing only the inner post leaves its native rich-item grid slot empty.
+  // Keep mixed/ambiguous cards and excluded queues intact; no feed scan is needed.
+  add(p.hideHomePosts, homePost+'ytd-rich-grid-renderer ytd-rich-item-renderer:has(ytd-post-renderer,ytd-backstage-post-thread-renderer):not(:has(ytd-rich-grid-media,ytd-video-renderer,ytd-grid-video-renderer,yt-lockup-view-model))'+outsideExcluded);
   add(p.hideSubscriptionsHeaders, '[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-rich-grid-renderer #header,[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-feed-filter-chip-bar-renderer');
   add(p.hideChannelBanner, '[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #channel-header-container #banner,[data-ytms-discovery-route="channel"] yt-page-header-renderer yt-image-banner-view-model,[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #banner');
   add(p.fullWidthChannel, '[data-ytms-discovery-route="channel"] ytd-two-column-browse-results-renderer,[data-ytms-discovery-route="channel"] ytd-browse #primary', 'max-width:none!important;width:100%!important');
@@ -226,9 +233,18 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
     }
     for (const node of restoredNavigation) if (!found.has(node)) { if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.delete(node); }
   }
+  function trailerState(video) {
+    const source = video.currentSrc || video.src || '', path = route();
+    let state = trailerStates.get(video);
+    if (!state || state.source !== source || state.path !== path) {
+      state = { source, path, manual: false, paused: false }; trailerStates.set(video,state);
+    }
+    return state;
+  }
   function pauseTrailer(video) {
-    if (!p.pauseChannelTrailers || !isChannel() || !video?.matches?.('video') || !video.closest('ytd-channel-video-player-renderer') || manuallyPlayed.has(video) || pausedTrailers.has(video)) return;
-    if (!video.paused && !video.ended) { pausedTrailers.add(video); video.pause(); }
+    if (disposed || suspended || !p.pauseChannelTrailers || !isChannel() || !video?.matches?.('video') || !video.closest('ytd-channel-video-player-renderer')) return;
+    const state = trailerState(video);
+    if (!state.manual && !state.paused && !video.paused && !video.ended) { state.paused = true; video.pause(); }
   }
   function reconcile() {
     frame = 0; if (disposed || suspended) return;
@@ -239,7 +255,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
       setRoot('data-ytms-discovery-list', (kind === 'home' && p.homeList || kind === 'subscriptions' && p.subscriptionsList) ? '1' : null);
       const darkReader = document.querySelector('style.darkreader,link.darkreader') || root.hasAttribute('data-darkreader-mode');
       setRoot('data-ytms-discovery-theme', !darkReader && ['dark','light'].includes(p.interfaceTheme) ? p.interfaceTheme : null);
-      const candidates = !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
+      const candidates = !filters ? [] : !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
       const cards = new Set([...candidates].map(canonicalCard).filter(Boolean));
       for (const card of cards) {
         clearNestedCardOwnership(card);
@@ -256,10 +272,10 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
       if (p.hideSearchAI && kind === 'search') for (const el of document.querySelectorAll('ytd-search yt-ai-search-input-view-model,ytd-search yt-ai-search-result-section-renderer,ytd-search yt-ai-search-ghost-card-view-model')) hide(el,'AI search',found);
       if (p.hideSearchAI && kind === 'search') for (const shelf of document.querySelectorAll('ytd-search ytd-shelf-renderer')) if (/^(?:AI-powered overview|AI overview|AI-generated summary)$/i.test(text(shelf.querySelector('#title')))) hide(shelf,'AI search',found);
       if (p.hideAIChapters) for (const panel of document.querySelectorAll('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-description-chapters"]')) {
-        if ([...panel.querySelectorAll('#header,.ytd-macro-markers-list-renderer')].some(el => /^(?:AI-generated chapters|Chapters generated with AI)$/i.test(text(el)))) { found.add(panel); owned.add(panel); if (panel.getAttribute(attr) !== '1') panel.setAttribute(attr,'1'); }
+        if ([...panel.querySelectorAll('#header,.ytd-macro-markers-list-renderer')].some(el => /^(?:AI-generated chapters|Chapters generated with AI)$/i.test(text(el)))) { found.add(panel); owned.add(panel); if (panel.getAttribute(uiAttr) !== '1') panel.setAttribute(uiAttr,'1'); }
       }
       if (p.hideSidebarSubscriptions) for (const section of document.querySelectorAll('ytd-guide-section-renderer')) if (/^Subscriptions$/i.test(text(section.querySelector('#guide-section-title')))) hide(section,'Subscribed channels',found);
-      for (const el of owned) if (!found.has(el)) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); owned.delete(el); }
+      for (const el of owned) if (!found.has(el)) { el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); owned.delete(el); }
       syncLogos(); syncSubscriptionsLink();
       if (p.homeRedirect && kind === 'home' && document.querySelector('ytd-masthead #avatar-btn') && !hasActivePlayback()) nativeNavigate('subscriptions');
       if (p.channelDefaultVideos && channelBase() && !hasActivePlayback()) nativeNavigate('videos');
@@ -292,7 +308,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
       if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
       if (['dark','light'].includes(p.interfaceTheme) && m.attributeName === 'class' && el.matches('style,link')) changed = true;
       if (p.hideSearchAI && routeKind() === 'search' && el.closest(searchAiSurfaces)) changed = true;
-      const card = canonicalCard(el);
+      const card = filters ? canonicalCard(el) : null;
       if (card) {
         if ((!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) && !filteredCards.has(card) && !cardDecorations.has(card) && !cardHeadings.has(card)) continue;
         const filmChanged = ['free','paid','none'].includes(p.filmVisibility) && affectsFilm(m,el);
@@ -302,14 +318,14 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
       }
       if (el.closest('ytd-masthead,ytd-guide-renderer,yt-tab-group-shape,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer')) changed = true;
       for (const node of m.addedNodes) if (node.nodeType === 1) {
-        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
-        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        if (filters && node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        if (filters) for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
         if (p.hideSearchAI && routeKind() === 'search' && (node.matches(searchAiSurfaces) || node.querySelector(searchAiSurfaces))) changed = true;
       }
       // Native virtualisation can remove cards without adding a replacement.
       // Release detached owned markers in the next batch, without a feed scan.
-      for (const node of m.removedNodes) if (node.nodeType === 1 &&
+      for (const node of m.removedNodes) if (filters && node.nodeType === 1 &&
         (node.matches(cardSelector) || node.querySelector(cardSelector))) changed = true;
       if (!changed && m.removedNodes.length && [...owned].some(node => !node.isConnected)) changed = true;
       if (['dark','light'].includes(p.interfaceTheme) && [...m.removedNodes].some(node => node.nodeType === 1 &&
@@ -324,7 +340,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   }
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
   function clearAllDecorations() { for (const node of badgeNodes) { node.removeAttribute('data-ytms-discovery-badge-hidden'); decorationOwners.delete(node); } for (const node of viewNodes) { node.removeAttribute('data-ytms-discovery-view-line'); decorationOwners.delete(node); } for (const node of headings) node.remove(); badgeNodes.clear(); viewNodes.clear(); headings.clear(); }
-  const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
+  const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
   const navigateStart = () => { navigationPending = true; start(); };
   const navigateFinish = () => { navigationPending = false; if (!pageSuspended) { suspended = false; schedule(); } };
   const pageHide = () => { pageSuspended = true; start(); };
@@ -340,15 +356,16 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
     event.preventDefault(); event.stopImmediatePropagation(); native.click();
   });
   if (p.pauseChannelTrailers) {
-    const interaction = event => { if (event.type === 'keydown' && ![' ','Enter','k','K'].includes(event.key)) return; event.target?.closest?.('ytd-channel-video-player-renderer')?.querySelectorAll('video').forEach(video => manuallyPlayed.add(video)); };
+    const interaction = event => { if (disposed || suspended || !event.isTrusted || event.type === 'keydown' && ![' ','Enter','k','K'].includes(event.key)) return; event.target?.closest?.('ytd-channel-video-player-renderer')?.querySelectorAll('video').forEach(video => { trailerState(video).manual = true; }); };
     listen(document,'pointerdown',interaction); listen(document,'keydown',interaction); listen(document,'play',event => pauseTrailer(event.target));
+    listen(document,'emptied',event => { if (event.target?.matches?.('ytd-channel-video-player-renderer video')) trailerStates.delete(event.target); });
   }
   reconcile();
   return () => {
     disposed = true; cancel(); restoreLogos(); style.remove();
     for (const node of restoredNavigation) if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.clear();
     for (const [target,type,handler] of listeners) target.removeEventListener(type,handler,true);
-    for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear();
+    for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear();
     clearAllDecorations();
     for (const [name,record] of rootOwned) if (root.getAttribute(name) === record.value) { if (record.previous === null) root.removeAttribute(name); else root.setAttribute(name,record.previous); }
   };

@@ -141,6 +141,7 @@ function createWheelVolumeHarness({ player, video }) {
     clamp: (n, low, high) => Math.max(low, Math.min(high, n)),
     getPlayerFromTarget: (target) => target,
     getPlayerVideo: () => video,
+    hasNestedFullscreenWheelSurface: () => false,
     showVolumeOverlay: (_, percent) => overlays.push(percent),
   });
   vm.runInContext(
@@ -154,7 +155,7 @@ function createWheelVolumeHarness({ player, video }) {
     context,
     wheel(deltaY = -1, buttons = 2, target = player) {
       const event = {
-        deltaY, buttons, target,
+        deltaY, buttons, target, cancelable: true,
         prevented: false, stopped: false,
         preventDefault() { this.prevented = true; },
         stopImmediatePropagation() { this.stopped = true; },

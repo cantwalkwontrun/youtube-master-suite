@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Page Coherence Guard
 // @namespace    Citizen.youtube.page-coherence
-// @version      1.16
+// @version      1.17
 // @description  Detects incomplete YouTube queue navigation, publishes identity diagnostics, and rechecks restored foreground pages without hiding native page content.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -26,6 +26,7 @@
   const STALE_ATTRIBUTE = "data-yt-master-page-stale";
   const STATE_ATTRIBUTE = "data-yt-master-state";
   const EVENTS_ATTRIBUTE = "data-yt-master-events";
+  const INCLUDE_DETAILED_DIAGNOSTICS = false;
   const LEGACY_NOTICE_ID = "yt-master-page-coherence-notice";
   const COMMENTS_STALE_ATTRIBUTE = "data-iow-stale-video";
   const COMMENT_PERMALINK_LINK_SELECTOR =
@@ -423,12 +424,23 @@
     };
   };
 
+  const diagnosticSnapshot = snapshot => {
+    if (INCLUDE_DETAILED_DIAGNOSTICS) return snapshot;
+    const { identityStatus, nativeLoading, confirmedMismatch, confirmedCoherent,
+      commentsPresent, commentsHiddenAsStale, confirmedStaleComments, mismatchChecks, loadingRecoveryStatus } = snapshot;
+    return { identityStatus, nativeLoading, confirmedMismatch, confirmedCoherent,
+      commentsPresent, commentsHiddenAsStale, confirmedStaleComments, mismatchChecks, loadingRecoveryStatus };
+  };
+  const diagnosticEvents = () => navigationEvents.map(entry => INCLUDE_DETAILED_DIAGNOSTICS
+    ? { ...entry } : { type: entry.type, identityStatus: entry.identityStatus });
   const publishState = (snapshot = buildSnapshot()) => {
     const root = document.documentElement;
     if (!root) return snapshot;
 
-    root.setAttribute(STATE_ATTRIBUTE, JSON.stringify(snapshot));
-    root.setAttribute(EVENTS_ATTRIBUTE, JSON.stringify(navigationEvents));
+    const state = JSON.stringify(diagnosticSnapshot(snapshot));
+    if (root.getAttribute(STATE_ATTRIBUTE) !== state) root.setAttribute(STATE_ATTRIBUTE, state);
+    const events = JSON.stringify(diagnosticEvents());
+    if (root.getAttribute(EVENTS_ATTRIBUTE) !== events) root.setAttribute(EVENTS_ATTRIBUTE, events);
     return snapshot;
   };
 
@@ -726,9 +738,9 @@
   };
 
   globalThis.__YT_MASTER_STATE__ = Object.freeze({
-    check: runCoherenceCheck,
-    events: () => navigationEvents.map((entry) => ({ ...entry })),
-    snapshot: () => publishState(buildSnapshot()),
+    check: () => diagnosticSnapshot(runCoherenceCheck()),
+    events: diagnosticEvents,
+    snapshot: () => diagnosticSnapshot(publishState(buildSnapshot())),
   });
 
   window.addEventListener("yt-navigate-start", handleNavigateStart, true);

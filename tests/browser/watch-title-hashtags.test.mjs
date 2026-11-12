@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from "./fixture-browser.mjs";
 
 const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
 const MANIFEST = JSON.parse(readFileSync(new URL("../../release-manifest.json", import.meta.url), "utf8"));
@@ -229,7 +229,7 @@ test('title hashtag option can be saved, enabled and disabled after reload witho
     assert.equal(await toggle.isChecked(), !enabled);
     assert.ok((await page.locator('#ytms-disableTitleHashtagLinks-description').textContent()).includes('DeArrow'));
     await toggle.setChecked(enabled);
-    await page.locator('#ytms-save-preview').click();
+    await saveFixtureSettings(page);
     assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.disableTitleHashtagLinks, KEY), enabled);
     assert.equal((await linkStyle(link)).pointerEvents, enabled ? 'auto' : 'none', 'Saved choices do not change the running page');
     await page.reload();

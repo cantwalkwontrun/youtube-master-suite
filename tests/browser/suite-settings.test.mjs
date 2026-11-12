@@ -2,7 +2,7 @@ import { createFeatureCatalogue } from "../../sources/feature-catalogue.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from "./fixture-browser.mjs";
 
 const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
 const MANIFEST = JSON.parse(readFileSync(new URL("../../release-manifest.json", import.meta.url), "utf8"));
@@ -63,7 +63,7 @@ test('hover-preview and timer preferences are exposed, saved and restored in the
   await page.locator('#ytms-tab-player').click();
   const timer=page.locator('#ytms-timeDisplayMode');
   assert.equal(await timer.inputValue(), 'native');
-  await timer.selectOption('elapsed'); await page.locator('#ytms-save-preview').click();
+  await timer.selectOption('elapsed'); await saveFixtureSettings(page);
   const saved=await page.evaluate(key=>JSON.parse(fixtureStorage.getItem(key)).values,KEY);
   assert.equal(saved.keepHoverPreviews,true); assert.equal(saved.timeDisplayMode,'elapsed');
   await page.locator('#ytms-restore-section-defaults').click();
@@ -545,7 +545,7 @@ test("Save persists validated custom colours but applies them only after reload"
   await page.locator("#ytms-colour-mode").selectOption("custom");
   await page.locator("#ytms-viewer-hex").fill("abcdef");
   await page.locator("#ytms-owner-hex").fill("#FEDCBA");
-  await page.locator("#ytms-save-preview").click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
   assert.equal(await page.locator('#ytms-reload-now').count(), 0);
   assert.equal(await colour(page, ".fixture-viewer"), "rgb(130, 163, 230)");
@@ -574,7 +574,7 @@ test('one primary action follows effective draft differences, saved changes and 
   await page.locator('#ytms-hideShorts').check();
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
   await page.locator('#ytms-hideShorts').uncheck();
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Reload now'); assert.equal(await action.isEnabled(), true);
   await page.locator('#ytms-watchedThreshold').selectOption('95');
   assert.equal(await action.textContent(), 'Save');
@@ -582,7 +582,7 @@ test('one primary action follows effective draft differences, saved changes and 
   assert.equal(await action.textContent(), 'Reload now');
   await page.locator('#ytms-hideShorts').check();
   assert.equal(await action.textContent(), 'Save');
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
   assert.equal(await page.locator('#ytms-settings-status').textContent(), 'Saved. No reload needed.');
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideShorts, KEY), true);
@@ -648,7 +648,7 @@ test('wider settings fit all tabs and place save status between Cancel and the p
     ['ytms-cancel-panel', 'ytms-settings-status', 'ytms-save-preview']);
   await page.locator('#ytms-compactComments').uncheck();
   await page.locator('#ytms-hideCommentControls').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const status = page.locator('#ytms-settings-status');
   assert.equal(await status.textContent(), 'Saved. Please reload this page.');
   assert.deepEqual(await page.evaluate(key => {
@@ -715,7 +715,7 @@ test('pending reload survives Cancel and reopen, with inline confirmation before
   await openPanel(page);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   await page.locator('#ytms-cancel-panel').click();
   await openPanel(page);
   const action = page.locator('#ytms-save-preview');
@@ -723,7 +723,7 @@ test('pending reload survives Cancel and reopen, with inline confirmation before
   assert.match(await page.locator('#ytms-settings-status').textContent(), /waiting for reload/);
   let nativeDialogs = 0;
   page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(nativeDialogs, 0);
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
   assert.match(await page.locator('#ytms-reload-message').textContent(), /restart the current page and video/);
@@ -737,7 +737,7 @@ test('pending reload survives Cancel and reopen, with inline confirmation before
   await page.locator('#ytms-cancel-panel').click();
   await openPanel(page);
   assert.equal(await action.textContent(), 'Reload now');
-  await action.click();
+  await saveFixtureSettings(page);
   await Promise.all([page.waitForNavigation(), page.locator('#ytms-confirm-reload').click()]);
   await healthy(page);
   await openPanel(page);
@@ -753,11 +753,11 @@ test(`fullscreen reload confirmation stays responsive without native prompts (${
   await page.getByRole('tab', { name: 'Layout', exact: true }).click();
   await page.locator('#ytms-fullscreenComments').check();
   const action = page.locator('#ytms-save-preview');
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Reload now');
   let nativeDialogs = 0;
   page.on('dialog', async dialog => { nativeDialogs++; await dialog.dismiss(); });
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(nativeDialogs, 0, 'Fullscreen reload must not open a blocking browser prompt');
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
   assert.equal(await page.evaluate(() => new Promise(resolve => setTimeout(() => resolve(true), 25))), true);
@@ -774,8 +774,8 @@ test('enabling fullscreen comments and confirming reload applies the saved featu
   await openPanel(page);
   await page.getByRole('tab', { name: 'Layout', exact: true }).click();
   await page.locator('#ytms-fullscreenComments').check();
-  await page.locator('#ytms-save-preview').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
+  await saveFixtureSettings(page);
   await Promise.all([page.waitForNavigation(), page.locator('#ytms-confirm-reload').click()]);
   await healthy(page);
   await page.locator('#page-fullscreen').click();
@@ -793,8 +793,8 @@ test('editing preferences cancels an open reload confirmation without discarding
   await openPanel(page);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
   await page.locator('#ytms-hideMixes').uncheck();
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), false);
@@ -809,8 +809,8 @@ test('reload confirmation revalidates an undelivered external save or clear befo
     await openPanel(page);
     await page.getByRole('tab', { name: 'Feed', exact: true }).click();
     await page.locator('#ytms-hideShorts').uncheck();
-    await page.locator('#ytms-save-preview').click();
-    await page.locator('#ytms-save-preview').click();
+    await saveFixtureSettings(page);
+    await saveFixtureSettings(page);
     assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
     await page.evaluate(({ key, external }) => {
       if (external === null) fixtureStorage.removeItem(key); else fixtureStorage.setItem(key, external);
@@ -830,8 +830,8 @@ test('a delivered cross-window settings change cancels an open reload confirmati
   await openPanel(page);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-reload-confirmation').isVisible(), true);
   const other = await page.context().newPage();
   await other.goto(WATCH_URL); await healthy(other);
@@ -853,12 +853,12 @@ test('failed settings writes keep the unsaved Save action and permit a successfu
     window.restoreFixtureStorage = () => fixtureGMStorage.failWrites(key, false);
   }, KEY);
   const action = page.locator('#ytms-save-preview');
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isEnabled(), true);
   assert.match(await page.locator('#ytms-settings-status').textContent(), /Settings could not be saved/);
   assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
   await page.evaluate(() => window.restoreFixtureStorage());
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Reload now');
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideShorts, KEY), false);
 });
@@ -872,7 +872,7 @@ test('invalid colour text cannot trigger reload and equivalent normalised colour
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
   await page.locator('#ytms-viewer-hex').fill('#FEDCBA');
   assert.equal(await action.isEnabled(), true);
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Reload now');
   await page.locator('#ytms-viewer-hex').fill('#zzzzzz');
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
@@ -880,7 +880,7 @@ test('invalid colour text cannot trigger reload and equivalent normalised colour
   assert.equal(await action.textContent(), 'Reload now'); assert.equal(await action.isEnabled(), true);
   await page.locator('#ytms-viewer-hex').fill('abcdef');
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isEnabled(), true);
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
 });
 
@@ -939,7 +939,7 @@ test('a live miniplayer corner change does not request reload when settings are 
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   await page.locator('#ytms-hideShorts').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now', 'unapplied non-corner change still requires reload');
 });
 
@@ -948,7 +948,7 @@ test('a corner saved in settings still requires reload until the miniplayer appl
   await openPanel(page);
   await page.getByRole('tab', { name: 'Miniplayer', exact: true }).click();
   await page.locator('#ytms-corner').selectOption('bottom-left');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
   assert.equal(await page.locator('#ytms-save-preview').isEnabled(), true);
   await page.locator('#ytms-cancel-panel').click();
@@ -981,7 +981,7 @@ test('a disabled miniplayer can synchronise its corner without masking enablemen
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
   await page.getByRole('tab', { name: 'Miniplayer', exact: true }).click();
   await page.locator('#ytms-miniplayerEnabled').check();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-save-preview').textContent(), 'Reload now');
 });
 
@@ -1023,7 +1023,7 @@ test('primary action preflight catches undelivered storage changes before saving
   await page.evaluate(({ key, record }) => fixtureStorage.setItem(key, record), { key: KEY, record: externalRecord });
   const action = page.locator('#ytms-save-preview');
   assert.equal(await action.isEnabled(), true);
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.isDisabled(), true);
   assert.match(await page.locator('#ytms-settings-status').textContent(), /Your draft has been kept/);
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
@@ -1034,7 +1034,7 @@ test('primary action preflight catches undelivered storage changes before saving
   await page.evaluate(key => fixtureStorage.removeItem(key), KEY);
   let confirmations = 0;
   page.on('dialog', dialog => { confirmations++; return dialog.dismiss(); });
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(confirmations, 0);
   assert.equal(await action.textContent(), 'Save'); assert.equal(await action.isDisabled(), true);
   assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
@@ -1066,7 +1066,7 @@ test("Interface controls persist both icon styles, remove either button and prev
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   await page.locator('#ytms-headerSettingsIcon').selectOption('off');
   await page.locator('#ytms-playerSettingsIcon').selectOption('colour');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-settings-button').count(), 1, 'Saved choices do not change the current page until reload');
   await page.reload(); await healthy(page);
   await page.locator('#ytms-player-settings-button').waitFor();
@@ -1079,7 +1079,7 @@ test("Interface controls persist both icon styles, remove either button and prev
   assert.equal(await page.locator('#ytms-button-access-error').isVisible(), true);
   await page.locator('#ytms-headerSettingsIcon').selectOption('monochrome');
   assert.equal(await page.locator('#ytms-save-preview').isEnabled(), true);
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   await page.reload(); await healthy(page);
   await page.locator('#ytms-settings-button').waitFor();
   assert.equal(await page.locator('#ytms-player-settings-button').count(), 0);
@@ -1102,8 +1102,8 @@ test("panel dimensions stay fixed across every tab, colour picker, field errors 
   await openPanel(page);
   const dialog = page.locator('#ytms-settings-dialog');
   const bounds = await dialog.boundingBox();
-  assert.equal(bounds.width, 760); assert.equal(bounds.height, 720);
-  for (const name of ['Feed', 'Channels', 'Player', 'Layout', 'Miniplayer', 'Interface', 'Extensions', 'Credits', 'Comments']) {
+  assert.equal(bounds.width, 960); assert.equal(bounds.height, 840);
+  for (const name of ['Feed', 'Channels', 'Player', 'Layout', 'Miniplayer', 'Interface', 'Extensions', 'Custom JS', 'Credits', 'Comments']) {
     await page.getByRole('tab', { name, exact: true }).click();
     assert.deepEqual(await dialog.boundingBox(), bounds, name);
   }
@@ -1114,12 +1114,44 @@ test("panel dimensions stay fixed across every tab, colour picker, field errors 
   assert.equal(await page.locator('#ytms-viewer-error').isVisible(), true);
   assert.deepEqual(await dialog.boundingBox(), bounds);
   await page.locator('#ytms-viewer-hex').fill('#82A3E6');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator('#ytms-settings-status').isVisible(), true);
   assert.deepEqual(await dialog.boundingBox(), bounds);
   assert.equal(await page.locator('#ytms-section-player .row .description').count(), 10 + createFeatureCatalogue().definitions.filter(item => item.tab === 'player').length);
   assert.equal(await page.locator('#ytms-liveChatButton').isChecked(), true);
   assert.equal(await page.locator('#ytms-section-interface .row .description').count(), 5 + createFeatureCatalogue().definitions.filter(item => item.tab === 'interface').length);
+});
+
+test('all settings sections keep consistent top spacing and contain expanded controls at desktop and narrow sizes', async t => {
+  const page = await openFixture(t);
+  await openPanel(page);
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 720 }, { width: 640, height: 400 }]) {
+    await page.setViewportSize(viewport);
+    for (const name of ['Comments', 'Feed', 'Channels', 'Player', 'Layout', 'Miniplayer', 'Interface', 'Extensions', 'Custom JS', 'Support', 'Credits']) {
+      await page.getByRole('tab', { name, exact: true }).click();
+      const layout = await page.locator('#ytms-settings-dialog').evaluate(dialog => {
+        const content = dialog.querySelector('.content');
+        content.scrollTop = 0;
+        const section = content.querySelector('[role="tabpanel"]:not([hidden])');
+        const first = [...section.children].find(node => node.getClientRects().length);
+        const topGap = first.getBoundingClientRect().top - content.getBoundingClientRect().top;
+        for (const group of section.querySelectorAll('details')) group.open = true;
+        const footer = dialog.querySelector('footer').getBoundingClientRect();
+        const bounds = dialog.getBoundingClientRect();
+        return { topGap, fits: content.scrollWidth <= content.clientWidth,
+          footerFits: footer.bottom <= bounds.bottom && footer.top >= bounds.top,
+          emptyNotesCollapsed: [...section.querySelectorAll('.section-note:empty')].every(note => {
+            const css = getComputedStyle(note);
+            return !note.getClientRects().length || note.getBoundingClientRect().height === 0 && css.marginTop === '0px' && css.marginBottom === '0px';
+          }) };
+      });
+      const label = `${name} at ${viewport.width}x${viewport.height}`;
+      assert.ok(Math.abs(layout.topGap - 20) <= 1, `${label}: top gap ${layout.topGap}`);
+      assert.equal(layout.fits, true, `${label}: horizontal overflow`);
+      assert.equal(layout.footerFits, true, `${label}: footer overflow`);
+      assert.equal(layout.emptyNotesCollapsed, true, `${label}: empty note reserves space`);
+    }
+  }
 });
 
 test("Credits uses the bundled coloured logo and generic author attribution", async t => {
@@ -1194,6 +1226,8 @@ test("Extensions remains theme-adaptive, keyboard-accessible and contained in a 
   await content.evaluate(element => element.scrollTop = element.scrollHeight);
   const footer = await dialog.locator('.panel > footer').boundingBox();
   assert.ok(footer.y >= bounds.y && footer.y + footer.height <= bounds.y + bounds.height);
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-javascript');
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-support');
   await page.keyboard.press('ArrowRight');
@@ -1308,7 +1342,7 @@ test('live and upcoming card controls are independent, cancellable and only pers
   assert.equal(await page.locator('#ytms-hideUpcomingStreams').isChecked(), true);
   await page.locator('#ytms-hideLiveVideos').check();
   await page.locator('#ytms-hideUpcomingStreams').uncheck();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, KEY);
   assert.equal(saved.hideLiveVideos, true);
   assert.equal(saved.hideUpcomingStreams, false);
@@ -1390,7 +1424,7 @@ test('Restore this section resets Feed only, preserves other drafts, and remains
   assert.equal(await page.locator('#ytms-hideLiveVideos').isChecked(), true);
   assert.equal(await page.locator('#ytms-hideUpcomingStreams').isChecked(), false);
   await page.locator('#ytms-restore-section-defaults').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, KEY);
   assert.equal(saved.hideShorts, true); assert.equal(saved.hideWatchedVideos, true); assert.equal(saved.watchedThreshold, '90');
   assert.equal(saved.hideLiveVideos, false); assert.equal(saved.hideUpcomingStreams, true);
@@ -1424,7 +1458,7 @@ test('fullscreen action-strip setting defaults off and changes the strip only af
   await toggle.uncheck();
   assert.equal(await action.isDisabled(), true, 'Reverting the draft must not enable Save');
   await toggle.check();
-  await action.click();
+  await saveFixtureSettings(page);
   assert.equal(await action.textContent(), 'Reload now');
   assert.equal(await page.locator('#ytms-settings-status').textContent(), 'Saved. Please reload this page.');
   assert.equal(await strip.evaluate(node => getComputedStyle(node).display !== 'none'), true, 'Saving must not alter the running configuration');
@@ -1458,7 +1492,7 @@ test('Player section defaults restore fullscreen action-strip visibility in the 
   await page.getByRole('tab', { name: 'Player', exact: true }).click();
   assert.equal(await toggle.isChecked(), true, 'Cancelling the draft must retain the saved choice');
   await page.locator('#ytms-restore-section-defaults').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.deepEqual(await page.evaluate(key => {
     const values = JSON.parse(fixtureStorage.getItem(key)).values;
     return [values.hideFullscreenQuickActions, values.hideChat, values.showRydTooltipBar];
@@ -1510,7 +1544,7 @@ test('Comments section reset restores all six comment preferences without changi
   assert.equal(await page.locator('#ytms-hideCommentControls').isChecked(), true);
   await page.getByRole('tab', { name: 'Feed', exact: true }).click();
   assert.equal(await page.locator('#ytms-hideShorts').isChecked(), false);
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, KEY);
   assert.equal(saved.colourMode, 'default'); assert.equal(saved.palette, 'teal-coral');
   assert.equal(saved.viewerColour, '#82A3E6'); assert.equal(saved.ownerColour, '#FF9F1C');
@@ -1522,7 +1556,7 @@ test('Interface section reset restores cloned menu order and all Interface contr
   const page = await openFixture(t, { colourMode: 'off', menuItemOrder: ['share', 'download'], menuShowDownload: true, menuGroupChannelTools: false, menuShowAgeLimit: false });
   await openPanel(page);
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
-  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
+  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
   await page.locator('#ytms-restore-section-defaults').click();
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
@@ -1538,7 +1572,7 @@ test('Interface section reset restores cloned menu order and all Interface contr
   assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), defaultOrder.filter(id => !['channelAge','dontRecommend','report'].includes(id)));
   await page.getByRole('tab', { name: 'Comments', exact: true }).click();
   assert.equal(await page.locator('#ytms-colour-mode').inputValue(), 'off');
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   const saved = await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, KEY);
   assert.deepEqual(saved.menuItemOrder, defaultOrder); assert.equal(saved.colourMode, 'off');
 });
@@ -1585,7 +1619,7 @@ test('Restore all settings is draft-only, leaves saved channel filters untouched
   assert.equal(await page.locator('#ytms-colour-mode').inputValue(), 'off');
   assert.equal(await page.locator('#ytms-restore-section-defaults').isEnabled(), true);
   await page.locator('#ytms-restore-defaults').click();
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.hideShorts, KEY), true);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.menuShowDownload, KEY), false);
   assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), ageKey), ageRecord);
@@ -1675,7 +1709,7 @@ test("repeated opens and native navigation events retain one button and one lazi
   });
   assert.equal(await page.locator('#ytms-settings-button').count(), 1);
   assert.equal(await page.locator('#ytms-settings-dialog').count(), 1);
-  assert.equal(await page.locator('#ytms-settings-dialog [role="tab"]').count(), 10);
+  assert.equal(await page.locator('#ytms-settings-dialog [role="tab"]').count(), 11);
   assert.equal(await page.evaluate(key => fixtureStorage.getItem(key), KEY), null);
 });
 
@@ -1767,6 +1801,11 @@ test('Support snapshots remain lazy and each refresh reads health once', async t
 test('custom submenu settings persist as a tree and clean drafts remain clean after reopening', async t => {
   const page=await openFixture(t,{theatreMode:false});
   await openPanel(page); await page.getByRole('tab',{name:'Interface',exact:true}).click();
+  const preferenceStatus = page.locator('#ytms-preference-status');
+  const menuBadge = page.locator('#ytms-menu-editor-heading .preference-badge');
+  const preview = page.locator('.menu-editor-preview');
+  const previewList = preview.locator(':scope > ul');
+  assert.equal(await preferenceStatus.textContent(), 'Saved settings are active on this page.');
   await page.locator('#ytms-video-menu-settings > summary').click();
   await page.locator('#ytms-add-submenu').click();
   await page.locator('#ytms-submenu-name').fill('Research');
@@ -1774,7 +1813,19 @@ test('custom submenu settings persist as a tree and clean drafts remain clean af
   await page.getByRole('combobox',{name:'Menu for Share',exact:true}).selectOption('submenu-1');
   await page.locator('#ytms-menu-location').selectOption('submenu-1');
   await page.getByRole('checkbox',{name:'Show Share',exact:true}).uncheck();
-  await page.locator('#ytms-save-preview').click();
+  assert.equal(await preferenceStatus.textContent(), 'Unsaved changes.');
+  assert.equal(await menuBadge.textContent(), 'Unsaved');
+  assert.equal(await previewList.locator('li').count(), 0, 'collapsed preview does not render during editing');
+  await preview.locator('summary').click();
+  await previewList.getByText('Add to queue', { exact: true }).waitFor();
+  assert.doesNotMatch(await previewList.textContent(), /Research|Share/);
+  await preview.getByRole('button', { name: 'Preview active layout' }).click();
+  assert.match(await previewList.textContent(), /Share/);
+  await preview.getByRole('button', { name: 'Preview draft layout' }).click();
+  assert.doesNotMatch(await previewList.textContent(), /Research|Share/);
+  await saveFixtureSettings(page);
+  assert.equal(await preferenceStatus.textContent(), 'Saved changes need a reload.');
+  assert.equal(await menuBadge.textContent(), 'Reload needed');
   const values=await page.evaluate(key=>JSON.parse(fixtureStorage.getItem(key)).values,KEY);
   assert.deepEqual(values.menuLayout.nodes.find(node=>node.id==='submenu-1'),{id:'submenu-1',name:'Research',parent:'root'});
   assert.deepEqual(values.menuLayout.nodes.find(node=>node.id==='share'),{id:'share',parent:'submenu-1',visible:false});
@@ -1790,5 +1841,7 @@ test('custom submenu settings persist as a tree and clean drafts remain clean af
   await page.locator('#ytms-cancel-panel').click();
   assert.deepEqual(await page.evaluate(key=>JSON.parse(fixtureStorage.getItem(key)).values.menuLayout,KEY),values.menuLayout);
   await page.reload();await healthy(page);await openPanel(page);
+  assert.equal(await preferenceStatus.textContent(), 'Saved settings are active on this page.');
+  assert.equal(await menuBadge.count(), 0);
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(),true,'saved applied tree has a clean baseline after reload');
 });

@@ -485,7 +485,7 @@ test('title tooltips treat markup-looking text as plain text', async t => {
   assert.equal(await page.evaluate(() => window.queueTitleInjected), undefined);
 });
 
-for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden', 'ancestor-hidden', 'owner-change', 'native-restamp']) {
+for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden', 'ancestor-hidden', 'row-inert', 'ancestor-inert', 'owner-change', 'native-restamp']) {
   test(`an open title tooltip releases on ${reason}`, async t => {
     const page = await open(t); await ready(page); await tooltip(page);
     await page.evaluate(reason => {
@@ -499,6 +499,8 @@ for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden'
       }
       if (reason === 'row-hidden') fixture.items.children[1].hidden = true;
       if (reason === 'ancestor-hidden') fixture.panel.parentElement.style.display = 'none';
+      if (reason === 'row-inert') fixture.items.children[1].inert = true;
+      if (reason === 'ancestor-inert') fixture.panel.parentElement.inert = true;
       if (reason === 'owner-change') { fixture.owner = { ...fixture.owner }; fixture.panel.polymerController = fixture.owner; fixture.notifyQueue(); }
       if (reason === 'native-restamp') fixture.restampRows();
     }, reason);

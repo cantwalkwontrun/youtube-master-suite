@@ -53,7 +53,7 @@ function bootstrap({ keys, migrationKey }) {
 
 const isSuite = source => typeof source === 'string' && source.includes('// @name         YouTube Master Suite');
 export const wrapFixtureUserscript = source => isSuite(source) && !source.includes('window.__ytmsFixtureGMReady.then(() => {')
-  ? `window.__ytmsFixtureGMReady.then(() => {\nwindow.__ytmsFixtureUsesGM = true;\n${source}\n});`
+  ? `if (window.top === window) window.__ytmsFixtureGMReady.then(() => {\nwindow.__ytmsFixtureUsesGM = true;\n${source}\n});`
   : source;
 const wrapScript = script => typeof script === 'string' ? wrapFixtureUserscript(script)
   : script?.content ? { ...script, content: wrapFixtureUserscript(script.content) } : script;
@@ -66,7 +66,7 @@ export function installFixtureGMStorage(browser) {
     await context.exposeBinding('__ytmsFixtureGM', ({ page }, request) => {
       const operation = serial.then(async () => {
         if (request.kind === 'snapshot') return [...values];
-        if (request.kind !== 'write' || ![...keys, migrationKey].includes(request.key) ||
+        if (request.kind !== 'write' || ![...keys, migrationKey, 'yt-master-suite.settings-write.v1', 'yt-master-suite.corner-write.v1', 'yt-master-suite.channel-filters-write.v1', 'yt-master-suite.marker-write.v1', 'yt-master-suite.update-source-write.v1', 'yt-master-suite.custom-javascript.v1', 'yt-master-suite.custom-javascript-write.v1'].includes(request.key) ||
             !(request.value === null || typeof request.value === 'string')) throw new Error('Invalid synthetic GM operation');
         values.set(request.key, request.value);
         await Promise.all(context.pages().filter(other => other !== page && !other.isClosed()).map(async other => {

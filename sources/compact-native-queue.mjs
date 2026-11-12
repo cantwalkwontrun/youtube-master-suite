@@ -12,7 +12,8 @@ export function installCompactNativeQueue({ document, window, enabled = true,
   let disposed = false, frame = 0, host = null, panel = null, gesture = null, released = false;
   let nativeSignature = '', resizeTargets = new Set(), sizes = null, style = null;
   let visibilityObserver = null, visibilityAncestors = [];
-  let suspended = document.hidden, settleTimer = 0, settling = '', settled = '';
+  let visibilitySignatures = new WeakMap();
+  let suspended = document.hidden, pageSuspended = false, settleTimer = 0, settling = '', settled = '';
   let clickGuard = null, clickTimer = 0;
   let measurements = null;
   function measure(node, property) {
@@ -56,10 +57,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       .map(name => node.style.getPropertyValue(name)).join('|') : '';
   }
   function visible(node) {
-    if (!node?.isConnected || node.hidden) return false;
+    if (!node?.isConnected) return false;
     const box = measure(node,'rect'), css = measure(node,'css');
-    return box.width > 0 && box.height > 0 && css.display !== 'none' &&
-      css.visibility === 'visible' && Number(css.opacity) > 0;
+    if (!(box.width > 0 && box.height > 0) || css.visibility !== 'visible') return false;
+    for (let current = node; current; current = current.parentElement) {
+      const currentCss = measure(current,'css');
+      if (current.hidden || current.hasAttribute('inert') || current.getAttribute('aria-hidden') === 'true' ||
+          currentCss.display === 'none' || Number(currentCss.opacity) === 0) return false;
+    }
+    return true;
   }
   function animating(node) {
     const transform = measure(node,'css').transform;
@@ -85,29 +91,49 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     for (const node of next) if (!resizeTargets.has(node)) sizes.observe(node);
     resizeTargets = next;
   }
-  function observeHiddenAncestors(hidden) {
-    const next = [];
-    if (hidden) for (let node = host?.parentElement; node; node = node.parentElement) next.push(node);
+  function visibilitySignature(node) {
+    const css = measure(node, 'css');
+    return [node.hidden, node.hasAttribute('inert'), node.getAttribute('aria-hidden'), css.display, css.visibility, css.opacity, css.transform].join('|');
+  }
+  function observeHostVisibility(hosts) {
+    const candidates = new Set();
+    for (const candidate of hosts) for (let node = candidate; node; node = node.parentElement) candidates.add(node);
+    const next = [...candidates];
     if (next.length === visibilityAncestors.length && next.every((node,index) => node === visibilityAncestors[index])) return;
     visibilityObserver?.disconnect();
     visibilityAncestors = next;
+    visibilitySignatures = new WeakMap();
     if (!next.length) return;
     // Keep these non-subtree registrations separate from the shared broker:
     // merging ancestor attributes with global child discovery would capture
     // unrelated descendant style changes throughout the page.
-    visibilityObserver ||= new window.MutationObserver(schedule);
-    for (const node of next) visibilityObserver.observe(node,{ attributes:true,
-      attributeFilter:['class','style','hidden','aria-hidden'] });
+    visibilityObserver ||= new window.MutationObserver(() => {
+      let changed = false;
+      // An ancestor selector or inherited custom property can change a host
+      // without changing the ancestor's own paint. Compare this scoped chain,
+      // not only the attribute target; unrelated variables still schedule no fit.
+      for (const node of visibilityAncestors) {
+        const signature = visibilitySignature(node);
+        if (signature !== visibilitySignatures.get(node)) changed = true;
+        visibilitySignatures.set(node, signature);
+      }
+      if (changed) schedule();
+    });
+    for (const node of next) {
+      visibilitySignatures.set(node, visibilitySignature(node));
+      visibilityObserver.observe(node,{ attributes:true,
+        attributeFilter:['class','style','hidden','aria-hidden','inert'] });
+    }
   }
   function adopt(next) {
     if (host === next) return;
-    clearOwned(); clearSettlement(); clearClickGuard(); details.disconnect(); observeSizes([]); observeHiddenAncestors(false);
+    clearOwned(); clearSettlement(); clearClickGuard(); details.disconnect(); observeSizes([]); observeHostVisibility([]);
     host?.removeEventListener('mousedown', startMain);
     host?.removeEventListener('touchstart', startMain);
     host = next; panel = null; gesture = null; released = false;
     nativeSignature = signature(host);
     if (host) details.observe(host, { subtree: true, attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'collapsed', 'loading', 'is-loading', 'aria-expanded'] });
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert', 'collapsed', 'loading', 'is-loading', 'aria-expanded'] });
     host?.addEventListener('mousedown', startMain, { passive: true });
     host?.addEventListener('touchstart', startMain, { passive: true });
   }
@@ -115,25 +141,33 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     frame = 0;
     if (disposed || suspended) return;
     try {
+      measurements = new WeakMap();
       const hosts = [...document.querySelectorAll(hostSelector)];
       const shown = hosts.filter(visible);
       adopt(shown.length === 1 ? shown[0] : hosts.length === 1 ? hosts[0] : null);
-      if (!host) return;
       // Adoption can release a previous owner's geometry. Reuse measurements
       // only within this read phase, never across frames, writes or gestures.
       measurements = new WeakMap();
+      observeHostVisibility(hosts);
+      if (!host) { observeSizes(hosts); return; }
       nativeSignature = signature(host);
       // A stylesheet or an ancestor can reveal this host without changing any
       // of its own attributes. Keep one size observation until it is visible.
-      if (!visible(host)) { release(); observeSizes([host]); observeHiddenAncestors(true); return; }
-      observeHiddenAncestors(false);
+      if (!visible(host)) { release(); observeSizes(hosts); return; }
       if (gesture?.dragging || animating(host)) { release(); return; }
       released = false;
       const candidates = [...host.querySelectorAll(panelSelector)]
         .filter(node => node.closest(hostSelector) === host && visible(node));
       const nextPanel = candidates.length === 1 ? candidates[0] : null;
-      if (panel !== nextPanel) { clearOwned(); panel = nextPanel; }
-      const basicTargets = [host, panel];
+      if (panel !== nextPanel) {
+        clearOwned(); panel = nextPanel;
+        // Releasing the old fit moves bottom-anchored panels. Discard the
+        // candidate geometry measured before that write, even in this frame.
+        measurements = new WeakMap();
+      }
+      // Retained zero-size hosts can become visible without an attribute on
+      // the selected host. Keep their size in the existing observation set.
+      const basicTargets = [...hosts, panel];
       if (!panel || panel.matches('[collapsed], [loading], [is-loading]') ||
           host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]')) {
         release(); observeSizes(basicTargets); return;
@@ -197,8 +231,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const node = record.target;
       if (node === host) return record.attributeName !== 'style' || signature(host) !== nativeSignature;
       if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button')) return true;
-      if (node.closest?.('#movie_player') || !panel?.contains(node)) return false;
-      return node === panel || node.matches?.('.playlist-items, .header, #container, ytd-playlist-panel-video-renderer');
+      if (node.closest?.('#movie_player')) return false;
+      if (node.matches?.('.ytdMiniplayerComponentContent')) return true;
+      // A hidden panel releases ownership. Observe its native structure too so
+      // an attribute-only reveal can select it again without a resize/event.
+      const targetPanel = node.closest?.(panelSelector);
+      if (!targetPanel || targetPanel.closest(hostSelector) !== host) return false;
+      return node === targetPanel || node.matches?.('.playlist-items, .header, #container, ytd-playlist-panel-video-renderer');
     })) schedule();
   });
   const discovery = new MutationObserver(records => {
@@ -279,11 +318,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     schedule();
   }
   function lifecycle(event) {
-    suspended = event.type === 'pagehide' || document.hidden;
+    if (event.type === 'pagehide') pageSuspended = true;
+    else if (event.type === 'pageshow') pageSuspended = false;
+    suspended = pageSuspended || document.hidden;
     if (suspended) {
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0; gesture = null; released = false;
-      clearSettlement(); clearClickGuard(); release(); observeSizes([]); observeHiddenAncestors(false);
+      clearSettlement(); clearClickGuard(); release(); observeSizes([]); observeHostVisibility([]);
     } else schedule();
   }
   function animation(event) { if (event.target === host) schedule(); }

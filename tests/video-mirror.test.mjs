@@ -269,6 +269,7 @@ function createHarness({ enabled = true } = {}) {
     videoMirrorVideo: null, videoMirrorButton: null, videoMirrorTooltip: null, videoMirrorPlayer: null,
     videoMirrorControls: null, videoMirrorPageSuspended: false,
     videoMirrorTooltipObserver: null,
+    videoControlsRecoveryObserver: null, videoControlsRecoveryTargets: [],
     applyFrame: 0, dynamicNavigationPending: false, playerLayoutRefreshFrame: 0, pendingApplyRoots: new Set(),
     liveChatSyncFrame: 0, liveChatNavigationPending: false,
     mutationAffectsLiveChat: () => false,
@@ -299,7 +300,7 @@ function createHarness({ enabled = true } = {}) {
     "scheduleLiveChatCollapseAttempts", "schedulePlayerLayoutRefreshAttempts",
     "clearLiveChatCollapseAttempts", "clearPlayerLayoutRefreshAttempts",
     "clearContextMenuSuppression", "convertCurrentShortsPage", "applyDynamicPreferences",
-    "schedulePreferredQualityAttempts", "clearPreferredQualityAttempts", "scheduleTheaterModeAttempts", "handleShortsClick",
+    "schedulePreferredQualityAttempts", "clearPreferredQualityAttempts", "scheduleTheaterModeAttempts", "clearTheaterModeAttempts", "handleShortsClick",
     "handleManualQualitySelection", "handlePreferredQualityMetadata",
     "handleTheaterModeToggle", "handleDescriptionClick", "handleWheelVolume",
     "handleFullscreenCommentsWheel", "handleMouseDown", "handleMouseUp", "handleContextMenu", "handleWindowBlur",
@@ -308,7 +309,7 @@ function createHarness({ enabled = true } = {}) {
   ]) context[name] = () => {};
   const names = [
     "isWatchPath", "isRenderedWatchFlexy", "getWatchFlexy", "buildVideoMirrorCss",
-    "getVideoMirrorRouteId", "getVideoMirrorTarget", "clearVideoMirrorElements",
+    "getVideoMirrorRouteId", "isAvailableVideoMirrorOwner", "isVisibleVideoMirrorSurface", "getVideoMirrorTarget", "clearVideoMirrorElements",
     "resetVideoMirror", "handleVideoMirrorClick", "createVideoMirrorButton",
     "getVideoMirrorLabel", "hideVideoMirrorTooltip", "positionVideoMirrorTooltip",
     "refreshVideoMirrorTooltip",
@@ -316,6 +317,7 @@ function createHarness({ enabled = true } = {}) {
     "hasVideoMirrorTooltipKeyboardFocus", "hideVideoMirrorTooltipOnMouseLeave",
     "handleVideoMirrorTooltipDocumentLeave",
     "showVideoMirrorTooltip", "handleVideoMirrorKeyDown", "replaceObserverRegistrations",
+    "clearVideoControlsRecovery", "watchUnavailableVideoControls", "getVideoPlayerControls",
     "placeVideoMirrorButton", "syncVideoMirror", "scheduleVideoMirrorSync", "mutationAffectsVideoMirror",
     "handleVideoMirrorMetadata", "handleNavigateStart", "handleNavigateFinish",
     "applyRoutePreferences", "cancelScheduledAnimationWork",
@@ -914,6 +916,42 @@ test("mirroring survives replacement controls, replaced main video and custom-bu
   assert.equal(h.button().getAttribute("aria-pressed"), "true");
 });
 
+test("hidden native toolbar recovery observes only its ancestry and disconnects after an attribute-only reveal", () => {
+  const h = createHarness();
+  h.button().click();
+  h.controls.hidden = true;
+  h.context.syncVideoMirror(); h.settle();
+  assert.equal(h.button(), null);
+  const observer = h.context.videoControlsRecoveryObserver;
+  assert.ok(observer);
+  assert.deepEqual(observer.registrations.map(({ target }) => target), [h.controls, h.player]);
+  assert.ok(observer.registrations.every(({ options }) => options.attributes && !options.subtree && !options.childList));
+  h.controls.hidden = false;
+  h.records.push({ type: "attributes", target: h.controls, attributeName: "hidden" });
+  h.settle();
+  assert.equal(h.button().getAttribute("aria-pressed"), "true");
+  assert.equal(h.context.videoControlsRecoveryObserver, null);
+  assert.deepEqual(observer.registrations, []);
+  const frameCount = h.counts.frames;
+  h.controls.setAttribute("class", "ytp-right-controls ytp-autohide"); h.settle();
+  assert.equal(h.counts.frames, frameCount, "Recovered controls retain no background visibility observer");
+});
+
+for (const event of ["yt-navigate-start", "pagehide"]) test(`${event} cancels pending hidden-toolbar recovery`, () => {
+  const h = createHarness();
+  h.controls.hidden = true;
+  h.context.syncVideoMirror(); h.settle();
+  const observer = h.context.videoControlsRecoveryObserver;
+  assert.ok(observer);
+  h.dispatch(event); h.settle();
+  assert.equal(h.context.videoControlsRecoveryObserver, null);
+  assert.deepEqual(observer.registrations, []);
+  h.controls.hidden = false;
+  h.records.push({ type: "attributes", target: h.controls, attributeName: "hidden" });
+  h.settle();
+  assert.equal(h.button(), null);
+});
+
 test("mirror stays between fullscreen and late native or restored miniplayer controls", () => {
   for (const restored of [false, true]) {
     for (const miniplayerFirst of [false, true]) {
@@ -1085,6 +1123,21 @@ test("navigation start and off-route native miniplayer/Shorts clear owned marker
     assert.equal(h.button(), null);
   }
 });
+
+for (const signal of ["loadedmetadata", "fullscreenchange", "pageshow"]) {
+  test(`unfinished navigation cannot revive Mirror through ${signal}`, () => {
+    const h = createHarness();
+    h.button().click();
+    h.dispatch("yt-navigate-start");
+    h.dispatch(signal, signal === "pageshow" ? "window" : "document", h.video);
+    h.settle();
+    assert.equal(h.button(), null, "A late event from the old watch page cannot restore its control");
+    assert.equal(h.video.hasAttribute(ATTRIBUTE), false);
+    assert.equal(h.frames.size, 0);
+    h.dispatch("yt-navigate-finish"); h.settle();
+    assert.equal(h.button().getAttribute("aria-pressed"), "false");
+  });
+}
 
 test("pagehide cancels frames and clears mirroring; BFCache restore starts unmirrored", () => {
   const h = createHarness();

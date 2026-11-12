@@ -307,6 +307,14 @@ export function createFeatureCatalogue() {
     "default": false
   },
   {
+    "key": "dismissMembershipOffers",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Dismiss membership offers",
+    "description": "Automatically close recognised channel membership offers, including offers opened by Join. Save and reload to apply. Other dialogs and payment frames remain available.",
+    "default": false
+  },
+  {
     "key": "hideOpenApp",
     "tab": "interface",
     "section": "Page appearance",
@@ -407,7 +415,7 @@ export function createFeatureCatalogue() {
     "tab": "layout",
     "section": "Theatre view",
     "label": "Hide header in full-window theatre",
-    "description": "Hide the header only while full-window theatre view is active.",
+    "description": "Requires Full-window theatre view. Hides the header only while that view is active.",
     "default": false
   },
   {
@@ -487,7 +495,7 @@ export function createFeatureCatalogue() {
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts action bar",
-    "description": "Hide the native action bar on Shorts pages. Native keyboard playback controls remain available.",
+    "description": "Hide the action bar while Redirect Shorts to watch pages is off. Native keyboard playback controls remain available.",
     "default": false
   },
   {
@@ -495,7 +503,7 @@ export function createFeatureCatalogue() {
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts related-video link",
-    "description": "Hide the native related-video link on Shorts pages.",
+    "description": "Hide the related-video link while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -503,7 +511,7 @@ export function createFeatureCatalogue() {
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts music link",
-    "description": "Hide the native music link on Shorts pages.",
+    "description": "Hide the music link while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -511,7 +519,7 @@ export function createFeatureCatalogue() {
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts Remix button",
-    "description": "Hide the native Remix control on Shorts pages.",
+    "description": "Hide Remix while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -647,7 +655,7 @@ export function createFeatureCatalogue() {
     "tab": "player",
     "section": "Capture and export",
     "label": "Snapshot format",
-    "description": "PNG preserves image detail. JPEG produces smaller files.",
+    "description": "Requires Show Take snapshot button. PNG preserves image detail. JPEG produces smaller files.",
     "default": "png",
     "options": [
       [
@@ -665,7 +673,7 @@ export function createFeatureCatalogue() {
     "tab": "player",
     "section": "Capture and export",
     "label": "JPEG snapshot quality",
-    "description": "Only applies to JPEG snapshots.",
+    "description": "Requires Show Take snapshot button and JPEG format.",
     "default": "90",
     "options": [
       [
@@ -1006,6 +1014,22 @@ export function createFeatureCatalogue() {
     "section": "Feed cleanup",
     "label": "Show hidden-card reveal control",
     "description": "Keep the Suite’s temporary reveal control for filtered feed cards.",
+    "default": true
+  },
+  {
+    "key": "miniplayerNavigation",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Show previous/next buttons",
+    "description": "Show white navigation controls on native miniplayer hover or keyboard focus. Native controls are reused; fallback controls require a verified neighbouring queue entry.",
+    "default": true
+  },
+  {
+    "key": "currentQueueMenu",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Show current video menu",
+    "description": "Keep the playing queue item's native three-dot menu available when its actions can be verified. Remove from playlist uses YouTube's native action and may advance playback. Save and reload to apply.",
     "default": true
   },
   {

@@ -1,10 +1,10 @@
 // Language: en-GB. Self-contained, data-only menu layout rules embedded by the builder.
 // Labels never become selectors, URLs, HTML, CSS or executable commands.
 export function createMenuLayout() {
-  const actionIds = Object.freeze(['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share',
+  const actionIds = Object.freeze(['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share',
     'notInterested', 'channelAge', 'dontRecommend', 'report']);
   const labels = Object.freeze({ playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
-    savePlaylist: 'Save to playlist', download: 'Download', share: 'Share', notInterested: 'Not interested',
+    savePlaylist: 'Save to playlist', download: 'Download', hype: 'Hype', share: 'Share', notInterested: 'Not interested',
     channelAge: 'Filter channel uploads', dontRecommend: 'Don’t recommend channel', report: 'Report' });
   const limits = Object.freeze({ maxGroups: 8, maxDepth: 3, maxNameLength: 40 });
   const groupId = value => value === 'channelTools' || /^submenu-[a-z0-9-]{1,24}$/.test(value);
@@ -23,7 +23,7 @@ export function createMenuLayout() {
   function validate(value) {
     try {
       if (!fields(value, ['version', 'nodes']) || value.version !== 1 || !Array.isArray(value.nodes) ||
-          Object.getPrototypeOf(value.nodes) !== Array.prototype || value.nodes.length < actionIds.length ||
+          Object.getPrototypeOf(value.nodes) !== Array.prototype || value.nodes.length < actionIds.length - 1 ||
           value.nodes.length > actionIds.length + limits.maxGroups ||
           Reflect.ownKeys(value.nodes).length !== value.nodes.length + 1) return null;
       const nodes = new Map();
@@ -46,7 +46,10 @@ export function createMenuLayout() {
         }
         nodes.set(node.id, node);
       }
-      if (actionIds.some(id => !nodes.has(id))) return null;
+      if (actionIds.some(id => id !== 'hype' && !nodes.has(id))) return null;
+      // Earlier layouts predate Hype. Preserve every existing node and append
+      // its previously native-visible action without resetting custom groups.
+      if (!nodes.has('hype')) nodes.set('hype', { id:'hype', parent:'root', visible:true });
       for (const node of nodes.values()) {
         const visited = new Set([node.id]);
         let parent = node.parent, depth = actionIds.includes(node.id) ? 0 : 1;
@@ -56,7 +59,7 @@ export function createMenuLayout() {
           visited.add(parent); parent = owner.parent;
         }
       }
-      return clone(value);
+      return clone({ version:1, nodes:[...nodes.values()] });
     } catch { return null; }
   }
   function fromPreferences(preferences = {}) {
@@ -67,7 +70,7 @@ export function createMenuLayout() {
     const defaultOrder = [...actionIds, 'channelTools'];
     const requested = Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder : [];
     const order = [...new Set([...requested.filter(id => defaultOrder.includes(id)), ...defaultOrder])];
-    const visibility = { download: preferences.menuShowDownload === true, channelAge: preferences.menuShowAgeLimit !== false,
+    const visibility = { download: preferences.menuShowDownload === true, hype: preferences.menuShowHype !== false, channelAge: preferences.menuShowAgeLimit !== false,
       notInterested: preferences.menuShowNotInterested !== false, dontRecommend: preferences.menuShowDontRecommend !== false,
       report: preferences.menuShowReport !== false };
     return { version: 1, nodes: order.flatMap(id => id === 'channelTools'

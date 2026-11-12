@@ -83,6 +83,8 @@ function createHarness() {
     PLAYER_RESTORE_RETRY_DELAYS_MS: [50, 250, 1000, 3000, 8000, 15000],
     document: { body, fullscreenElement: null },
     floatedPlayer: player,
+    floatedWatchObserver: { disconnect() {} },
+    floatedWatchTargets: [],
     playerPlaceholder: {},
     restoreParent,
     restoreNextSibling: null,
@@ -122,6 +124,7 @@ function createHarness() {
   };
   for (const name of [
     "isBodyActive",
+    "stopFloatedWatchObservation",
     "isBodyFloating",
     "isPlayerInFullscreen",
     "clearPlayerRestoreRetries",

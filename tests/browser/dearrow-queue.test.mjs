@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from "./fixture-browser.mjs";
 
 const SOURCE = readFileSync(new URL("../../sources/modules/youtube-watch-layout-cleaner.user.js", import.meta.url), "utf8");
 const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
@@ -256,7 +256,7 @@ test("Interface setting saves queue-only logo visibility without disabling DeArr
   await toggle.uncheck();
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showDeArrowQueueButton, KEY), undefined,
     "Draft changes must not be written before Save");
-  await page.locator('#ytms-save-preview').click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showDeArrowQueueButton, KEY), false);
   await page.reload();
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000 });
@@ -269,7 +269,7 @@ test("Interface setting saves queue-only logo visibility without disabling DeArr
   await page.locator('#ytms-settings-button').click();
   await page.locator('#ytms-tab-interface').click();
   assert.equal(await toggle.isChecked(), false);
-  await toggle.check(); await page.locator('#ytms-save-preview').click();
+  await toggle.check(); await saveFixtureSettings(page);
   await page.reload();
   await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000 });
   await page.evaluate(() => fixture.installDeArrow());

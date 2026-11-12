@@ -197,6 +197,11 @@ export async function waitForSuiteHealth(page, moduleCount, {
   }
 }
 
+export async function saveFixtureSettings(page) {
+  await page.locator('#ytms-save-preview').click();
+  await page.locator('#ytms-save-preview[aria-busy="true"]').waitFor({ state: 'detached' });
+}
+
 // Language: en-GB. These synthetic watch fixtures start on a fresh blank page.
 // Verify the parsed document directly instead of depending on a Firefox load
 // event notification. Production-script health is checked separately afterwards.

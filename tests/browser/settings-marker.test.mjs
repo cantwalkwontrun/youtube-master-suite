@@ -14,9 +14,9 @@ const fixture=base.replace('</head>',`<style>
 .ytp-scrubber-container{position:absolute;top:-2px;left:-6px;width:12px;height:12px;transform:translateX(200px)}
 .ytp-scrubber-button{width:12px;height:12px;border-radius:50%;background:#f00}
 </style></head>`).replace('<video class="html5-main-video"></video>','<video class="html5-main-video"></video>'+scrubber);
-let browser;
-before(async()=>{browser=await launchFixtureBrowser();});
-after(async()=>{await browser?.close();});
+let browser,browserLaunch;
+before(async()=>{browser=await(browserLaunch=launchFixtureBrowser());});
+after(async()=>{await(await browserLaunch)?.close();});
 async function open(t,{viewport={width:1280,height:900},light=false}={}){
   const context=await browser.newContext({viewport,serviceWorkers:'block'});
   await context.route('**/*',route=>route.request().url().startsWith('https://www.youtube.com/watch?')?
@@ -58,6 +58,21 @@ async function syntheticFile(page,colour='#00aa66'){
 async function choose(page){await page.locator('#ytms-marker-file').setInputFiles(await syntheticFile(page));await page.locator('#ytms-marker-save').waitFor();await page.waitForFunction(()=>!document.getElementById('ytms-marker-save').disabled);}
 async function markerSaved(page){await page.locator('#ytms-marker-save').click();await page.locator('[data-ytms-playhead-marker="1"] > .ytms-playhead-marker').waitFor({state:'attached'});}
 async function stored(page){return page.evaluate(({settingsKey,markerKey})=>({settings:fixtureStorage.getItem(settingsKey),marker:fixtureStorage.getItem(markerKey)}),{settingsKey,markerKey});}
+
+test('page-script clicks cannot save a prepared marker or remove a saved marker',async t=>{
+  const page=await open(t),before=await stored(page);
+  await choose(page);
+  await page.evaluate(()=>document.getElementById('ytms-marker-save').click());
+  assert.deepEqual(await stored(page),before);
+  await markerSaved(page);
+  const saved=await stored(page);
+  await page.evaluate(()=>document.getElementById('ytms-marker-remove').click());
+  assert.deepEqual(await stored(page),saved);
+  await page.locator('#ytms-marker-remove').click();
+  await page.waitForFunction(key => fixtureStorage.getItem(key) === null &&
+    document.getElementById('ytms-marker-status').textContent.includes('red playback dot is restored'), markerKey);
+  assert.equal((await stored(page)).marker,null);
+});
 
 test('choosing an image prepares a thumbnail without saving or dirtying preferences, and Save image applies without reload',async t=>{
   const page=await open(t),before=await stored(page);
@@ -136,6 +151,7 @@ test('Save image and Restore red dot preserve a newer marker written by another 
       const raw=JSON.stringify(value);fixtureStorage.setItem(key,raw);return raw;
     },{key:markerKey,size});
     await page.locator(`#ytms-${action}`).click();
+    await page.waitForFunction(()=>/changed in another window/i.test(document.getElementById('ytms-marker-status').textContent));
     assert.match(await page.locator('#ytms-marker-status').textContent(),/changed in another window/i);
     assert.equal((await stored(page)).marker,newer);
     assert.equal((await stored(page)).settings,settingsBefore);

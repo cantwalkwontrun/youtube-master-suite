@@ -274,7 +274,7 @@ async function assertPreservedChat(page, message = "Unsent live-chat message") {
   assert.deepEqual(await page.evaluate(() => {
     const state = liveChatFixture;
     return {
-      frame: document.querySelector("ytd-live-chat-frame#chat") === state.frame,
+      frame: [...document.querySelectorAll("ytd-live-chat-frame#chat")].includes(state.frame),
       iframe: state.frame.querySelector("#chatframe") === state.iframe,
       frameParent: state.frame.parentNode === state.originalParent,
       iframeParent: state.iframe.parentNode === state.originalIframeParent,
@@ -894,6 +894,248 @@ test("late chat insertion and replaced playback controls install exactly one wor
   await assertOpen(page);
 });
 
+test("a retained stale chat frame does not suppress the current video's chat control", async t => {
+  const page = await openFixture(t);
+  await page.locator(BUTTON).waitFor();
+  await page.evaluate(() => { liveChatFixture.iframe.contentDocument.getElementById("message").value = "Unsent live-chat message"; });
+  await page.evaluate(() => {
+    const stale = document.createElement("ytd-live-chat-frame");
+    stale.id = "chat";
+    const iframe = document.createElement("iframe");
+    iframe.id = "chatframe";
+    iframe.src = "/live_chat?v=bbbbbbbbbbb&fixture=retained-old-chat";
+    stale.append(iframe);
+    stale.hidden = true;
+    liveChatFixture.originalParent.prepend(stale);
+    window.retainedChatFixture = stale;
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 1,
+    "Only a frame matching the playing video's source may compete for the chat button");
+  await page.locator(BUTTON).click();
+  await page.waitForFunction(() => liveChatFixture.frame.matches(":popover-open"));
+  assert.equal(await page.evaluate(() => retainedChatFixture.matches(":popover-open")), false);
+  await assertPreservedChat(page);
+});
+
+test("retained hidden right controls do not capture the live-chat button", async t => {
+  const page = await openFixture(t);
+  await page.locator(BUTTON).waitFor();
+  await page.evaluate(() => { liveChatFixture.iframe.contentDocument.getElementById("message").value = "Unsent live-chat message"; });
+  await page.evaluate(() => {
+    const previous = document.querySelector("#movie_player .ytp-right-controls");
+    const replacement = document.createElement("div");
+    replacement.className = "ytp-right-controls";
+    replacement.dataset.fixtureCurrentControls = "true";
+    replacement.innerHTML = '<button class="ytp-fullscreen-button ytp-button">Fullscreen</button>';
+    const retained = document.createElement("div");
+    retained.hidden = true;
+    previous.replaceWith(retained, replacement);
+    retained.append(previous);
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).isVisible(), true,
+    "The retained native control row must not steal the current control's button");
+  assert.equal(await page.locator(BUTTON).evaluate(button =>
+    button.closest("[data-fixture-current-controls]") !== null), true);
+  assert.equal(await page.locator(BUTTON).count(), 1);
+  await page.locator(BUTTON).click();
+  await assertOpen(page);
+  await assertPreservedChat(page);
+});
+
+test("ordinary native controls autohide keeps the chat control and open chat session", async t => {
+  const page = await openFixture(t);
+  await page.addStyleTag({ content: '#movie_player.ytp-autohide .ytp-right-controls { visibility: hidden; }' });
+  await page.locator(BUTTON).click();
+  await assertOpen(page);
+  await page.frameLocator("#chatframe").locator("#message").fill("Unsent live-chat message");
+  await page.evaluate(() => {
+    document.getElementById("movie_player").classList.add("ytp-autohide");
+    window.dispatchEvent(new Event("yt-page-data-updated"));
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 1);
+  assert.equal(await page.evaluate(() => liveChatFixture.frame.matches(":popover-open")), true);
+  await page.evaluate(() => document.getElementById("movie_player").classList.remove("ytp-autohide"));
+  assert.equal(await page.locator(BUTTON).isVisible(), true);
+  await assertPreservedChat(page);
+});
+
+test("Live chat and Mirror recover an existing toolbar revealed without a page event or another Suite shortcut", async t => {
+  const page = await openFixture(t, { values: {
+    mirrorButton: true, liveChatButton: true, playerSettingsIcon: "off",
+    restoreMiniplayerButton: false, snapshotButton: false, transcriptDownload: false,
+  } });
+  await page.locator(BUTTON).waitFor();
+  await page.locator("#ytppl-video-mirror-button").waitFor();
+  await page.evaluate(() => {
+    document.querySelector("#movie_player .ytp-right-controls").hidden = true;
+    window.dispatchEvent(new Event("yt-page-data-updated"));
+  });
+  await page.waitForFunction(() => !document.querySelector("#ytppl-live-chat-button, #ytppl-video-mirror-button"));
+  await page.evaluate(() => { document.querySelector("#movie_player .ytp-right-controls").hidden = false; });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 1);
+  assert.equal(await page.locator("#ytppl-video-mirror-button").count(), 1);
+  await page.locator(BUTTON).click();
+  await assertOpen(page);
+  await page.locator("#ytppl-video-mirror-button").click();
+  assert.equal(await page.locator("#ytppl-video-mirror-button").getAttribute("aria-pressed"), "true");
+});
+
+for (const hiddenBy of ["opacity", "scale", "inert"]) {
+  test(`Live chat selects the current watch player instead of a ${hiddenBy}-hidden retained owner`, async t => {
+    const page = await openFixture(t);
+    await page.locator(BUTTON).waitFor();
+    await page.evaluate(hiddenBy => {
+      const old = document.querySelector("ytd-watch-flexy"); old.id = "retained-watch";
+      if (hiddenBy === "opacity") old.style.opacity = "0";
+      if (hiddenBy === "scale") old.style.transform = "scale(0)";
+      if (hiddenBy === "inert") old.inert = true;
+      const current = document.createElement("ytd-watch-flexy"); current.id = "current-watch";
+      current.innerHTML = '<div id="movie_player" class="html5-video-player"><video class="html5-main-video"></video><div class="ytp-right-controls"><button class="ytp-settings-button ytp-button">Settings</button><button class="ytp-fullscreen-button ytp-button">Fullscreen</button></div></div><ytd-live-chat-frame id="chat"><div id="show-hide-button"><button id="button">Hide chat</button></div></ytd-live-chat-frame>';
+      current.querySelector("#movie_player").getVideoData = () => ({ video_id: fixture.playerId });
+      old.after(current);
+      window.dispatchEvent(new Event("yt-page-data-updated"));
+    }, hiddenBy);
+    await settle(page);
+    const button = page.locator("#current-watch " + BUTTON);
+    assert.equal(await button.count(), 1);
+    assert.equal(await page.locator("#retained-watch " + BUTTON).count(), 0);
+    await button.click();
+    assert.equal(await page.locator("#current-watch " + PANEL).evaluate(frame => frame.matches(":popover-open")), true);
+    assert.equal(await page.locator("#retained-watch " + PANEL).evaluate(frame => frame.matches(":popover-open")), false);
+  });
+}
+
+test("a late native collapse button discovers an initially empty chat frame", async t => {
+  const page = await openFixture(t, { nativeChat: false });
+  await page.evaluate(() => {
+    const frame = document.createElement("ytd-live-chat-frame");
+    frame.id = "chat";
+    frame.setAttribute("collapsed", "");
+    const wrapper = document.createElement("div");
+    wrapper.id = "show-hide-button";
+    frame.append(wrapper);
+    document.getElementById("secondary").append(frame);
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 0,
+    "An empty placeholder must not claim that a video has chat");
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.id = "button";
+    button.textContent = "Show chat";
+    document.querySelector("ytd-live-chat-frame#chat #show-hide-button").append(button);
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 1,
+    "Native lazy rendering must not require a subsequent navigation or resize event");
+  assert.equal(await page.locator(BUTTON).isVisible(), true);
+});
+
+test("multiple current chat frames remain ambiguous and do not receive a guessed control", async t => {
+  const page = await openFixture(t);
+  await page.locator(BUTTON).waitFor();
+  await page.evaluate(() => {
+    const duplicate = document.createElement("ytd-live-chat-frame");
+    duplicate.id = "chat";
+    const iframe = document.createElement("iframe");
+    iframe.id = "chatframe";
+    iframe.src = "/live_chat?v=aaaaaaaaaaa&fixture=ambiguous-chat";
+    duplicate.append(iframe);
+    liveChatFixture.originalParent.append(duplicate);
+  });
+  await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 0);
+  assert.equal(await page.locator(CLOSE).count(), 0);
+});
+
+for (const hiddenBy of ["hidden", "scale"]) test(`a floating player's chat uses its validated watch owner instead of a ${hiddenBy} retained placeholder`, async t => {
+  const page = await openFixture(t);
+  await page.locator(BUTTON).waitFor();
+  await page.evaluate(hiddenBy => {
+    const old = document.querySelector("ytd-watch-flexy"); old.id = "retained-watch";
+    if (hiddenBy === "hidden") old.hidden = true;
+    else old.style.cssText = "position:absolute;top:0;left:0;transform:scale(0);transform-origin:0 0";
+    const stalePlaceholder = document.createElement("div"); stalePlaceholder.id = "ytsmp-player-placeholder"; old.append(stalePlaceholder);
+    const current = document.createElement("ytd-watch-flexy"); current.id = "current-watch";
+    current.style.cssText = "position:absolute;top:-600px;left:0;width:1280px;height:0";
+    current.innerHTML = '<div id="single-column-container"><div id="player" style="width:640px;height:360px"></div></div><ytd-live-chat-frame id="chat"><div id="show-hide-button"><button id="button">Hide chat</button></div></ytd-live-chat-frame>';
+    const player = document.createElement("div"); player.id = "movie_player"; player.className = "html5-video-player";
+    player.innerHTML = '<video class="html5-main-video"></video><div class="ytp-right-controls"><button class="ytp-settings-button ytp-button">Settings</button><button class="ytp-fullscreen-button ytp-button">Fullscreen</button></div>';
+    player.getVideoData = () => ({ video_id: fixture.playerId });
+    window.floatingButtonFixture = { keys: [], player };
+    player.addEventListener("keydown", event => { if (event.key === "i") floatingButtonFixture.keys.push("current"); });
+    old.querySelector("#movie_player").addEventListener("keydown", event => { if (event.key === "i") floatingButtonFixture.keys.push("retained"); });
+    current.querySelector("#player").append(player);
+    document.body.append(current);
+    window.dispatchEvent(new Event("yt-page-data-updated"));
+  }, hiddenBy);
+  await page.waitForFunction(() => floatingButtonFixture.player.parentElement === document.body &&
+    document.body.classList.contains("ytsmp-scroll-miniplayer-active"));
+  await settle(page);
+  const button = page.locator("body > #movie_player " + BUTTON);
+  assert.equal(await button.count(), 1, JSON.stringify(await page.evaluate(() =>
+    [...document.querySelectorAll('ytd-watch-flexy, body > #movie_player')].map(element => ({
+      id: element.id, tag: element.localName, hidden: element.hidden,
+      rect: { width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height },
+      display: getComputedStyle(element).display, opacity: getComputedStyle(element).opacity,
+    })))));
+  await button.click();
+  assert.equal(await page.locator("#current-watch " + PANEL).evaluate(frame => frame.matches(":popover-open")), true);
+  assert.equal(await page.locator("#retained-watch " + PANEL).evaluate(frame => frame.matches(":popover-open")), false);
+  const miniplayer = page.locator("body > #movie_player #tmk-miniplayer-button");
+  // Native control reconstruction has its own bounded debounce, independent
+  // of the chat controller's animation-frame reconciliation.
+  await miniplayer.waitFor({ state: "visible" });
+  assert.equal(await miniplayer.count(), 1);
+  await miniplayer.click();
+  assert.deepEqual(await page.evaluate(() => floatingButtonFixture.keys), ["current"]);
+});
+
+for (const enabled of [false, true]) test(`player additions work together with the header shortcut disabled (additions ${enabled})`, async t => {
+  const page = await openFixture(t, { values: {
+    mirrorButton: enabled, liveChatButton: enabled, snapshotButton: enabled, transcriptDownload: enabled,
+    headerSettingsIcon: "off", playerSettingsIcon: "monochrome",
+  } });
+  const actionIds = ["ytppl-video-mirror-button", "ytppl-live-chat-button", "ytms-snapshot-button", "ytms-transcript-button"];
+  await page.locator("#ytms-player-settings-button").waitFor();
+  assert.equal(await page.locator("#ytms-settings-button").isVisible(), false);
+  for (const id of actionIds) {
+    assert.equal(await page.locator("#" + id).count(), enabled ? 1 : 0, id);
+    if (enabled) assert.equal(await page.locator("#" + id).isVisible(), true, id);
+  }
+  if (enabled) {
+    await page.evaluate(() => {
+      window.combinedButtonsFixture = { downloads: [], settings: GM_getValue("yt-master-suite.settings.v1") };
+      const video = document.querySelector("#movie_player video");
+      Object.defineProperties(video, { videoWidth: { configurable: true, value: 320 }, videoHeight: { configurable: true, value: 180 }, readyState: { configurable: true, value: 4 } });
+      video.play = () => { throw Error("Unexpected playback start"); };
+      video.pause = () => { throw Error("Unexpected pause"); };
+      HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {} });
+      HTMLCanvasElement.prototype.toBlob = callback => callback(new Blob(["synthetic frame"]));
+      HTMLAnchorElement.prototype.click = function () { combinedButtonsFixture.downloads.push(this.download); };
+      const transcript = document.createElement("ytd-transcript-renderer"); transcript.style.display = "block";
+      transcript.innerHTML = '<ytd-transcript-segment-renderer style="display:block"><span class="segment-timestamp">0:00</span><span class="segment-text">Synthetic transcript</span></ytd-transcript-segment-renderer>';
+      document.querySelector("ytd-watch-flexy").append(transcript);
+    });
+    await page.locator("#ytppl-video-mirror-button").click();
+    assert.equal(await page.locator("video.html5-main-video").getAttribute("data-ytppl-video-mirrored"), "1");
+    await page.locator(BUTTON).click(); await assertOpen(page);
+    await page.locator("#ytms-snapshot-button").click();
+    await page.locator("#ytms-transcript-button").click();
+    assert.deepEqual(await page.evaluate(() => combinedButtonsFixture.downloads), ["youtube-frame.png", "youtube-transcript.txt"]);
+    assert.equal(await page.evaluate(() => GM_getValue("yt-master-suite.settings.v1") === combinedButtonsFixture.settings), true);
+    await page.locator(BUTTON).click(); await assertClosed(page);
+  }
+  await page.locator("#ytms-player-settings-button").click();
+  assert.equal(await page.locator("#ytms-settings-dialog").evaluate(dialog => dialog.open), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#ytms-settings-dialog").evaluate(dialog => dialog.open), false);
+});
+
 test("navigation closes old chat and clears the temporary override before another live video", async t => {
   const page = await openFixture(t);
   await page.locator(BUTTON).click();
@@ -947,6 +1189,37 @@ test("BFCache suspension closes chat and restores a single working player contro
   await page.locator(BUTTON).click();
   await assertOpen(page);
   assert.equal(await page.locator(CLOSE).count(), 1);
+});
+
+test("a late initial pageshow cannot resume Live chat and Mirror during unfinished navigation", async t => {
+  const page = await openFixture(t, { values: { mirrorButton: true } });
+  await page.locator(BUTTON).click(); await assertOpen(page);
+  await page.frameLocator("#chatframe").locator("#message").fill("Unsent live-chat message");
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("yt-navigate-start"));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+  }); await settle(page);
+  assert.equal(await page.locator(BUTTON).count(), 0);
+  assert.equal(await page.locator("#ytppl-video-mirror-button").count(), 0);
+  assert.equal(await page.locator(PANEL).evaluate(frame => frame.matches(":popover-open")), false);
+  await page.evaluate(() => window.dispatchEvent(new Event("yt-navigate-finish")));
+  await page.locator(BUTTON).waitFor();
+  await page.locator("#ytppl-video-mirror-button").waitFor();
+  await page.locator(BUTTON).click(); await assertOpen(page);
+  await assertPreservedChat(page);
+});
+
+test("actual BFCache restoration resumes Live chat after interrupted navigation", async t => {
+  const page = await openFixture(t, { values: { mirrorButton: true } });
+  await page.locator(BUTTON).click(); await assertOpen(page);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("yt-navigate-start"));
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await page.locator(BUTTON).waitFor();
+  await page.locator("#ytppl-video-mirror-button").waitFor();
+  await page.locator(BUTTON).click(); await assertOpen(page);
 });
 
 test("missing Popover API fails safely without moving chat or changing playback controls", async t => {

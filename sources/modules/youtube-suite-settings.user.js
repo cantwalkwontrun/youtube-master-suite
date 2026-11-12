@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.64
+// @version      1.81
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -31,6 +31,7 @@
   let playerTooltip = null;
   let playerTarget = null;
   let watchedPlayerBranch = [];
+  let watchedMissingControls = false;
   let watchedThemeRoot = null;
   let watchedDocumentRoot = null;
   let watchedBody = null;
@@ -40,7 +41,7 @@
     if (suspended) return;
     hidePlayerTooltip();
     try {
-      openSettings();
+      openSettings(null, true);
       panel?.openChannels(channel, context);
     } catch (error) {
       suite.reportModuleError('suiteSettings', 'open channel upload filters', error);
@@ -51,9 +52,10 @@
     const dialog = suite.createSettingsDialog(document);
     document.body.append(dialog);
     const panelFooter = dialog.querySelector('footer');
+    let panelSession = false;
 
     const $ = id => dialog.querySelector(`[id="ytms-${id}"]`);
-    let reloadWarnedChannelDraft = false;
+    let reloadWarnedDrafts = new Set();
     const DEFAULTS = settings.defaults;
     const GROUPS = {
       feed: [
@@ -71,7 +73,7 @@
           value => ({ native: 'YouTube default', elapsed: 'Elapsed / total', remaining: 'Remaining / total' })[value]],
         ['timelinePreviewSize', 'Timeline preview size', ['auto', 'small', 'medium', 'large', 'native'],
           value => ({ auto: 'Automatic (fit player)', small: 'Small', medium: 'Medium', large: 'Large', native: 'YouTube default' })[value]],
-        ['theatreMode', 'Automatic theatre mode'], ['wheelVolume', 'Right-button wheel volume'],
+        ['theatreMode', 'Automatic theatre mode'], ['wheelVolume', 'Mouse wheel volume'],
         ['wheelStep', 'Volume step', ['1', '2', '5', '10'], value => `${value}%`],
         ['preferredVideoQuality', 'Preferred video quality', ['off', 'highest', 'tiny', 'small', 'medium', 'large', 'hd720', 'hd1080', 'hd1440', 'hd2160'],
           value => ({ off: 'YouTube default', highest: 'Highest available', tiny: '144p', small: '240p', medium: '360p', large: '480p',
@@ -105,7 +107,7 @@
       hidePodcasts: 'Remove podcast cards and shelves from supported feeds.',
       hideMembersOnly: 'Remove cards for videos restricted to channel members.',
       watchedThreshold: 'Choose how much watched progress is required before a video card is hidden.',
-      keepHoverPreviews: 'Allow native hover previews on Home while the miniplayer is open. Honours YouTube’s Inline playback preference. Experimental: unsupported layouts retain YouTube’s behaviour. Off by default; applies after reload.',
+      keepHoverPreviews: 'Allow native hover previews on Home while the miniplayer is open. Honours YouTube’s Inline playback preference. Enabling this turns off Disable video previews. Experimental: unsupported layouts retain YouTube’s behaviour.',
       yellowCaptions: 'Use readable yellow subtitles with a black shadow in the player and inline previews.',
       mirrorButton: 'Show the horizontal flip control. Only the video image is mirrored, not captions or controls.',
       liveChatButton: 'Show a playback-bar button for native live chat when available, including supported fullscreen views. Chat visibility is temporary for the current video. This button preference applies after reload.',
@@ -113,14 +115,14 @@
       timeDisplayMode: 'Choose elapsed or remaining time beside the total duration using YouTube’s native timer toggle. Live streams, adverts and unsupported timers are unchanged. Applies after reload.',
       timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. The preview may briefly flicker or resize near SponsorBlock segments or chapter boundaries. Applies after reload.',
       theatreMode: 'Start watch videos in YouTube’s theatre view.',
-      wheelVolume: 'Hold the right mouse button and scroll over the player to adjust volume.',
+      wheelVolume: 'Scroll over the player to adjust volume. The right mouse button is required by default. Plain vertical scrolling takes you to comments when scrollable fullscreen comments are active.',
       wheelStep: 'Choose the volume change for each wheel step during the right-button gesture.',
       preferredVideoQuality: 'Request this quality on each new video, or the nearest lower available resolution. Opening native player settings stops pending attempts. Higher quality uses more bandwidth. Applies after reload.',
-      hideRelated: 'Hide suggested videos beside the watch page without hiding the active queue.',
+      hideRelated: 'Hide suggested videos beside the watch page without hiding the active queue. Enabling this turns off Related videos below the player.',
       hideChat: 'Start each video with live chat hidden, without removing other engagement panels. The player’s live chat button can show it temporarily without changing this saved default.',
       hideInfoCards: 'Hide in-video information cards and their buttons.',
       hideEndScreens: 'Hide end-screen recommendation tiles without taking over native autoplay.',
-      fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Player-only fullscreen is unchanged.',
+      fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Enabling this turns off Hide all comments. Player-only fullscreen is unchanged.',
       disableTitleHashtagLinks: 'Keep hashtag text as ordinary title text without opening hashtag pages. Preserves YouTube’s title nodes and DeArrow replacements. Applies after reload.',
       miniplayerEnabled: 'Float the watch player into a corner when it scrolls out of view.',
       miniplayerSizeMode: 'Automatic keeps the existing adaptive size. Custom uses your chosen width, reduced only when needed to fit the window. Preview changes immediately; Save keeps them.',
@@ -132,6 +134,7 @@
       showDeArrowTitleButton: 'Show DeArrow’s title-button controls beside the watch-page title. Hidden by default; title and thumbnail replacements remain active. Applies after reload.',
       showDeArrowQueueButton: 'Show DeArrow’s original/custom toggle logo in queue titles. Hiding it does not disable DeArrow title or thumbnail replacements.',
       menuShowDownload: 'Show YouTube’s Download action when available. Hidden by default; this does not enable downloads or change your account permissions.',
+      menuShowHype: 'Show YouTube’s Hype action when available. Hiding it does not send a Hype action.',
       menuGroupChannelTools: 'On: place Filter channel uploads, Don’t recommend channel and Report in a Channel tools submenu. Off: keep enabled actions separate in the main menu. Not interested always stays in the main menu. Save and reload to apply.',
       menuShowAgeLimit: 'Add Filter channel uploads to set how old a selected channel’s uploads can be. It appears first in Channel tools by default.',
       menuShowNotInterested: 'Keep YouTube’s Not interested action visible when the video menu provides it.',
@@ -145,6 +148,7 @@
       DESCRIPTIONS[feature.key] = feature.description;
     }
     let saved = settings.read();
+    let savingPreferences = false;
     let draft = { ...saved };
     let menuEditor = null;
     let lastValidMiniplayerWidth = draft.miniplayerWidth;
@@ -156,8 +160,8 @@
     let channelManager = null;
     let channelFooterHost = null;
 
-    let supportPanel = null, extraControls = null;
-    const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
+    let supportPanel = null, extraControls = null, javascriptPanel = null;
+    const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'javascript', 'support', 'credits'];
     const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
     const searchInput = document.createElement('input');
     searchInput.id = 'ytms-settings-search'; searchInput.type = 'search'; searchInput.maxLength = 200;
@@ -175,9 +179,11 @@
     const searchStatus = document.createElement('p'); searchStatus.id = 'ytms-settings-search-status';
     searchStatus.setAttribute('role', 'status'); searchStatus.setAttribute('aria-live', 'polite');
     const searchList = document.createElement('div'); searchList.className = 'settings-search-list';
+    const searchActions = new WeakMap();
     searchResults.append(searchStatus, searchList); dialog.querySelector('.content').append(searchResults);
-    let searchIndex = [];
+    let searchIndex = [], searchActive = false;
     function resetSearch() {
+      searchActive = false;
       searchInput.value = ''; searchClear.hidden = true; searchResults.hidden = true;
       searchList.replaceChildren(); searchStatus.textContent = '';
       dialog.querySelector('nav').hidden = false;
@@ -186,7 +192,7 @@
       closePicker(false);
       resetSearch();
       currentTab = id;
-      $('restore-section-defaults').disabled = ['channels', 'extensions', 'support', 'credits'].includes(id);
+      $('restore-section-defaults').disabled = ['channels', 'extensions', 'javascript', 'support', 'credits'].includes(id);
       for (const tab of tabIds) {
         const selected = tab === id;
         const section = $(`section-${tab}`), button = $(`tab-${tab}`);
@@ -200,14 +206,16 @@
       if (id === 'channels') renderChannelRules();
       if (id === 'support') supportPanel?.refresh();
       extraControls?.selectTab(id);
+      javascriptPanel?.selectTab(id);
       if (focus) $(`tab-${id}`).focus();
     }
     for (const id of tabIds) {
       const tab = document.createElement('button');
-      tab.id = `ytms-tab-${id}`; tab.textContent = id === 'miniplayer' ? 'Miniplayer' : id[0].toUpperCase() + id.slice(1);
+      tab.id = `ytms-tab-${id}`; tab.textContent = id === 'javascript' ? 'Custom JS' : id[0].toUpperCase() + id.slice(1);
       tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', `ytms-section-${id}`);
-      tab.addEventListener('click', () => selectTab(id));
+      tab.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) selectTab(id); });
       tab.addEventListener('keydown', event => {
+        if (!event.isTrusted || !panelSession || !dialog.open) return;
         const index = tabIds.indexOf(id);
         const next = event.key === 'ArrowRight' ? (index + 1) % tabIds.length :
           event.key === 'ArrowLeft' ? (index + tabIds.length - 1) % tabIds.length :
@@ -292,12 +300,14 @@
     channelManager = suite.createChannelAgeDialog(document, suite.channelAge,
       change => suite.showChannelFilterConfirmation?.(change), {
         host: $('section-channels'), footerHost: channelFooterHost,
+        isActive: () => panelSession && dialog.open && !searchActive && currentTab === 'channels',
+        write: suite.writeChannelFilters,
         channelBackup: suite.backup, openFullBackup: () => selectTab('support', true),
         onImported: () => { channelEntry = 'settings'; channelNotice.hidden = true; channelManager.refresh(); },
         onComplete: () => finishChannelEdit(true), onCancel: previous => finishChannelEdit(false, previous),
       });
     function renderChannelRules() {
-      if (dialog.open && currentTab === 'channels') channelManager?.refresh();
+      if (panelSession && dialog.open && !searchActive && currentTab === 'channels') channelManager?.refresh();
     }
     function openChannels(channel, context) {
       channelEntry = context?.card && context?.videoId ? 'context' : 'settings';
@@ -308,6 +318,7 @@
 
     menuEditor = suite.createMenuEditor(document, suite.menuLayout, {
       getPreferences: () => draft,
+      getAppliedPreferences: () => settings.initial,
       setLayout: layout => {
         if (JSON.stringify(layout) === JSON.stringify(suite.menuLayout.fromPreferences(saved))) {
           for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
@@ -393,6 +404,8 @@
     const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
     credits.append(logo, heading, author, version); $('section-credits').append(credits);
     extraControls = suite.createSettingsExtraControls(document, window, suite, dialog);
+    javascriptPanel = suite.createCustomJavascriptPanel(document, suite.customJavascript);
+    $('section-javascript').append(javascriptPanel.element);
     const normaliseHex = settings.normaliseHex;
     function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
     function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -402,14 +415,17 @@
       return rgb(colour).map(value => { const channel = value / 255; return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; })
         .reduce((sum, channel, index) => sum + channel * [.2126, .7152, .0722][index], 0);
     }
+    const preferenceKeys = Object.keys(DEFAULTS);
+    const preferenceControlIds = { colourMode: 'colour-mode', viewerColour: 'viewer-hex', ownerColour: 'owner-hex' };
+    const preferenceBadges = new Map();
+    function samePreference(key, value, other) {
+      if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
+      return Array.isArray(value) && Array.isArray(other)
+        ? value.length === other.length && value.every((item, index) => item === other[index])
+        : value === other;
+    }
     function samePreferences(left, right) {
-      return Object.keys(DEFAULTS).every(key => {
-        const value = left[key], other = right[key];
-        if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
-        return Array.isArray(value) && Array.isArray(other)
-          ? value.length === other.length && value.every((item, index) => item === other[index])
-          : value === other;
-      });
+      return preferenceKeys.every(key => samePreference(key, left[key], right[key]));
     }
     function primaryActionState() {
       const invalid = (menuEditor && !menuEditor.isValid()) || (draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value))) ||
@@ -427,13 +443,55 @@
         const size = suite.getAppliedScrollMiniplayerSize?.();
         if (size && ['auto', 'custom'].includes(size.mode) && validSizeWidth(size.width)) {
           appliedSize = { miniplayerSizeMode: size.mode, miniplayerWidth: size.width };
+          // The panel previews a valid draft size live and restores the saved
+          // size on Cancel. This preview does not create a reload requirement.
+          if (size.mode === draft.miniplayerSizeMode && size.width === lastValidMiniplayerWidth) {
+            appliedSize = { miniplayerSizeMode: saved.miniplayerSizeMode, miniplayerWidth: saved.miniplayerWidth };
+          }
         }
       } catch { /* A failed module must not break settings. */ }
-      return {
-        invalid, inaccessible,
-        dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-        pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner, ...appliedSize }),
-      };
+      const checked = invalid || inaccessible ? draft : settings.validate(draft);
+      const applied = { ...settings.initial, corner: appliedCorner, ...appliedSize };
+      return { invalid, inaccessible, checked, applied,
+        dirty: invalid || inaccessible || !samePreferences(checked, saved), pendingReload: !samePreferences(saved, applied) };
+    }
+    function updatePreferenceStatus({ dirty, pendingReload, checked, applied }) {
+      const summary = externalConflict ? 'Settings changed in another window.'
+        : [dirty && 'Unsaved changes.', pendingReload && 'Saved changes need a reload.'].filter(Boolean).join(' ') || 'Saved settings are active on this page.';
+      const status = $('preference-status');
+      if (status.textContent !== summary) status.textContent = summary;
+      if (!dirty && !pendingReload && !preferenceBadges.size) return;
+      const changes = new Map();
+      if (dirty || pendingReload) for (const key of preferenceKeys) {
+        const unsaved = dirty && !samePreference(key, checked[key], saved[key]);
+        const needsReload = pendingReload && !samePreference(key, saved[key], applied[key]);
+        if (!unsaved && !needsReload) continue;
+        const id = key.startsWith('menu') ? 'menu-editor-heading' : preferenceControlIds[key] || key;
+        const flags = changes.get(id) || 0;
+        changes.set(id, flags | (unsaved ? 1 : 0) | (needsReload ? 2 : 0));
+      }
+      for (const [id, badge] of preferenceBadges) {
+        if (changes.has(id)) continue;
+        const control = $(id);
+        const references = (control?.getAttribute('aria-describedby') || '').split(/\s+/).filter(ref => ref && ref !== badge.id);
+        if (references.length) control.setAttribute('aria-describedby', references.join(' '));
+        else control?.removeAttribute('aria-describedby');
+        badge.remove(); preferenceBadges.delete(id);
+      }
+      for (const [id, flags] of changes) {
+        let badge = preferenceBadges.get(id);
+        if (!badge) {
+          const control = $(id), label = control?.labels?.[0];
+          if (!label && control !== menuOrderHeading) continue;
+          badge = document.createElement('span'); badge.className = 'preference-badge';
+          badge.id = `ytms-${id}-state`;
+          badge.setAttribute('aria-hidden', 'true');
+          (label || menuOrderHeading).append(badge); preferenceBadges.set(id, badge);
+          control.setAttribute('aria-describedby', [control.getAttribute('aria-describedby'), badge.id].filter(Boolean).join(' '));
+        }
+        const text = flags === 3 ? 'Unsaved · saved version needs reload' : flags === 1 ? 'Unsaved' : 'Reload needed';
+        if (badge.textContent !== text) badge.textContent = text;
+      }
     }
     function updatePrimaryAction() {
       const state = primaryActionState();
@@ -444,6 +502,7 @@
       if (button.textContent !== label) button.textContent = label;
       if (button.dataset.action !== action) button.dataset.action = action;
       if (button.disabled !== disabled) button.disabled = disabled;
+      updatePreferenceStatus(state);
       supportPanel?.updateDraftState();
       return state;
     }
@@ -453,7 +512,7 @@
       $('settings-status').hidden = false;
     }
     function reconcileStoredPreferences() {
-      if (!dialog.open) return true;
+      if (!panelSession || !dialog.open) return true;
       const current = settings.read();
       if (samePreferences(current, saved)) {
         // The corner storage event can arrive after a settings event already
@@ -589,11 +648,13 @@
     }
     function openPanel() {
       if (dialog.open) return;
+      panelSession = true;
       clearReloadConfirmation();
       saved = settings.read(); draft = { ...saved };
       externalConflict = false;
       supportPanel?.reset();
       extraControls.open();
+      javascriptPanel.open();
       menuDetails.open = false;
       channelEntry = 'settings'; channelNotice.hidden = true; channelManager.reset({ defer: true });
       $('settings-status').hidden = true;
@@ -607,6 +668,8 @@
 
     for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
     dialog.addEventListener('close', () => {
+      panelSession = false;
+      javascriptPanel.close();
       clearReloadConfirmation();
       applyMiniplayerSize(settings.read());
       extraControls.close();
@@ -665,28 +728,41 @@
       const group = $('reload-confirmation');
       const focused = group.contains(document.activeElement);
       setHidden(group, true);
-      reloadWarnedChannelDraft = false;
+      reloadWarnedDrafts.clear();
       if ((restoreFocus || focused) && dialog.open) $('save-preview').focus();
     }
+    function independentDraftCategories() {
+      return [channelManager.hasDraft() && 'channel-filter edits',
+        javascriptPanel.hasDraft() && 'Custom JavaScript edits', ...extraControls.draftCategories()].filter(Boolean);
+    }
+    function independentSavingCategories() {
+      return [channelManager.isSaving() && 'channel filters', supportPanel?.isSaving() && 'backup restore',
+        javascriptPanel.isSaving() && 'Custom JavaScript', ...extraControls.savingCategories()].filter(Boolean);
+    }
     function showReloadConfirmation() {
-      reloadWarnedChannelDraft = channelManager.hasDraft();
-      $('reload-message').textContent = reloadWarnedChannelDraft
-        ? 'Reload YouTube now? This will restart the current page and video. Unsaved channel-filter edits will be lost.'
-        : 'Reload YouTube now? This will restart the current page and video.';
+      const drafts = independentDraftCategories(), pending = independentSavingCategories();
+      reloadWarnedDrafts = new Set(pending.length ? [] : drafts);
+      $('reload-message').textContent = pending.length
+        ? `Wait for ${pending.join(', ')} saves to finish before reloading.`
+        : 'Reload YouTube now? This will restart the current page and video.' +
+          (drafts.length ? ` Unsaved ${drafts.join(', ')} will be lost.` : '');
       setHidden($('reload-confirmation'), false);
       $('cancel-reload').focus();
     }
     $('cancel-reload').addEventListener('click', () => clearReloadConfirmation(true));
-    $('confirm-reload').addEventListener('click', () => {
-      if (!dialog.open || $('reload-confirmation').hidden) return;
+    $('confirm-reload').addEventListener('click', event => {
+      if (!event.isTrusted || !panelSession || !dialog.open || $('reload-confirmation').hidden) return;
       if (!reconcileStoredPreferences() || $('reload-confirmation').hidden) return;
       const state = updatePrimaryAction();
       if (externalConflict || state.dirty || !state.pendingReload) return;
-      if (channelManager.hasDraft() && !reloadWarnedChannelDraft) { showReloadConfirmation(); return; }
+      if (independentSavingCategories().length || independentDraftCategories().some(category => !reloadWarnedDrafts.has(category))) {
+        showReloadConfirmation(); return;
+      }
       clearReloadConfirmation();
       location.reload();
     });
-    $('save-preview').addEventListener('click', () => {
+    $('save-preview').addEventListener('click', async event => {
+      if (!event.isTrusted || !panelSession || !dialog.open || savingPreferences) return;
       if (!reconcileStoredPreferences()) return;
       const state = updatePrimaryAction();
       if ($('save-preview').disabled) return;
@@ -694,7 +770,22 @@
         if (state.pendingReload) showReloadConfirmation();
         return;
       }
-      const result = settings.save(draft);
+      const confirmed = { ...draft }, baseline = saved;
+      savingPreferences = true;
+      $('save-preview').setAttribute('aria-busy', 'true');
+      let result;
+      try {
+        result = await suite.writeSettings(() => {
+          if (!dialog.open || !reconcileStoredPreferences() || baseline !== saved || !samePreferences(confirmed, draft)) {
+            return { ok: false, error: 'Settings changed while waiting to save. Review your draft and try again.' };
+          }
+          return settings.save(confirmed);
+        });
+      } finally {
+        savingPreferences = false;
+        $('save-preview').removeAttribute('aria-busy');
+      }
+      if (!dialog.open || baseline !== saved) return;
       if (result.ok) { saved = result.values; draft = { ...saved }; }
       const next = updatePrimaryAction();
       $('settings-status').hidden = false;
@@ -703,6 +794,7 @@
         : 'Saved. No reload needed.';
     });
     supportPanel = suite.createSettingsSupportPanel(document, suite, {
+      isActive: () => panelSession && dialog.open && !searchActive && currentTab === 'support',
       hasDraft: () => externalConflict || primaryActionState().dirty || channelManager.hasDraft(),
       onRestored: result => {
         clearReloadConfirmation();
@@ -736,8 +828,8 @@
     }
     addSearchEntry('interface', 'menu-order', 'Video context menu editor', menuOrderNote.textContent,
       Object.values(menuLabels).join(' '));
-    const menuSearchActions = { menuShowDownload:'download', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
-    const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
+    const menuSearchActions = { menuShowDownload:'download', menuShowHype:'hype', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
+    const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowHype:'Show Hype in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
     for (const key of Object.keys(menuSearchActions)) addSearchEntry('interface', key, menuSearchLabels[key], DESCRIPTIONS[key]);
 
     addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
@@ -753,10 +845,26 @@
     addSearchEntry('miniplayer', 'miniplayerSizeMode', 'Custom miniplayer width', sizeHelp.textContent, 'size resize automatic');
     addSearchEntry('player', 'playhead-marker-heading', 'Playback marker image', 'Choose a local image to replace the red playback dot.', 'playhead picture scrubber');
     addSearchEntry('credits', 'updates-heading', 'Check for script updates', 'Check a release source and open Tampermonkey to install an update.', 'latest version install');
+    addSearchEntry('javascript', 'custom-js-heading', 'Custom JavaScript',
+      'Run trusted saved code once on each full page load. Review the security warning and save separately.', 'script code startup automation');
+    function highlightSearchText(element, text, pattern) {
+      // Match literal terms only. User input and setting text never become HTML.
+      let end = 0;
+      for (const match of text.matchAll(pattern)) {
+        element.append(document.createTextNode(text.slice(end, match.index)));
+        const mark = document.createElement('mark'); mark.className = 'settings-search-match';
+        mark.textContent = match[0]; element.append(mark);
+        end = match.index + match[0].length;
+      }
+      element.append(document.createTextNode(text.slice(end)));
+    }
     function showSearch() {
       const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
       searchClear.hidden = !searchInput.value;
       if (!terms.length) { selectTab(currentTab); return; }
+      searchActive = true;
+      javascriptPanel?.selectTab(null);
+      extraControls?.selectTab(null);
       closePicker(false);
       // A selected tab must not point to a hidden panel while results are open.
       // Tabs return when the query is cleared or a result is chosen.
@@ -766,6 +874,8 @@
       if (channelFooterHost) channelFooterHost.hidden = true;
       panelFooter.classList.remove('ytms-channels-active');
       const matches = searchIndex.filter(entry => terms.every(term => entry.text.includes(term)));
+      const highlightPattern = new RegExp([...new Set(terms)].sort((a, b) => b.length - a.length)
+        .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'giu');
       searchStatus.textContent = matches.length === 0 ? 'No settings found' :
         matches.length === 1 ? '1 setting found' : `${matches.length} settings found`;
       searchList.replaceChildren();
@@ -776,13 +886,14 @@
       for (const entry of matches) {
         const result = document.createElement('button'); result.type = 'button'; result.className = 'settings-search-result';
         result.dataset.tab = entry.tab; result.dataset.target = entry.target;
-        const title = document.createElement('span'); title.className = 'settings-search-title'; title.textContent = entry.title;
+        const title = document.createElement('span'); title.className = 'settings-search-title';
+        highlightSearchText(title, entry.title, highlightPattern);
         const section = document.createElement('span'); section.className = 'settings-search-section';
-        section.textContent = $(`tab-${entry.tab}`).textContent;
+        highlightSearchText(section, $(`tab-${entry.tab}`).textContent, highlightPattern);
         const description = document.createElement('span'); description.className = 'settings-search-description';
-        description.textContent = entry.description;
+        highlightSearchText(description, entry.description, highlightPattern);
         result.append(title, section, description);
-        result.addEventListener('click', () => {
+        const activateResult = () => {
           selectTab(entry.tab);
           let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
           if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
@@ -800,7 +911,9 @@
           for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
           if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
           target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
-        });
+        };
+        searchActions.set(result, activateResult);
+        result.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) activateResult(); });
         searchList.append(result);
       }
       searchResults.hidden = false; dialog.querySelector('.content').scrollTop = 0;
@@ -808,13 +921,14 @@
     searchInput.addEventListener('input', event => { event.stopPropagation(); showSearch(); });
     searchInput.addEventListener('change', event => event.stopPropagation());
     searchInput.addEventListener('keydown', event => {
+      if (!event.isTrusted || !panelSession || !dialog.open) return;
       if (event.key === 'Escape' && searchInput.value) {
         event.preventDefault(); event.stopPropagation(); selectTab(currentTab); searchInput.focus();
       } else if (event.key === 'Enter') {
-        event.preventDefault(); searchList.querySelector('button')?.click();
+        event.preventDefault(); searchActions.get(searchList.querySelector('button'))?.();
       }
     });
-    searchClear.addEventListener('click', () => { selectTab(currentTab); searchInput.focus(); });
+    searchClear.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) { selectTab(currentTab); searchInput.focus(); } });
     dialog.addEventListener('close', () => supportPanel.close());
     populate(); selectTab('comments');
     return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
@@ -830,8 +944,8 @@
     if (document.getElementById(DIALOG_ID)?.open) panel?.updateTheme();
   }
 
-  function openSettings() {
-    if (suspended) return;
+  function openSettings(event, internal = false) {
+    if (suspended || !internal && !event?.isTrusted) return;
     hidePlayerTooltip();
     try {
       if (panel && !panel.dialog.isConnected) panel = null;
@@ -844,23 +958,46 @@
     }
   }
 
-  function isRendered(element) {
-    return Boolean(element?.isConnected && !element.closest('[hidden], [aria-hidden="true"]') && element.getClientRects().length);
+  function isRendered(element, requireBox = true) {
+    if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    if (requireBox) {
+      const box = element.getBoundingClientRect();
+      if (!(box.width > 0 && box.height > 0)) return false;
+    } else if (!element.getClientRects().length || !(element.getBoundingClientRect().width > 0)) return false;
+    for (let node = element; node; node = node.parentElement) {
+      const css = getComputedStyle(node);
+      if (css.display === 'none' || css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+    }
+    return true;
   }
 
   function getPlayerTarget() {
     if (location.pathname !== '/watch' && !location.pathname.startsWith('/live/')) return null;
-    const floatingOwner = document.querySelector('#ytsmp-player-placeholder')?.closest('ytd-watch-flexy');
+    const floatingOwner = [...document.querySelectorAll('#ytsmp-player-placeholder')]
+      .map(node => node.closest('ytd-watch-flexy')).find(owner => isRendered(owner, false));
     const mirrorPlayer = document.getElementById('ytppl-video-mirror-button')?.closest('#movie_player');
     const players = new Set([mirrorPlayer, ...document.querySelectorAll('#movie_player')]);
     for (const player of players) {
       if (!isRendered(player) || player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer')) continue;
       const root = player.closest('ytd-watch-flexy') || (player.parentElement === document.body ? floatingOwner : null);
-      if (isRendered(root) && player.querySelector('video.html5-main-video')) {
-        return { player, controls: player.querySelector('.ytp-right-controls'), root };
+      if (isRendered(root, false) && player.querySelector('video.html5-main-video')) {
+        const candidates = [...player.querySelectorAll('.ytp-right-controls')].filter(controls =>
+          !controls.closest('[hidden], [inert], [aria-hidden="true"]') && controls.getClientRects().length);
+        // Prefer the current controls over retained rows, but keep a sole row
+        // through normal auto-hide so revealing playback controls needs no repair.
+        const controls = candidates.find(candidate => {
+          const box = candidate.getBoundingClientRect();
+          if (!(box.width > 0 && box.height > 0)) return false;
+          for (let node = candidate; node && node !== player; node = node.parentElement) {
+            const css = getComputedStyle(node);
+            if (css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+          }
+          return true;
+        }) || (candidates.length === 1 ? candidates[0] : null);
+        return { player, controls, root };
       }
     }
-    const root = Array.from(document.querySelectorAll('ytd-watch-flexy')).find(isRendered);
+    const root = Array.from(document.querySelectorAll('ytd-watch-flexy')).find(owner => isRendered(owner, false));
     return root ? { root, player: null, controls: null } : null;
   }
 
@@ -975,7 +1112,7 @@
       image.src = settings.initial.playerSettingsIcon === 'colour' ? suite.settingsAssets.logo : suite.settingsAssets.playerLogo;
       image.alt = ''; image.width = 36; image.height = 36;
       image.setAttribute('aria-hidden', 'true'); playerButton.append(image);
-      playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(); });
+      playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(event); });
       playerButton.addEventListener('mouseenter', showPlayerTooltip);
       playerButton.addEventListener('focus', showPlayerTooltip);
       playerButton.addEventListener('mouseleave', hidePlayerTooltipOnMouseLeave);
@@ -1007,25 +1144,32 @@
     for (let node = target?.controls || target?.player || target?.root; node && node !== document.body; node = node.parentElement) playerBranch.add(node);
     if (target && !target.controls) {
       const scope = target.player || target.root;
-      for (const node of scope.querySelectorAll('#player, #player-container, #player-container-inner, #single-column-container, #full-bleed-container, #player-full-bleed-container, .ytp-chrome-bottom, .ytp-chrome-controls')) playerBranch.add(node);
+      for (const node of scope.querySelectorAll('#player, #player-container, #player-container-inner, #single-column-container, #full-bleed-container, #player-full-bleed-container, .ytp-chrome-bottom, .ytp-chrome-controls, .ytp-right-controls')) playerBranch.add(node);
     }
     const pageManager = app?.querySelector('ytd-page-manager, #page-manager');
     if (pageManager) playerBranch.add(pageManager);
     const branch = Array.from(playerBranch);
     if (!discoveryActive || root !== watchedDocumentRoot || document.body !== watchedBody ||
       app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
+      watchedMissingControls !== Boolean(target && !target.controls) ||
       branch.length !== watchedPlayerBranch.length || branch.some((node, index) => node !== watchedPlayerBranch[index])) {
       const registrations = [[root || document, { childList: true }]];
       if (document.body) registrations.push([document.body, { childList: true }]);
       if (app) registrations.push([app, { childList: true }]);
       if (mastheadContainer) registrations.push([mastheadContainer, { childList: true }]);
       if (masthead) registrations.push([masthead, { childList: true, subtree: true }]);
-      for (const node of branch) registrations.push([node, { childList: true, ...(node === target?.controls ? { subtree: true } : {}) }]);
+      for (const node of branch) registrations.push([node, { childList: true,
+        ...(node === target?.controls ? { subtree: true } : {}),
+        // A retained toolbar can be revealed with an attribute only. Observe
+        // its small ownership branch until insertion recovers, then release.
+        ...(target && !target.controls ? { attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'inert', 'class', 'style'] } : {}),
+      }]);
       discovery.replaceRegistrations(registrations);
       watchedApp = app; watchedMasthead = masthead;
       watchedDocumentRoot = root; watchedBody = document.body;
       watchedMastheadContainer = mastheadContainer; discoveryActive = true;
       watchedPlayerBranch = branch;
+      watchedMissingControls = Boolean(target && !target.controls);
     }
     installPlayerButton(target);
     if (!masthead) { button?.remove(); return; }
@@ -1059,6 +1203,7 @@
     // Text and comment updates cannot replace a player, control or header
     // anchor. Keep discovery for structural changes, not native label churn.
     for (const record of records) {
+      if (record.type === 'attributes') { scheduleInstall(); return; }
       for (const nodes of [record.addedNodes, record.removedNodes]) {
         for (const node of nodes) {
           if (node.nodeType === 1) { scheduleInstall(); return; }

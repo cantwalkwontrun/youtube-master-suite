@@ -20,7 +20,7 @@ const HTML = `<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><sty
   [hidden]{display:none!important}
   </style></head><body><ytd-video-renderer id="card"><a href="/watch?v=bbbbbbbbbbb">Video</a><ytd-menu-renderer><button id="trigger" aria-label="Video actions">⋮</button></ytd-menu-renderer></ytd-video-renderer>
   <button id="outside">Outside</button><tp-yt-iron-dropdown hidden></tp-yt-iron-dropdown></body></html>`;
-// Captured from the user's real desktop YouTube lockup menu trigger. This
+// Synthetic fixture matching YouTube's desktop lockup menu trigger. This
 // current wrapper has neither ytd-menu-renderer nor aria-haspopup.
 const MODERN_CARD = `<yt-lockup-view-model id="card"><a href="/watch?v=bbbbbbbbbbb">Video</a>
   <div class="ytLockupMetadataViewModelMenuButton"><button-view-model class="ytSpecButtonViewModelHost">
@@ -42,7 +42,7 @@ async function open(t, options = {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.goto(fixtureUrl);
-  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover, blockTube, duplicateNotInterested, iconSlots, iconLoaded }) => {
+  await page.evaluate(({ sheet, settings, missingChannel, wrongVideo, unknown, unsupported, ambiguous, delayed, eventless, delayMs, nativeContract, unknownWrapper, cardTag, containerTag, noQueue, nativeBinding, bindingFault, libraryActions, contentType, modelVideo, nativeAutofocus, presentationRows, lateNativeLayout, nativeHover, blockTube, duplicateNotInterested, iconSlots, iconLoaded, watchActions }) => {
     let card = document.getElementById('card');
     if (cardTag) {
       const replacement = document.createElement(cardTag); replacement.id = card.id;
@@ -84,6 +84,9 @@ async function open(t, options = {}) {
         ['move', 'Move to top', 'VERTICAL_ALIGN_TOP', { playlistEditEndpoint: { playlistId: 'fixture' } }]);
       definitions.push(['hideRecord', 'Hide native record', 'HIDE', { feedbackEndpoint: { feedbackToken: 'fixture-library-feedback' } }]);
     }
+    if (watchActions) definitions.splice(0,definitions.length,
+      ['savePlaylist','Save to playlist','BOOKMARK_BORDER'],['download','Download','OFFLINE_DOWNLOAD'],
+      ['hype','Hype','HYPE'],['report','Report','FLAG']);
     if (unknown) definitions.splice(3, 0, ['unrecognised', 'Unrecognised native action', 'SOMETHING_NEW']);
     if (blockTube) definitions.push(['blockChannel', 'Block Channel', 'NOT_INTERESTED', { feedbackEndpoint: { feedbackToken: 'fixture-cloned' } }],
       ['blockVideo', 'Block Video', 'NOT_INTERESTED', { feedbackEndpoint: { feedbackToken: 'fixture-cloned' } }]);
@@ -184,7 +187,7 @@ async function open(t, options = {}) {
     libraryActions: Boolean(options.libraryActions), contentType: options.contentType, modelVideo: options.modelVideo,
     nativeAutofocus: options.nativeAutofocus, presentationRows: Boolean(options.presentationRows),
     lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover), blockTube: Boolean(options.blockTube), duplicateNotInterested: Boolean(options.duplicateNotInterested),
-    iconSlots:Boolean(options.iconSlots),iconLoaded:Boolean(options.iconLoaded) });
+    iconSlots:Boolean(options.iconSlots),iconLoaded:Boolean(options.iconLoaded),watchActions:Boolean(options.watchActions) });
   await page.addScriptTag({ content: `window.suite.menuLayout = (${createMenuLayout.toString()})(); window.disposeVideoMenu = (${installVideoMenu.toString()})(window.suite);` });
   return page;
 }
@@ -365,6 +368,145 @@ for (const sheet of [false, true]) {
     assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), []);
   });
 }
+
+for (const sheet of [false,true]) for (const binding of ['component','row'])
+test(`native queue ${binding} menu bindings apply Download visibility without an Add to queue action (${sheet?'current sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet,cardTag:'yt-playlist-panel-video-renderer',containerTag:'yt-playlist-panel-renderer',
+    noQueue:true,nativeBinding:true,nativeContract:true,libraryActions:true});
+  await page.evaluate(binding=>{
+    const card=document.getElementById('card'),host=card.querySelector('ytd-menu-renderer');
+    const data=host.polymerController.data;delete host.polymerController;
+    if(binding==='component')host.componentProps={data:()=>data};
+    else card.componentProps={data:()=>({videoId:'bbbbbbbbbbb',menu:{menuRenderer:data}})};
+  },binding);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),false);
+  assert.equal(await page.getByRole('menuitem',{name:'Remove native item',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'Remove native item',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['remove']);
+});
+
+async function makeWatchMenuOwner(page,variant={}) {
+  await page.evaluate(variant=>{
+    const card=document.getElementById('card'),owner=card.closest('ytd-watch-flexy');
+    owner.style.display='block';owner.setAttribute('video-id','bbbbbbbbbbb');
+    card.querySelector('a').remove();
+    for(const id of ['ccccccccccc','ddddddddddd']){const link=document.createElement('a');link.href='/watch?v='+id;link.textContent='Description link';card.append(link);}
+    const player=document.createElement('div');player.id='movie_player';player.style.cssText='display:block;width:640px;height:360px';
+    const video=document.createElement('video');video.className='html5-main-video';player.append(video);
+    player.getVideoData=()=>({video_id:variant.playerId||'bbbbbbbbbbb'});owner.prepend(player);
+  },variant);
+}
+
+for(const sheet of [false,true])test(`watch overflow Save Download Hype Report respects Download preference and retains unknown Hype (${sheet?'current sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet,cardTag:'ytd-watch-metadata',containerTag:'ytd-watch-flexy',route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:true,nativeContract:true,watchActions:true});
+  await makeWatchMenuOwner(page);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),false);
+  assert.equal(await page.getByRole('menuitem',{name:'Save to playlist',exact:true}).isVisible(),true);
+  assert.equal(await page.getByRole('menuitem',{name:'Hype',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'Hype',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['hype']);
+});
+
+test('legacy watch information menus honour enabled Download and its native handler',async t=>{
+  const page=await open(t,{cardTag:'ytd-video-primary-info-renderer',containerTag:'ytd-watch-flexy',route:'/live/bbbbbbbbbbb',
+    nativeBinding:true,nativeContract:true,watchActions:true,settings:{menuShowDownload:true}});
+  await makeWatchMenuOwner(page);
+  await show(page);
+  await page.getByRole('menuitem',{name:'Download',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['download']);
+});
+
+for (const sheet of [false, true]) test(`floating watch menu honours Download with a zero-height owner (${sheet ? 'current sheet' : 'legacy'})`, async t => {
+  const page = await open(t, { sheet, cardTag:'ytd-watch-metadata', containerTag:'ytd-watch-flexy', route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:true, nativeContract:true, watchActions:true });
+  await makeWatchMenuOwner(page);
+  await page.evaluate(() => {
+    const owner = document.querySelector('ytd-watch-flexy'), player = owner.querySelector('#movie_player');
+    owner.style.height = '0px';
+    const placeholder = document.createElement('div'); placeholder.id='ytsmp-player-placeholder'; placeholder.style.cssText='width:640px;height:360px'; owner.prepend(placeholder);
+    document.body.append(player); document.body.classList.add('ytsmp-scroll-miniplayer-active');
+  });
+  await show(page);
+  assert.equal(await page.getByRole('menuitem', { name:'Download', exact:true }).isVisible(), false);
+});
+
+for(const binding of ['current','decorative','retained-hidden','retained-zeroheight','wrong-owner','unmarked','ambiguous'])test(`watch overflow with a floated player requires ${binding} placeholder ownership`,async t=>{
+  const page=await open(t,{sheet:true,cardTag:'ytd-watch-metadata',containerTag:'ytd-watch-flexy',route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:true,nativeContract:true,watchActions:true});
+  await makeWatchMenuOwner(page);
+  await page.evaluate(binding=>{
+    const owner=document.querySelector('ytd-watch-flexy'),player=owner.querySelector('#movie_player');
+    const placeholder=document.createElement('div');placeholder.id='ytsmp-player-placeholder';placeholder.style.cssText='width:640px;height:360px';owner.prepend(placeholder);
+    if(binding==='wrong-owner'){const retained=document.createElement('ytd-watch-flexy');owner.after(retained);retained.append(placeholder);}
+    if(binding==='ambiguous'){const extra=placeholder.cloneNode();owner.append(extra);}
+    if(binding==='decorative'){placeholder.setAttribute('aria-hidden','true');placeholder.style.visibility='hidden';}
+    if(binding==='retained-hidden'){const retained=document.createElement('ytd-watch-flexy');retained.hidden=true;owner.before(retained);retained.append(placeholder.cloneNode());}
+    if(binding==='retained-zeroheight'){const retained=placeholder.cloneNode();retained.style.height='0px';owner.append(retained);}
+    document.body.append(player);
+    if(binding!=='unmarked')document.body.classList.add('ytsmp-scroll-miniplayer-active');
+  },binding);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),!['current','decorative','retained-hidden','retained-zeroheight'].includes(binding));
+});
+
+for(const fault of ['player','ambiguous-player','owner-id','card-id','missing-menu'])
+test(`watch overflow remains native when its binding is ${fault}`,async t=>{
+  const page=await open(t,{sheet:true,cardTag:'ytd-watch-metadata',containerTag:'ytd-watch-flexy',route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:fault!=='missing-menu',nativeContract:true,watchActions:true});
+  await makeWatchMenuOwner(page,{playerId:fault==='player'?'ccccccccccc':undefined});
+  await page.evaluate(fault=>{
+    const card=document.getElementById('card'),owner=card.closest('ytd-watch-flexy');
+    if(fault==='owner-id')owner.setAttribute('video-id','ccccccccccc');
+    if(fault==='card-id')card.componentProps={data:()=>({videoId:'ccccccccccc'})};
+    if(fault==='ambiguous-player'){
+      const duplicate=owner.querySelector('#movie_player').cloneNode(true);
+      duplicate.getVideoData=()=>({video_id:'bbbbbbbbbbb'});owner.prepend(duplicate);
+    }
+  },fault);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.locator('[data-ytms-menu-action]').count(),0);
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),true);
+});
+
+for(const hidden of ['hidden','inert','opacity','scale'])test(`watch menu discovery rejects an owner retained as ${hidden}`,async t=>{
+  const page=await open(t,{sheet:true,cardTag:'ytd-watch-metadata',containerTag:'ytd-watch-flexy',route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:true,nativeContract:true,watchActions:true});
+  await makeWatchMenuOwner(page);
+  await page.evaluate(hidden=>{
+    document.getElementById('trigger').addEventListener('click',()=>{
+      const owner=document.querySelector('ytd-watch-flexy');
+      if(hidden==='hidden')owner.hidden=true;
+      if(hidden==='inert')owner.inert=true;
+      if(hidden==='opacity')owner.style.opacity='0';
+      if(hidden==='scale')owner.style.transform='scale(0)';
+    },{capture:true});
+  },hidden);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.locator('[data-ytms-menu-action]').count(),0);
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),true);
+});
+
+for(const mismatch of [false,true])test(`current queue row and host models ${mismatch?'reject conflicts':'accept equivalent clones'}`,async t=>{
+  const page=await open(t,{sheet:true,cardTag:'yt-playlist-panel-video-renderer',containerTag:'yt-playlist-panel-renderer',
+    noQueue:true,nativeBinding:true,nativeContract:true,libraryActions:true});
+  await page.evaluate(mismatch=>{
+    const card=document.getElementById('card'),model=structuredClone(card.querySelector('ytd-menu-renderer').polymerController.data);
+    if(mismatch)model.items[0].retainedCommand=true;
+    card.componentProps={data:()=>({videoId:'bbbbbbbbbbb',menu:{menuRenderer:model}})};
+  },mismatch);
+  await page.locator('#trigger').click();
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),mismatch);
+  assert.equal(await page.getByRole('menuitem',{name:'Remove native item',exact:true}).isVisible(),true);
+});
 
 for (const fault of ['mismatch', 'oversized', 'unknown-model']) {
   test(`menus without a queue action fail open for a ${fault} native model`, async t => {
@@ -1005,6 +1147,22 @@ test('eventless discovery ignores explicitly hidden and wrong-video cached sheet
   }
 });
 
+for (const mode of ['opacity', 'scale', 'scaleY', 'inert']) test(`eventless Download filtering ignores a ${mode} retained popup`, async t => {
+  const page = await open(t, { sheet:true, modernTrigger:true, eventless:true });
+  await addCachedPopup(page, 'matching');
+  await page.locator('[data-cloned-popup]').evaluate((popup, mode) => {
+    const parent = popup.parentElement;
+    if (mode === 'opacity') parent.style.opacity = '0';
+    if (mode === 'scale') parent.style.transform = 'scale(0)';
+    if (mode === 'scaleY') parent.style.transform = 'scaleY(0)';
+    if (mode === 'inert') parent.inert = true;
+  }, mode);
+  await show(page);
+  assert.equal(await page.locator('[data-cloned-popup]').getAttribute('data-ytms-video-menu'), null);
+  assert.equal(await page.locator('[data-ytms-video-menu="1"]').count(), 1);
+  assert.equal(await page.locator('[data-ytms-video-menu="1"] [data-native-id="download"]').isVisible(), false);
+});
+
 test('eventless discovery fails open when two visible native sheets match the selected video', async t => {
   const page = await open(t, { sheet: true, modernTrigger: true, eventless: true });
   await addCachedPopup(page, 'matching');
@@ -1219,6 +1377,31 @@ test('custom nested menu keyboard navigation returns one level at a time and res
   assert.equal(await page.locator('[data-ytms-menu-action]').count(),0);
   assert.equal(await page.evaluate(()=>menuFixture.originals.every((node,index)=>node.parentElement.children[index]===node)),true);
 });
+for (const sheet of [false,true]) for (const change of ['card','model'])
+test(`keyboard submenu entry rejects a recycled ${change} (${sheet ? 'current sheet' : 'legacy'})`, async t => {
+  const page = await open(t,{sheet});
+  await page.locator('#trigger').focus(); await page.keyboard.press('Enter');
+  await page.locator('[data-ytms-video-menu="1"]').waitFor();
+  await page.keyboard.press('ArrowDown');
+  await page.getByRole('menuitem',{name:'Channel tools',exact:true}).focus();
+  assert.equal(await page.getByRole('menuitem',{name:'Channel tools',exact:true}).evaluate(row => document.activeElement === row),true);
+  const before = await visibleIds(page);
+  await page.evaluate(({sheet,change}) => {
+    if (change === 'card') document.querySelector('#card a').href = '/watch?v=ccccccccccc';
+    else {
+      const popup = menuFixture.popup;
+      if (sheet) {
+        const data = popup.componentProps.data();
+        popup.componentProps.data = () => ({...data});
+      } else popup.polymerController.data = {...popup.polymerController.data};
+    }
+  },{sheet,change});
+  await page.keyboard.press('ArrowRight');
+  assert.deepEqual(await visibleIds(page),before,'Keyboard entry requires the same current menu binding as pointer entry');
+  assert.deepEqual(await page.evaluate(()=>menuFixture.openedSettings),[]);
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),[]);
+});
+
 test('all-hidden custom menu actions leave unknown extension rows usable without empty submenus',async t => {
   const layout = nestedLayout({empty:true}); for (const node of layout.nodes) if ('visible' in node) node.visible = false;
   const page = await open(t,{unknown:true,blockTube:true,settings:{menuLayout:layout}}); await show(page);

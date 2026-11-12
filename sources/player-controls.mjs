@@ -47,6 +47,8 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
   (document.head || document.documentElement).appendChild(style);
   let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, observing = false, snapshotPending = false, captureGeneration = 0, frame = 0, statusTimer = 0, status = null, owner = null;
   const buttons = new Set(), attempts = new WeakMap(), downloads = new Map();
+  let manualIdentityGeneration = 0;
+  let nativePreferenceEpoch = 0;
   let tooltip = null, tooltipButton = null;
   const visible = el => {
     if (!el?.isConnected || el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
@@ -72,18 +74,56 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     } catch { /* A changing player can expose its identity on a later native signal. */ }
     return '';
   }
-  function attempt(player, name, callback) {
+  function attemptRecord(player, manual = false) {
     const id = identity(player), video = player.querySelector('video');
-    if (!id || !video) return;
+    if (!video || !id && !manual) return null;
     let record = attempts.get(player);
-    if (!record || record.id !== id || record.video !== video) {
-      record = { id, video, done: new Set(), counts: new Map() }; attempts.set(player, record);
+    const route = window.location.pathname + window.location.search;
+    const source = video.currentSrc || video.src || '';
+    // A visible native menu can be usable before getVideoData settles. Keep its
+    // manual intent only for this exact media node, source and navigation epoch,
+    // then bind it once to the first confirmed identity.
+    if (record && (!id || !record.id) && record.video === video &&
+        record.route === route && record.source === source &&
+        record.generation === manualIdentityGeneration) {
+      if (!record.id && id) record.id = id;
+      return record;
     }
+    if (!record || !record.id || record.id !== id || record.video !== video) {
+      record = { id, video, done: new Set(), counts: new Map(), epochs: new Map(), reported: new Set(), route, source, generation: manualIdentityGeneration }; attempts.set(player, record);
+    }
+    return record;
+  }
+  function attempt(player, name, callback) {
+    const record = attemptRecord(player);
+    if (!record) return;
     const count = record.counts.get(name) || 0;
-    if (record.done.has(name) || count >= 8) return;
+    if (record.done.has(name) || count >= 8 || record.epochs.get(name) === nativePreferenceEpoch) return;
+    record.epochs.set(name, nativePreferenceEpoch);
     record.counts.set(name, count + 1);
     try { if (callback()) record.done.add(name); }
-    catch (error) { record.done.add(name); reportError(name, error); }
+    catch (error) {
+      // Transient native readiness errors may recover on a later native signal.
+      // Keep the same bounded budget, and report at most once for this video.
+      if (!record.reported.has(name)) { record.reported.add(name); reportError(name, error); }
+    }
+  }
+  function manualNativePreference(event) {
+    if (disposed || suspended || document.hidden || !event.isTrusted || event.defaultPrevented ||
+        event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+        event.type === 'keydown' && (event.repeat || event.isComposing || event.keyCode === 229 || !['Enter', ' '].includes(event.key))) return;
+    const settings = event.target?.closest?.('.ytp-settings-button,.ytp-settings-menu');
+    const autoplay = event.target?.closest?.('.ytp-autonav-toggle-button');
+    if ((!settings || !p.originalAudio && !p.disableStableVolume) && (!autoplay || !p.disableAutoplay)) return;
+    const player = selectedPlayer();
+    if (!player || (settings || autoplay).closest('#movie_player') !== player) return;
+    const record = attemptRecord(player, true);
+    if (!record) return;
+    // Native menu labels/contracts vary. Opening settings is conservative manual
+    // intent: later metadata must not override the choice the user is making.
+    if (settings && p.originalAudio) record.done.add('original audio');
+    if (settings && p.disableStableVolume) record.done.add('stable volume');
+    if (autoplay && p.disableAutoplay) record.done.add('autoplay');
   }
   function applyNativePreferences(player) {
     if (p.originalAudio) attempt(player, 'original audio', () => {
@@ -101,22 +141,24 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
       const current = player.getAudioTrack(), currentId = current?.getLanguageInfo?.()?.getId?.();
       const originalId = originals[0].getLanguageInfo()?.getId?.();
       const sameId = typeof currentId === 'string' && currentId.length > 0 && currentId === originalId;
-      if (current !== originals[0] && !sameId) player.setAudioTrack(originals[0]);
-      return true;
+      if (current === originals[0] || sameId) return true;
+      player.setAudioTrack(originals[0]);
+      const selected = player.getAudioTrack(), selectedId = selected?.getLanguageInfo?.()?.getId?.();
+      return selected === originals[0] || typeof originalId === 'string' && originalId.length > 0 && selectedId === originalId;
     });
     if (p.disableAutoplay) attempt(player, 'autoplay', () => {
       const toggle = player.querySelector('.ytp-autonav-toggle-button[aria-checked]');
       const checked = toggle?.getAttribute('aria-checked');
       if (!['true', 'false'].includes(checked) || typeof player.setAutonav !== 'function') return false;
       if (checked === 'true') player.setAutonav(false, true);
-      return true;
+      return toggle.getAttribute('aria-checked') === 'false';
     });
     if (p.disableStableVolume) attempt(player, 'stable volume', () => {
       if (typeof player.getDrcUserPreference !== 'function' || typeof player.setDrcUserPreference !== 'function') return false;
       const current = player.getDrcUserPreference();
       if (current !== 0 && current !== 1) return false;
       if (current === 1) player.setDrcUserPreference(0);
-      return true;
+      return current === 0 || player.getDrcUserPreference() === 0;
     });
   }
   function message(text) {
@@ -246,10 +288,17 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     if (download(new window.Blob([text + '\n'], { type: 'text/plain;charset=utf-8' }), 'youtube-transcript.txt')) message('Loaded transcript saved.');
   }
   function actionButton(player, id, label, path, handler, competingSelector) {
-    const controls = player.querySelector('.ytp-right-controls');
+    const rows = [...player.querySelectorAll('.ytp-right-controls')].filter(row =>
+      row.getClientRects().length > 0 && !row.closest('[hidden], [inert], [aria-hidden="true"]'));
+    // Retain a sole toolbar during native autohide, but prefer a rendered row
+    // over hidden retained controls when YouTube restamps the player.
+    const controls = rows.find(visible) || (rows.length === 1 ? rows[0] : null);
     if (!controls) return;
     let button = document.getElementById(id);
-    if (player.querySelector(competingSelector)) {
+    const competing = [...player.querySelectorAll(competingSelector)].some(candidate => visible(candidate) ||
+      (player.classList.contains('ytp-autohide') && controls.contains(candidate) &&
+        candidate.getClientRects().length > 0 && !candidate.closest('[hidden], [inert], [aria-hidden="true"]')));
+    if (competing) {
       if (button && buttons.has(button)) {
         if (tooltipButton === button) hideTooltip();
         button.remove(); buttons.delete(button);
@@ -296,7 +345,8 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile);
   }
   function numberKey(event) {
-    if (!p.disableNumberKeySeeking || !event.isTrusted || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || !/^[0-9]$/.test(event.key)) return;
+    if (event.isTrusted && event.key === 'Escape') { hideTooltip(); return; }
+    if (disposed || suspended || document.hidden || !p.disableNumberKeySeeking || !event.isTrusted || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || !/^[0-9]$/.test(event.key)) return;
     const target = event.target?.closest ? event.target : event.target?.parentElement;
     if (!target || target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], .ytp-settings-menu, .ytp-popup')) return;
     const player = selectedPlayer();
@@ -305,6 +355,12 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
   }
   const relevant = '#movie_player, .html5-video-player, .ytp-right-controls, .ytp-autonav-toggle-button, ytd-transcript-renderer';
   const observer = new MutationObserver(records => {
+    // Retry unconfirmed native preferences only on meaningful readiness signals,
+    // not class/ARIA animation churn or our own export-button insertion.
+    const nativeStructure = '#movie_player,.html5-video-player,.ytp-right-controls,.ytp-autonav-toggle-button,video';
+    if (records.some(record => record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].some(node =>
+      node.nodeType === 1 && (node.matches(nativeStructure) ||
+        node.matches('ytd-app,ytd-watch-flexy,ytd-player,#player-container') && node.querySelector(nativeStructure))))) nativePreferenceEpoch++;
     if (records.some(record => record.type === 'attributes'
       ? record.target.matches?.('.ytp-autonav-toggle-button, #movie_player, .ytp-chrome-bottom, .ytp-chrome-controls, .ytp-right-controls')
       : record.target.matches?.('.ytp-right-controls') || [...record.addedNodes, ...record.removedNodes].some(node =>
@@ -323,23 +379,38 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     if (disposed || pageSuspended || navigationPending || document.hidden) return;
     suspended = false; startObservation(); schedule();
   }
-  function navigateStart() { navigationPending = true; suspend(); }
-  function navigateFinish() { navigationPending = false; resume(); }
+  function navigateStart() { manualIdentityGeneration++; navigationPending = true; suspend(); }
+  function navigateFinish() { navigationPending = false; nativePreferenceEpoch++; resume(); }
   function pageHide() { pageSuspended = true; suspend(); }
   function pageShow() {
     const restoring = pageSuspended; pageSuspended = false;
-    if (restoring) navigationPending = false;
+    if (restoring) { navigationPending = false; nativePreferenceEpoch++; }
     resume();
   }
-  function visibility() { if (document.hidden) suspend(); else resume(); }
-  function media(event) { if (event.target?.localName === 'video' && event.target.closest('#movie_player')) schedule(); }
+  function visibility() {
+    if (document.hidden) suspend();
+    else { if (suspended && !pageSuspended && !navigationPending) nativePreferenceEpoch++; resume(); }
+  }
+  function media(event) {
+    if (event.target?.localName !== 'video') return;
+    const player = event.target.closest('#movie_player');
+    if (!player) return;
+    if (event.type === 'emptied' && !attempts.get(player)?.id) attempts.delete(player);
+    nativePreferenceEpoch++;
+    schedule();
+  }
   const listeners = [];
   function listen(target, type, callback) { target.addEventListener(type, callback, true); listeners.push([target, type, callback]); }
   listen(document, 'keydown', numberKey);
+  if (p.originalAudio || p.disableStableVolume || p.disableAutoplay) {
+    listen(document, 'click', manualNativePreference);
+    listen(document, 'keydown', manualNativePreference);
+  }
   for (const type of ['loadedmetadata', 'emptied', 'durationchange']) listen(document, type, media);
   listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
   listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
-  for (const type of ['yt-page-data-updated', 'resize']) listen(window, type, resume);
+  listen(window, 'yt-page-data-updated', () => { nativePreferenceEpoch++; resume(); });
+  listen(window, 'resize', resume);
   listen(document, 'visibilitychange', visibility);
   startObservation(); schedule();
   return () => {

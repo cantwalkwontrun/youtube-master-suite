@@ -4,8 +4,12 @@ lang: en-GB
 
 # Optional controls and compatibility
 
-The Suite adds 108 menu controls in this update. This includes switches for previously automatic cleanup, preserving its existing defaults. Queue fitting starts on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
+The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting and the current-video menu start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
+
+## Membership offers
+
+**Interface → Page appearance → Dismiss membership offers** starts off. When enabled and reloaded, it closes recognised native channel membership offers, including those opened by choosing Join. It uses YouTube's close controls so native backdrop and scrolling cleanup can run. Save, share, report, settings and payment dialogs remain available. Unrecognised offers or offers without a supported close method are left usable; this does not hide every popup or change memberships.
 
 ## Films
 
@@ -14,6 +18,10 @@ The Suite adds 108 menu controls in this update. This includes switches for prev
 ## Custom video menus and creator choices
 
 Open **Suite settings → Interface → Video context menu** to create and name submenus, nest them, choose where each recognised action appears, and adjust visibility and order. Up to eight submenus and three nested levels are supported. Delete a submenu to move its contents to its parent. Use the preview to check the arrangement; Save and reload apply it. Cancel discards edits, and Reset menu layout restores the standard arrangement in the draft. Existing saved order and visibility are carried over until you customise them. Full backups include custom menu layouts.
+
+**Download** and **Hype** each have a visibility checkbox in this editor. Hype starts visible. Existing custom layouts retain their actions, order and groups and gain the Hype control. Visibility also applies to recognised native overflow menus without a video-card binding; this filter only hides those actions and never executes or rearranges them.
+
+When YouTube omits the playing queue item's menu, the Suite can rebuild supported native Save and Remove action types using the independently verified current video and queue-entry identities. Other videos' endpoint targets and tracking tokens are not reused. Unsupported action types remain unavailable. Native removal controls playback advancement.
 
 When a video lists several verified creators, **Filter channel uploads** lets you choose whose settings to open. Each creator keeps an independent rule; a collaboration is filtered when any explicitly saved creator rule matches. Conflicting or unverified identities remain unfiltered.
 
@@ -95,6 +103,7 @@ Compact queues retain the native corner alignment, including the bottom inset. N
 | feed / Additional filters | Hide Home community posts | Off | Hide community post cards on Home. Channel post pages are unaffected. |
 | interface / Page appearance | Hide native thumbnail badges | Off | Hide recognised native format and New badges. Durations, LIVE badges and extension markers are preserved. |
 | interface / Page appearance | Hide Premium promotions | Off | Hide native Premium upsell surfaces. This is cosmetic and does not block advertising. |
+| interface / Page appearance | Dismiss membership offers | Off | Close recognised channel membership offers, including offers opened by Join, through native dismissal. Other dialogs and payment frames remain available. |
 | interface / Page appearance | Hide Open app prompts | Off | Hide native prompts to open the YouTube app. |
 | feed / Feed layout | Hide view-count icon | Off | Hide the decorative view-count icon on supported native cards. |
 | feed / Feed layout | View counts on a separate line | Off | Place native view metadata on its own line in supported feed cards. |
@@ -165,5 +174,6 @@ Compact queues retain the native corner alignment, including the bottom inset. N
 | player / Playback | Require right mouse button for wheel volume | On | Keep normal page scrolling unless the right mouse button is held. Turning this off makes wheel gestures over the player adjust volume directly. |
 | feed / Feed cleanup | Show hidden-card reveal control | On | Keep the Suite’s temporary reveal control for filtered feed cards. |
 | miniplayer / Native queue | Fit native queue to contents | On | Short queues fit their rows and retain native corner alignment. Longer queues scroll. Native height is restored temporarily during drag and resize interactions, then fitted again. |
+| miniplayer / Native queue | Show current video menu | On | Expose the playing queue item's own native menu when the queue and menu can be verified. Native removal may advance playback. No commands are copied from other videos. |
 
 The watched-video threshold also supports 5%, 10%, 25%, 50% and 75%, alongside the existing values. Settings export/import includes every control and accepts earlier valid backups, supplying defaults only for newly introduced fields.

@@ -3,12 +3,13 @@
  */
 export function installVideoMenu(suite) {
   const preferences = suite.settings.initial;
-  const cardSelector = 'ytd-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, yt-lockup-view-model, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer';
+  const cardSelector = 'ytd-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, yt-lockup-view-model, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer, ytd-watch-metadata, ytd-video-primary-info-renderer';
   const popupSelector = 'ytd-menu-popup-renderer, yt-sheet-view-model';
   const rowSelector = 'ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
-  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
+  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
   const order = [...new Set([...(Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder.filter(id => defaultOrder.includes(id)) : []), ...defaultOrder])];
   const legacyVisible = id => id === 'download' ? preferences.menuShowDownload === true :
+    id === 'hype' ? preferences.menuShowHype !== false :
     id === 'channelAge' ? preferences.menuShowAgeLimit !== false :
     id === 'notInterested' ? preferences.menuShowNotInterested !== false :
     id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
@@ -89,6 +90,7 @@ export function installVideoMenu(suite) {
     if (['WATCH_LATER', 'WATCH_LATER_OUTLINE'].includes(icon)) return 'watchLater';
     if (['PLAYLIST_ADD', 'ADD_TO_PLAYLIST', 'PLAYLIST_ADD_OUTLINE', 'BOOKMARK_BORDER'].includes(icon)) return 'savePlaylist';
     if (['DOWNLOAD', 'OFFLINE_DOWNLOAD', 'FILE_DOWNLOAD'].includes(icon) || item?.menuServiceItemDownloadRenderer) return 'download';
+    if (['HYPE', 'HYPE_OUTLINE'].includes(icon) || title === 'Hype') return 'hype';
     if (['SHARE', 'SHARE_OUTLINE'].includes(icon)) return 'share';
     const library = location.pathname === '/feed/history' || location.pathname === '/playlist' ||
       selection.card.matches('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer');
@@ -98,7 +100,43 @@ export function installVideoMenu(suite) {
     return null; // Unrecognised actions retain their native position and behaviour.
   }
 
+  function watchVideoId(card) {
+    // Description links do not identify the playing video. Bind watch menus
+    // only to the rendered owner and its current player, agreeing with the URL.
+    const id = location.pathname === '/watch' ? new URLSearchParams(location.search).get('v') :
+      /^\/live\/([\w-]{11})\/?$/.exec(location.pathname)?.[1];
+    const owner = card.closest('ytd-watch-flexy');
+    if (!owner || !/^[\w-]{11}$/.test(id || '')) return null;
+    const visible = (node, ownerOnly = false) => {
+      if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const box = node.getBoundingClientRect();
+      if (!(box.width > 0 && (ownerOnly === true || box.height > 0))) return false;
+      for (let current = node; current; current = current.parentElement) {
+        const css = getComputedStyle(current);
+        if (css.display === 'none' || css.visibility !== 'visible' || Number(css.opacity) === 0) return false;
+      }
+      return true;
+    };
+    try {
+      if (!visible(owner, true) || !visible(card) || (owner.getAttribute('video-id') && owner.getAttribute('video-id') !== id)) return null;
+      const model = typeof card.componentProps?.data === 'function' ? card.componentProps.data() : controller(card)?.data;
+      if (model?.videoId && model.videoId !== id) return null;
+      const players = [...owner.querySelectorAll('#movie_player')].filter(player =>
+        player.closest('ytd-watch-flexy') === owner && !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') && visible(player));
+      if (document.body?.classList.contains('ytsmp-scroll-miniplayer-active')) {
+        const placeholders = [...document.querySelectorAll('#ytsmp-player-placeholder')].filter(node =>
+          !node.hidden && !node.hasAttribute('inert') && node.getClientRects().length && node.getBoundingClientRect().width>0 && node.getBoundingClientRect().height>0 &&
+          !node.parentElement?.closest('[hidden], [inert], [aria-hidden="true"]') && visible(node.closest('ytd-watch-flexy'), true));
+        if (placeholders.length === 1 && placeholders[0].closest('ytd-watch-flexy') === owner) {
+          for (const player of document.body.querySelectorAll(':scope > #movie_player')) if (visible(player)) players.push(player);
+        }
+      }
+      return players.length === 1 && players[0].getVideoData?.()?.video_id === id ? id : null;
+    } catch { return null; }
+  }
+
   function videoIdFromCard(card) {
+    if (card.matches('ytd-watch-metadata, ytd-video-primary-info-renderer')) return watchVideoId(card);
     const ids = new Set();
     for (const anchor of card.querySelectorAll('a[href]')) {
       try {
@@ -131,14 +169,32 @@ export function installVideoMenu(suite) {
     } catch { return null; }
   }
 
+  function sheetBindingMatches(row,item) {
+    const bound=typeof row?.componentProps?.data==='function' ? row.componentProps.data() : controller(row)?.data;
+    const expected=item?.downloadListItemViewModel || item?.listItemViewModel;
+    if(!bound || typeof bound!=='object' || bound===item || bound===expected)return true;
+    const candidate=bound.downloadListItemViewModel || bound.listItemViewModel || bound;
+    const expectedSignature=menuSignature([expected]);
+    return expectedSignature!==null && expectedSignature===menuSignature([candidate]);
+  }
+
   function nativeMenuSignature(button, card) {
     // Some queue/library menus have no Add to queue command. Require their
     // exact native model instead; a trusted click alone cannot bind a popup.
     const host = button.closest('ytd-menu-renderer');
-    if (!host || !card.contains(host)) return null;
+    if (host && !card.contains(host)) return null;
     try {
-      const items = controller(host)?.data?.items;
-      return Array.isArray(items) && !items.some(queuedVideoId) ? menuSignature(items) : null;
+      const models = [];
+      if (host) {
+        if (typeof host.componentProps?.data === 'function') models.push(host.componentProps.data());
+        const legacy = controller(host)?.data;
+        if (legacy && typeof legacy === 'object') models.push(legacy);
+      }
+      const model = typeof card.componentProps?.data === 'function' ? card.componentProps.data() : controller(card)?.data;
+      if (model?.menu?.menuRenderer) models.push(model.menu.menuRenderer);
+      const signatures = models.map(model => Array.isArray(model?.items) && !model.items.some(queuedVideoId) ? menuSignature(model.items) : null);
+      // Conflicting retained host/row models are not evidence of a safe target.
+      return signatures.length && signatures.every(value => value && value === signatures[0]) ? signatures[0] : null;
     } catch { return null; }
   }
 
@@ -395,7 +451,9 @@ export function installVideoMenu(suite) {
 
   function enterPage(page) {
     const current = active;
-    if (!current) return;
+    // Keyboard submenu entry must retain the same card and native model
+    // ownership as pointer entry while YouTube recycles an open popup.
+    if (!current || !validCurrent(current)) return;
     current.stack.push(current.page); setPage(page);
   }
 
@@ -552,9 +610,9 @@ export function installVideoMenu(suite) {
     if (rows.length !== items.length) return diagnostic('row-count');
     if (rows.some(row => row.parentElement !== rows[0].parentElement)) return diagnostic('row-parent');
     const parent = rows[0].parentElement;
-    if (sheet && rows.some((row, index) => items[index]?.downloadListItemViewModel
+    if (sheet && rows.some((row, index) => !sheetBindingMatches(row,items[index]) || (items[index]?.downloadListItemViewModel
       ? !row.matches('yt-download-list-item-view-model')
-      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model'))) return diagnostic('row-binding');
+      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return diagnostic('row-binding');
     if (rows.some(row => !popup.contains(row)) || rows.some((row, index) => {
       if (sheet) return false;
       const model = items[index].menuServiceItemRenderer || items[index].menuNavigationItemRenderer || items[index].menuServiceItemDownloadRenderer;
@@ -633,10 +691,15 @@ export function installVideoMenu(suite) {
 
   function visiblePopup(popup) {
     if (!popup.isConnected || !popup.getClientRects().length) return false;
+    const box = popup.getBoundingClientRect();
+    // A newly stamped native popup can have no row height until refit. A
+    // transform-collapsed laid-out popup is different: its layout height is
+    // positive even though its painted height is zero.
+    if (!(box.width > 0) || (!(box.height > 0) && popup.offsetHeight > 0)) return false;
     for (let element = popup; element; element = element.parentElement) {
-      if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+      if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true') return false;
       const css = getComputedStyle(element);
-      if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility)) return false;
+      if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
     }
     return true;
   }

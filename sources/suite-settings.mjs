@@ -22,10 +22,10 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
     showRydTooltipBar: false,
     showDeArrowTitleButton: false,
     showDeArrowQueueButton: true,
-    menuShowDownload: false, menuGroupChannelTools: true, menuShowAgeLimit: true,
+    menuShowDownload: false, menuShowHype: true, menuGroupChannelTools: true, menuShowAgeLimit: true,
     menuShowNotInterested: true, menuShowDontRecommend: true, menuShowReport: true,
     menuLayout: null,
-    menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "share",
+    menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "hype", "share",
       "notInterested", "channelAge", "dontRecommend", "report", "channelTools"]),
   });
   const choices = Object.freeze({

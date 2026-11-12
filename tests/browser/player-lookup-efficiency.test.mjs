@@ -8,7 +8,7 @@ const MINIPLAYER = readFileSync(
 );
 const COHERENCE = readFileSync(
   new URL("../../sources/modules/youtube-page-coherence.user.js", import.meta.url), "utf8",
-);
+).replace('const INCLUDE_DETAILED_DIAGNOSTICS = false;', 'const INCLUDE_DETAILED_DIAGNOSTICS = true;');
 const WATCH_URL = "https://www.youtube.com/watch?v=aaaaaaaaaaa";
 let browser;
 
@@ -71,15 +71,25 @@ async function open(t, { native = true } = {}) {
   return page;
 }
 
-test("source skips player discovery and layout reads for 2000 ordinary comment batches", async t => {
+for (const surface of ['comments', 'captions', 'progress'])
+test(`source skips player discovery and layout reads for 2000 ordinary ${surface} batches`, async t => {
   const page = await open(t);
+  await page.evaluate(surface => {
+    let content = fixture.first.querySelector('ytd-comments');
+    if (surface !== 'comments') {
+      content = document.createElement('div');
+      content.className = surface === 'captions' ? 'ytp-caption-window-container' : 'ytp-progress-bar-container';
+      fixture.first.querySelector('#movie_player').append(content);
+    }
+    fixture.ordinaryContent = content;
+  }, surface);
   await page.addScriptTag({ content: MINIPLAYER });
   await page.evaluate(async () => {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
   });
   const counts = await page.evaluate(async () => {
-    const comments = fixture.first.querySelector("ytd-comments");
+    const comments = fixture.ordinaryContent;
     fixture.reset();
     for (let index = 0; index < 1000; index++) {
       const span = comments.appendChild(document.createElement("span"));
@@ -101,21 +111,34 @@ test("source skips player discovery and layout reads for 2000 ordinary comment b
   assert.ok(unknown.queries > 0 && unknown.rectReads > 0, "Unknown batches retain the existing discovery path");
 });
 
-test("source preserves retained-watch visibility, toolbar replacement and BFCache recovery", async t => {
+for (const hiddenBy of ['hidden', 'opacity', 'inert', 'scale'])
+test(`source preserves retained-watch ${hiddenBy}, toolbar replacement and BFCache recovery`, async t => {
   const page = await open(t, { native: false });
   await page.addScriptTag({ content: MINIPLAYER });
   // Keep the pointer elsewhere so the reused button cannot legitimately receive
   // a new mouseenter when its replacement player occupies the same coordinates.
   await page.locator("#tmk-miniplayer-button").dispatchEvent("mouseenter");
   await page.locator("#tmk-miniplayer-tooltip").waitFor({ state: "visible" });
-  await page.evaluate(() => {
+  await page.evaluate(hiddenBy => {
     fixture.next = fixture.makeWatch("bbbbbbbbbbb");
-    fixture.first.hidden = true;
+    if (hiddenBy === 'hidden') fixture.first.hidden = true;
+    if (hiddenBy === 'opacity') fixture.first.style.opacity = '0';
+    if (hiddenBy === 'inert') fixture.first.inert = true;
+    if (hiddenBy === 'scale') fixture.first.style.transform = 'scale(0)';
     fixture.next.querySelector("ytd-comments").append(document.createElement("span"));
-  });
+  }, hiddenBy);
   await page.waitForFunction(() => document.getElementById("tmk-miniplayer-button")
     ?.closest("ytd-watch-flexy") === fixture.next);
   assert.equal(await page.locator("#tmk-miniplayer-tooltip").count(), 0);
+  await page.evaluate(() => {
+    fixture.commands = [];
+    for (const [name, owner] of [['old', fixture.first], ['current', fixture.next]])
+      owner.querySelector('#movie_player').addEventListener('keydown', event => {
+        if (event.key === 'i') fixture.commands.push(name);
+      });
+  });
+  await page.locator('#tmk-miniplayer-button').click();
+  assert.deepEqual(await page.evaluate(() => fixture.commands), ['current']);
   await page.evaluate(() => {
     window.dispatchEvent(new Event("pagehide"));
     const old = fixture.next.querySelector(".ytp-right-controls");
@@ -126,6 +149,69 @@ test("source preserves retained-watch visibility, toolbar replacement and BFCach
   });
   await page.waitForFunction(() => document.getElementById("tmk-miniplayer-button")?.parentElement === fixture.replacement);
   assert.equal(await page.locator("#tmk-miniplayer-button").count(), 1);
+});
+
+for (const hiddenBy of ['hidden', 'display', 'opacity', 'visibility', 'aria-hidden', 'inert', 'scale'])
+test(`restored Miniplayer control uses the current toolbar beside a retained ${hiddenBy} toolbar`, async t => {
+  const page = await open(t, { native: false });
+  await page.evaluate(hiddenBy => {
+    fixture.currentControls = fixture.first.querySelector('.ytp-right-controls');
+    const retained = fixture.currentControls.cloneNode(true);
+    if (hiddenBy === 'hidden') retained.hidden = true;
+    if (hiddenBy === 'display') retained.style.display = 'none';
+    if (hiddenBy === 'opacity') retained.style.opacity = '0';
+    if (hiddenBy === 'visibility') retained.style.visibility = 'hidden';
+    if (hiddenBy === 'aria-hidden') retained.setAttribute('aria-hidden', 'true');
+    if (hiddenBy === 'inert') retained.inert = true;
+    if (hiddenBy === 'scale') retained.style.transform = 'scale(0)';
+    retained.id = 'retained-controls';
+    fixture.currentControls.before(retained);
+  }, hiddenBy);
+  await page.addScriptTag({ content: MINIPLAYER });
+  await page.waitForFunction(() => document.getElementById('tmk-miniplayer-button')?.parentElement === fixture.currentControls);
+  assert.equal(await page.locator('#tmk-miniplayer-button').count(), 1);
+  assert.equal(await page.locator('#tmk-miniplayer-button').isVisible(), true);
+});
+
+test("restored Miniplayer control follows a late toolbar while its previous toolbar is retained", async t => {
+  const page = await open(t, { native: false });
+  await page.addScriptTag({ content: MINIPLAYER });
+  await page.locator('#tmk-miniplayer-button').waitFor();
+  await page.evaluate(() => {
+    const old = fixture.first.querySelector('.ytp-right-controls');
+    const next = old.cloneNode(true); next.querySelector('#tmk-miniplayer-button').remove();
+    old.hidden = true; old.after(next); fixture.currentControls = next;
+  });
+  await page.waitForFunction(() => document.getElementById('tmk-miniplayer-button')?.parentElement === fixture.currentControls);
+  assert.equal(await page.locator('#tmk-miniplayer-button').count(), 1);
+});
+
+for (const surface of ['ytd-miniplayer', 'ytd-video-preview', 'ytd-reel-video-renderer'])
+test(`watch Miniplayer restoration does not borrow a ${surface} toolbar`, async t => {
+  const page = await open(t, { native: false });
+  await page.evaluate(surface => {
+    const host = document.createElement(surface); host.style.display = 'block';
+    host.append(fixture.first.querySelector('#movie_player'));
+    fixture.first.replaceWith(host);
+  }, surface);
+  await page.addScriptTag({ content: MINIPLAYER });
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator('#tmk-miniplayer-button').count(), 0);
+});
+
+test('native toolbar auto-hide preserves the restored Miniplayer button identity', async t => {
+  const page = await open(t, { native: false });
+  await page.addScriptTag({ content: MINIPLAYER });
+  await page.locator('#tmk-miniplayer-button').waitFor();
+  await page.evaluate(() => {
+    fixture.button = document.getElementById('tmk-miniplayer-button');
+    fixture.first.querySelector('.ytp-chrome-bottom').style.visibility = 'hidden';
+    fixture.first.querySelector('.ytp-chrome-bottom').style.opacity = '0';
+  });
+  await page.waitForTimeout(250);
+  assert.equal(await page.evaluate(() => document.getElementById('tmk-miniplayer-button') === fixture.button), true);
+  await page.evaluate(() => fixture.first.querySelector('.ytp-chrome-bottom').removeAttribute('style'));
+  assert.equal(await page.locator('#tmk-miniplayer-button').isVisible(), true);
 });
 
 test("coherence source selects once per snapshot and rereads a replaced or floated player", async t => {

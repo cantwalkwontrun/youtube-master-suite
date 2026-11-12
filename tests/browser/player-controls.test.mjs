@@ -110,6 +110,15 @@ test('local frame and transcript exports require a trusted user gesture and rele
   assert.deepEqual(await page.evaluate(() => ({ revoked: audit.revoked.length, controls: document.querySelectorAll('#ytms-snapshot-button, #ytms-transcript-button, #ytms-player-action-status, #ytms-player-controls-style').length, time: document.querySelector('video').currentTime })), { revoked: 2, controls: 0, time: 42 });
 });
 
+for (const [format, quality] of [['png', '90'], ['jpeg', '70'], ['jpeg', '80'], ['jpeg', '90'], ['jpeg', '100']])
+test(`snapshot ${format} at quality ${quality} passes the requested format and quality to native encoding`, async t => {
+  const page = await open(t, { snapshotButton: true, snapshotFormat: format, snapshotQuality: quality });
+  await page.locator('#ytms-snapshot-button').click();
+  assert.deepEqual(await page.evaluate(() => audit.calls.find(call => call[0] === 'blob')),
+    ['blob', format === 'jpeg' ? 'image/jpeg' : 'image/png', Number(quality) / 100]);
+  assert.equal(await page.evaluate(() => audit.downloads[0].name), format === 'jpeg' ? 'youtube-frame.jpg' : 'youtube-frame.png');
+});
+
 test('blocked canvas export produces an accessible status without a download', async t => {
   const page = await open(t, { snapshotButton: true }, `() => { HTMLCanvasElement.prototype.getContext=()=>({drawImage(){throw new DOMException('Blocked','SecurityError');}}); }`);
   await page.locator('#ytms-snapshot-button').click();
@@ -234,12 +243,95 @@ test('late native export controls replace only the corresponding Suite action', 
   assert.equal(await page.locator('#ytms-snapshot-button').count(), 1);
 });
 
+test('export buttons follow the visible replacement toolbar instead of retained hidden controls', async t => {
+  const page = await open(t, { snapshotButton: true, transcriptDownload: true });
+  await page.evaluate(() => {
+    const previous = document.querySelector('.ytp-right-controls');
+    const replacement = document.createElement('div'); replacement.className = 'ytp-right-controls';
+    replacement.innerHTML = '<button class="ytp-settings-button ytp-button">Settings</button>';
+    const retained = document.createElement('div'); retained.hidden = true;
+    previous.replaceWith(retained, replacement); retained.append(previous);
+  });
+  await page.evaluate(async () => { for (let i=0;i<4;i++) await new Promise(requestAnimationFrame); });
+  for (const id of ['ytms-snapshot-button', 'ytms-transcript-button']) {
+    assert.equal(await page.locator('#' + id).isVisible(), true);
+    assert.equal(await page.locator('#' + id).count(), 1);
+  }
+  await page.locator('#ytms-snapshot-button').click();
+  await page.locator('#ytms-transcript-button').click();
+  assert.deepEqual(await page.evaluate(() => audit.downloads.map(download => download.name)),
+    ['youtube-frame.png', 'youtube-transcript.txt']);
+  assert.equal(await page.locator('.sponsorBlockPreviewBar').isVisible(), true);
+  assert.equal(await page.locator('#return-youtube-dislike').isVisible(), true);
+});
+
+test('retained hidden native export actions do not suppress usable Suite exports', async t => {
+  const page = await open(t, { snapshotButton: true, transcriptDownload: true }, `() => {
+    const retained = document.createElement('div'); retained.hidden = true;
+    retained.innerHTML = '<button class="ytp-snapshot-button">Snapshot</button><button class="ytp-transcript-download-button">Transcript</button>';
+    document.getElementById('movie_player').append(retained);
+  }`);
+  for (const id of ['ytms-snapshot-button', 'ytms-transcript-button']) {
+    assert.equal(await page.locator('#' + id).count(), 1);
+    assert.equal(await page.locator('#' + id).isVisible(), true);
+  }
+});
+
+test('Escape dismisses export tooltips without changing focus or consuming the native key', async t => {
+  const page = await open(t, { snapshotButton: true, transcriptDownload: true });
+  await page.evaluate(() => {
+    audit.escapeEvents = [];
+    window.addEventListener('keydown', event => { if (event.key === 'Escape') audit.escapeEvents.push(event.defaultPrevented); });
+  });
+  for (const id of ['ytms-snapshot-button', 'ytms-transcript-button']) {
+    const button = page.locator('#' + id);
+    await button.focus();
+    await page.locator('#ytms-export-tooltip').waitFor();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#ytms-export-tooltip').count(), 0);
+    assert.equal(await button.evaluate(button => document.activeElement === button), true);
+    assert.equal(await button.getAttribute('aria-describedby'), null);
+  }
+  assert.deepEqual(await page.evaluate(() => audit.escapeEvents), [false, false]);
+  assert.equal(await page.evaluate(() => audit.downloads.length), 0);
+});
+
+for (const competing of [false, true]) test(`ordinary native autohide preserves export controls (competing ${competing})`, async t => {
+  const page = await open(t, { snapshotButton: true, transcriptDownload: true }, `() => {
+    const style = document.createElement('style');
+    style.textContent = '#movie_player.ytp-autohide .ytp-right-controls { visibility: hidden; opacity: 0; }';
+    document.head.append(style);
+    if (${competing}) {
+      const native = document.createElement('span');
+      native.innerHTML = '<button class="ytp-snapshot-button">Snapshot</button><button class="ytp-transcript-download-button">Transcript</button>';
+      document.querySelector('.ytp-right-controls').append(native);
+    }
+  }`);
+  await page.evaluate(() => {
+    audit.buttons = [...document.querySelectorAll('#ytms-snapshot-button, #ytms-transcript-button')];
+    document.getElementById('movie_player').classList.add('ytp-autohide');
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+  });
+  await page.evaluate(async () => { for (let i=0;i<4;i++) await new Promise(requestAnimationFrame); });
+  assert.equal(await page.locator('#ytms-snapshot-button, #ytms-transcript-button').count(), competing ? 0 : 2);
+  assert.equal(await page.evaluate(() => audit.buttons.every(button => button.isConnected)), true);
+  await page.evaluate(() => document.getElementById('movie_player').classList.remove('ytp-autohide'));
+  if (!competing) for (const id of ['ytms-snapshot-button', 'ytms-transcript-button']) {
+    assert.equal(await page.locator('#' + id).isVisible(), true);
+  }
+  assert.equal(await page.evaluate(() => audit.downloads.length), 0);
+});
+
 test('unsupported native audio metadata consumes at most eight attempts per video', async t => {
   const page = await open(t, { originalAudio: true }, `() => {
     audit.audioReads=0; document.getElementById('movie_player').getAvailableAudioTracks=()=>{audit.audioReads++;return [];};
   }`);
   await page.evaluate(async () => {
     for(let i=0;i<20;i++) { window.dispatchEvent(new Event('resize')); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); }
+  });
+  assert.equal(await page.evaluate(() => audit.audioReads), 1, 'resize churn cannot spend readiness retries');
+  await page.evaluate(async () => {
+    for(let i=0;i<20;i++) { window.dispatchEvent(new Event('yt-page-data-updated')); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); }
   });
   assert.equal(await page.evaluate(() => audit.audioReads), 8);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
-import { launchFixtureBrowser, waitForSuiteHealth } from "./fixture-browser.mjs";
+import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from "./fixture-browser.mjs";
 
 const SUITE = readFileSync(new URL("../../youtube-master-suite.user.js", import.meta.url), "utf8");
 const MANIFEST = JSON.parse(readFileSync(new URL("../../release-manifest.json", import.meta.url), "utf8"));
@@ -198,7 +198,7 @@ test("title-icon setting keeps draft and Cancel changes private, and applies sav
   await openInterface(page);
   assert.equal(await titleToggle.isChecked(), false, "Cancel discards the draft");
   await titleToggle.check();
-  await page.locator("#ytms-save-preview").click();
+  await saveFixtureSettings(page);
   assert.equal(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values.showDeArrowTitleButton, KEY), true);
   assert.equal(await page.locator("#fixture-title-button").isVisible(), false, "Save must not hot-apply module settings");
   await page.reload();
@@ -214,7 +214,7 @@ test("title-icon setting keeps draft and Cancel changes private, and applies sav
   await openInterface(page);
   assert.equal(await titleToggle.isChecked(), true);
   await titleToggle.uncheck();
-  await page.locator("#ytms-save-preview").click();
+  await saveFixtureSettings(page);
   assert.equal(await page.locator("#fixture-title-button").isVisible(), true);
   await page.reload();
   await healthy(page);

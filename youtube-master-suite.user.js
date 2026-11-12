@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.88
+// @version      1.2.123
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -20,6 +20,7 @@
 
 (async () => {
   "use strict";
+  if (window.top !== window) return;
 
   const rejectYouTubeOptionalCookies = function rejectYouTubeOptionalCookies(window, document, options = {}) {
   const idle = { stop() {}, get status() { return "not-applicable"; } };
@@ -91,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.88";
+  const MASTER_VERSION = "1.2.123";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -132,6 +133,7 @@
     "suiteSettings",
   ];
   const sharedWindowListeners = new Map();
+  const diagnosticWindowListeners = new WeakMap();
   const sharedMutationObservers = new Set();
   const styleParts = new Map();
   const idleModules = [];
@@ -520,12 +522,10 @@
     return true;
   }
 
-  function recordRuntimeError(ownerId, operation, error) {
+  function recordRuntimeError(ownerId, operation) {
     runtimeErrors.push({
       module: String(ownerId || "suite").slice(0, 100),
       operation: String(operation || "runtime").slice(0, 160),
-      message: String(error?.message || error).slice(0, 500),
-      timestamp: new Date().toISOString(),
     });
     if (runtimeErrors.length > MAX_RUNTIME_ERRORS) {
       runtimeErrors.splice(0, runtimeErrors.length - MAX_RUNTIME_ERRORS);
@@ -543,12 +543,9 @@
     );
   }
 
-  function reportModuleError(ownerId, label, error) {
-    console.error(
-      `[YouTube Master Suite] [${ownerId}] ${label} failed`,
-      error,
-    );
-    recordRuntimeError(ownerId, label, error);
+  function reportModuleError(ownerId, label) {
+    console.error(`[YouTube Master Suite] [${ownerId}] ${label} failed`);
+    recordRuntimeError(ownerId, label);
   }
 
   function now() {
@@ -658,12 +655,18 @@
   function addWindowListener(type, listener, options) {
     const ownerId = activeModuleId;
     if (!SHARED_WINDOW_EVENTS.has(type)) {
-      const registeredListener = DIAGNOSTICS.enabled
-        ? (event) =>
-            runWithDiagnostics(ownerId, `event:${type}`, 1, () =>
-              invokeEventListener(listener, event),
-            )
-        : listener;
+      let registeredListener = listener;
+      if (DIAGNOSTICS.enabled && listener !== null &&
+          (typeof listener === "function" || typeof listener === "object")) {
+        let registrations = diagnosticWindowListeners.get(listener);
+        if (!registrations) { registrations = new Map(); diagnosticWindowListeners.set(listener, registrations); }
+        const key = String(type) + "|" + Number(getCapture(options));
+        registeredListener = registrations.get(key);
+        if (!registeredListener) {
+          registeredListener = (event) => runWithDiagnostics(ownerId, `event:${type}`, 1, () => invokeEventListener(listener, event));
+          registrations.set(key, registeredListener);
+        }
+      }
       globalThis.addEventListener(type, registeredListener, options);
       return;
     }
@@ -680,6 +683,7 @@
           beginBatch();
           try {
             for (const registeredListener of [...group.listeners]) {
+              if (!group.listeners.includes(registeredListener)) continue;
               try {
                 runWithDiagnostics(
                   registeredListener.ownerId,
@@ -710,7 +714,21 @@
         capture,
       );
     }
-    group.listeners.push({ listener, ownerId });
+    if (!group.listeners.some(entry => entry.listener === listener)) group.listeners.push({ listener, ownerId });
+  }
+
+  function removeWindowListener(type, listener, options) {
+    const capture = getCapture(options);
+    const group = sharedWindowListeners.get(String(type) + "|" + (capture ? "capture" : "bubble"));
+    if (SHARED_WINDOW_EVENTS.has(type) && group) {
+      group.listeners = group.listeners.filter(entry => entry.listener !== listener);
+    }
+    const registrations = listener !== null && (typeof listener === "function" || typeof listener === "object")
+      ? diagnosticWindowListeners.get(listener) : null;
+    const key = String(type) + "|" + Number(capture);
+    const registeredListener = registrations?.get(key) || listener;
+    globalThis.removeEventListener(type, registeredListener, options);
+    registrations?.delete(key);
   }
 
   function mutationMatches(observer, mutation) {
@@ -1058,10 +1076,7 @@
       runWithDiagnostics(id, "initialise", 1, initialise);
       moduleStates.set(id, { status: "initialised" });
     } catch (error) {
-      moduleStates.set(id, {
-        status: "failed",
-        error: String(error?.message || error).slice(0, 500),
-      });
+      moduleStates.set(id, { status: "failed" });
       reportModuleError(id, label, error);
     } finally {
       activeModuleId = previousModuleId;
@@ -1126,7 +1141,7 @@
     const disabledModules = moduleIdsWithStatus("disabled");
     const failedModules = states
       .filter((entry) => entry.status === "failed")
-      .map(({ id, error }) => ({ id, error }));
+      .map(({ id }) => ({ id }));
     const ready = pendingModules.length === 0;
     root.setAttribute(
       HEALTH_ATTRIBUTE,
@@ -1457,6 +1472,14 @@
     "default": false
   },
   {
+    "key": "dismissMembershipOffers",
+    "tab": "interface",
+    "section": "Page appearance",
+    "label": "Dismiss membership offers",
+    "description": "Automatically close recognised channel membership offers, including offers opened by Join. Save and reload to apply. Other dialogs and payment frames remain available.",
+    "default": false
+  },
+  {
     "key": "hideOpenApp",
     "tab": "interface",
     "section": "Page appearance",
@@ -1557,7 +1580,7 @@
     "tab": "layout",
     "section": "Theatre view",
     "label": "Hide header in full-window theatre",
-    "description": "Hide the header only while full-window theatre view is active.",
+    "description": "Requires Full-window theatre view. Hides the header only while that view is active.",
     "default": false
   },
   {
@@ -1637,7 +1660,7 @@
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts action bar",
-    "description": "Hide the native action bar on Shorts pages. Native keyboard playback controls remain available.",
+    "description": "Hide the action bar while Redirect Shorts to watch pages is off. Native keyboard playback controls remain available.",
     "default": false
   },
   {
@@ -1645,7 +1668,7 @@
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts related-video link",
-    "description": "Hide the native related-video link on Shorts pages.",
+    "description": "Hide the related-video link while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -1653,7 +1676,7 @@
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts music link",
-    "description": "Hide the native music link on Shorts pages.",
+    "description": "Hide the music link while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -1661,7 +1684,7 @@
     "tab": "feed",
     "section": "Native Shorts",
     "label": "Hide Shorts Remix button",
-    "description": "Hide the native Remix control on Shorts pages.",
+    "description": "Hide Remix while Redirect Shorts to watch pages is off.",
     "default": false
   },
   {
@@ -1797,7 +1820,7 @@
     "tab": "player",
     "section": "Capture and export",
     "label": "Snapshot format",
-    "description": "PNG preserves image detail. JPEG produces smaller files.",
+    "description": "Requires Show Take snapshot button. PNG preserves image detail. JPEG produces smaller files.",
     "default": "png",
     "options": [
       [
@@ -1815,7 +1838,7 @@
     "tab": "player",
     "section": "Capture and export",
     "label": "JPEG snapshot quality",
-    "description": "Only applies to JPEG snapshots.",
+    "description": "Requires Show Take snapshot button and JPEG format.",
     "default": "90",
     "options": [
       [
@@ -2159,6 +2182,22 @@
     "default": true
   },
   {
+    "key": "miniplayerNavigation",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Show previous/next buttons",
+    "description": "Show white navigation controls on native miniplayer hover or keyboard focus. Native controls are reused; fallback controls require a verified neighbouring queue entry.",
+    "default": true
+  },
+  {
+    "key": "currentQueueMenu",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Show current video menu",
+    "description": "Keep the playing queue item's native three-dot menu available when its actions can be verified. Remove from playlist uses YouTube's native action and may advance playback. Save and reload to apply.",
+    "default": true
+  },
+  {
     "key": "compactNativeQueue",
     "tab": "miniplayer",
     "section": "Native queue",
@@ -2171,10 +2210,10 @@
  return Object.freeze({ definitions: Object.freeze(definitions), defaults: Object.freeze(Object.fromEntries(definitions.map(item => [item.key, item.default]))), choices: Object.freeze(Object.fromEntries(definitions.filter(item => item.options).map(item => [item.key, Object.freeze(item.options.map(option => option[0]))]))) });
 };
   const createMenuLayout = function createMenuLayout() {
-  const actionIds = Object.freeze(['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share',
+  const actionIds = Object.freeze(['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share',
     'notInterested', 'channelAge', 'dontRecommend', 'report']);
   const labels = Object.freeze({ playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
-    savePlaylist: 'Save to playlist', download: 'Download', share: 'Share', notInterested: 'Not interested',
+    savePlaylist: 'Save to playlist', download: 'Download', hype: 'Hype', share: 'Share', notInterested: 'Not interested',
     channelAge: 'Filter channel uploads', dontRecommend: 'Don’t recommend channel', report: 'Report' });
   const limits = Object.freeze({ maxGroups: 8, maxDepth: 3, maxNameLength: 40 });
   const groupId = value => value === 'channelTools' || /^submenu-[a-z0-9-]{1,24}$/.test(value);
@@ -2193,7 +2232,7 @@
   function validate(value) {
     try {
       if (!fields(value, ['version', 'nodes']) || value.version !== 1 || !Array.isArray(value.nodes) ||
-          Object.getPrototypeOf(value.nodes) !== Array.prototype || value.nodes.length < actionIds.length ||
+          Object.getPrototypeOf(value.nodes) !== Array.prototype || value.nodes.length < actionIds.length - 1 ||
           value.nodes.length > actionIds.length + limits.maxGroups ||
           Reflect.ownKeys(value.nodes).length !== value.nodes.length + 1) return null;
       const nodes = new Map();
@@ -2216,7 +2255,10 @@
         }
         nodes.set(node.id, node);
       }
-      if (actionIds.some(id => !nodes.has(id))) return null;
+      if (actionIds.some(id => id !== 'hype' && !nodes.has(id))) return null;
+      // Earlier layouts predate Hype. Preserve every existing node and append
+      // its previously native-visible action without resetting custom groups.
+      if (!nodes.has('hype')) nodes.set('hype', { id:'hype', parent:'root', visible:true });
       for (const node of nodes.values()) {
         const visited = new Set([node.id]);
         let parent = node.parent, depth = actionIds.includes(node.id) ? 0 : 1;
@@ -2226,7 +2268,7 @@
           visited.add(parent); parent = owner.parent;
         }
       }
-      return clone(value);
+      return clone({ version:1, nodes:[...nodes.values()] });
     } catch { return null; }
   }
   function fromPreferences(preferences = {}) {
@@ -2237,7 +2279,7 @@
     const defaultOrder = [...actionIds, 'channelTools'];
     const requested = Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder : [];
     const order = [...new Set([...requested.filter(id => defaultOrder.includes(id)), ...defaultOrder])];
-    const visibility = { download: preferences.menuShowDownload === true, channelAge: preferences.menuShowAgeLimit !== false,
+    const visibility = { download: preferences.menuShowDownload === true, hype: preferences.menuShowHype !== false, channelAge: preferences.menuShowAgeLimit !== false,
       notInterested: preferences.menuShowNotInterested !== false, dontRecommend: preferences.menuShowDontRecommend !== false,
       report: preferences.menuShowReport !== false };
     return { version: 1, nodes: order.flatMap(id => id === 'channelTools'
@@ -2267,10 +2309,10 @@
     showRydTooltipBar: false,
     showDeArrowTitleButton: false,
     showDeArrowQueueButton: true,
-    menuShowDownload: false, menuGroupChannelTools: true, menuShowAgeLimit: true,
+    menuShowDownload: false, menuShowHype: true, menuGroupChannelTools: true, menuShowAgeLimit: true,
     menuShowNotInterested: true, menuShowDontRecommend: true, menuShowReport: true,
     menuLayout: null,
-    menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "share",
+    menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "hype", "share",
       "notInterested", "channelAge", "dontRecommend", "report", "channelTools"]),
   });
   const choices = Object.freeze({
@@ -3045,9 +3087,76 @@
   read();
   return { key, normaliseChannelId, validateRules, read, save, getRules, hasEnabledRules, channelFromCard, channelCandidatesFromCard, handleCandidatesFromCard, channelIdentityFromCard, rememberResolvedChannel, rememberLookup:rememberResolvedChannel, isResolvedChannel, videoIdFromCard, compareAgeLimits, cardFilterReason, isCardTooOld };
 };
-  let storage;
+  const createSettingsWriteGuard = function createSettingsWriteGuard({ locks, getCoordinationStorage, getValue, setValue, getMainRecord, newRevision,
+  key = 'yt-master-suite.settings-write.v1' }) {
+  const conflict = () => ({ ok: false, conflict: true,
+    error: 'Saved settings are still synchronising or changed in another tab. Keep your draft and try again.' });
+  let recoveryReceipt = null;
   try {
-    const storageApis = (function scopeStorageApis({ info, getValue, setValue, addValueChangeListener, removeValueChangeListener }) {
+    // After clearing site data, a newly opened tab can re-establish the opaque
+    // marker from its initial protected receipt. Existing tabs cannot do this.
+    if (getCoordinationStorage().getItem(key) === null) recoveryReceipt = getValue(key, null);
+  } catch { /* The settings remain readable if coordination storage is unavailable. */ }
+  return async function writeSettings(write, coordinate = callback => callback()) {
+    if (typeof locks?.request !== 'function') {
+      return { ok: false, error: 'This browser cannot coordinate safe settings saves. Your draft is still open.' };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      return await locks.request(key, { signal: controller.signal }, () => coordinate(() => {
+        let coordination, revision, rawReceipt, before, next;
+        const restoreRevision = () => {
+          if (coordination.getItem(key) !== next) return false;
+          if (revision === null) coordination.removeItem(key);
+          else coordination.setItem(key, revision);
+          return true;
+        };
+        try {
+          coordination = getCoordinationStorage();
+          revision = coordination.getItem(key);
+          rawReceipt = getValue(key, null);
+          const committed = JSON.parse(rawReceipt);
+          before = getMainRecord();
+          if (revision === null && committed && committed.value === before && rawReceipt === recoveryReceipt) {
+            coordination.setItem(key, committed.revision);
+            revision = coordination.getItem(key);
+          }
+          recoveryReceipt = null;
+          if (revision !== (committed?.revision ?? null) || (committed && committed.value !== before)) return conflict();
+
+          // Publish only an opaque revision before writing. A stale cache cannot
+          // pass until both its private receipt and its actual record agree.
+          next = newRevision();
+          coordination.setItem(key, next);
+          if (coordination.getItem(key) !== next) return conflict();
+          const result = write();
+          const after = getMainRecord();
+          if (after === before) {
+            if (!restoreRevision()) return conflict();
+          } else {
+            const receipt = JSON.stringify({ revision: next, value: after });
+            setValue(key, receipt);
+            if (getValue(key, null) !== receipt) return conflict();
+          }
+          return result;
+        } catch {
+          // Release only our own failed reservation when neither the protected
+          // record nor its receipt changed. Ambiguous partial writes stay blocked.
+          try {
+            if (next !== undefined && getMainRecord() === before && getValue(key, null) === rawReceipt) restoreRevision();
+          } catch { /* Preserve the failure when storage cannot be inspected safely. */ }
+          return { ok: false, error: 'Settings could not be confirmed in protected storage. Keep your draft and review the saved settings before retrying.' };
+        }
+      }));
+    } catch { return conflict(); }
+    finally { clearTimeout(timer); }
+  };
+};
+  let storage;
+  let storageApis;
+  try {
+    storageApis = (function scopeStorageApis({ info, getValue, setValue, addValueChangeListener, removeValueChangeListener }) {
   const fail = () => { throw new Error('Tampermonkey browsing context is unavailable or incompatible. Existing settings were left unchanged.'); };
   let incognito, containerId = '';
   try {
@@ -3333,6 +3442,7 @@
     storage,
     SharedMutationObserver,
     addWindowListener,
+    removeWindowListener,
     registerModule,
     reportModuleError,
     removeStyle,
@@ -3375,9 +3485,13 @@
   list.setAttribute('aria-describedby', note.id);
   const preview = el('details', undefined, 'menu-editor-preview');
   preview.append(el('summary', 'Menu preview'));
+  const appliedPreview = button('Preview active layout');
+  const previewNote = el('p', '', 'section-note');
+  if (options.getAppliedPreferences) preview.append(appliedPreview);
+  preview.append(previewNote);
   const previewList = el('ul'); previewList.setAttribute('aria-label', 'Menu preview'); preview.append(previewList);
   section.append(heading, note, toolbar, groupFields, status, list, preview);
-  let current = 'root', invalid = false;
+  let current = 'root', invalid = false, showApplied = false;
   const effective = () => layouts.fromPreferences(options.getPreferences());
   const isGroup = node => !layouts.actionIds.includes(node.id);
   function label(node) { return isGroup(node) ? node.name : layouts.labels[node.id]; }
@@ -3403,7 +3517,11 @@
       return Boolean(layouts.validate(next));
     });
   }
-  function drawPreview(layout) {
+  function drawPreview(draftLayout) {
+    if (!preview.open) return;
+    const layout = showApplied ? layouts.fromPreferences(options.getAppliedPreferences()) : draftLayout || effective();
+    appliedPreview.textContent = showApplied ? 'Preview draft layout' : 'Preview active layout';
+    previewNote.textContent = `${showApplied ? 'Layout loaded on this page.' : 'Layout with your current edits.'} Available actions depend on the video and YouTube’s menu.`;
     previewList.replaceChildren();
     function children(parent, target) {
       for (const node of layout.nodes.filter(item => item.parent === parent)) {
@@ -3418,7 +3536,10 @@
       }
     }
     children('root', previewList);
+    if (!previewList.children.length) previewList.append(el('li', 'All customisable actions are hidden.'));
   }
+  preview.addEventListener('toggle', () => drawPreview());
+  appliedPreview.addEventListener('click', () => { showApplied = !showApplied; drawPreview(); });
   function render(focusId, direction) {
     const layout = effective();
     if (current !== 'root' && !layout.nodes.some(node => node.id === current && isGroup(node))) current = 'root';
@@ -3448,10 +3569,12 @@
       } else {
         const visible = el('input'); visible.type = 'checkbox'; visible.checked = node.visible;
         visible.setAttribute('aria-label', `Show ${label(node)}`);
-        const legacyIds = { download:'menuShowDownload', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
+        const legacyIds = { download:'menuShowDownload', hype:'menuShowHype', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
         visible.id = 'ytms-' + (legacyIds[node.id] || 'menu-action-' + node.id);
         visible.addEventListener('change', () => {
-          const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked; commit(next);
+          if (invalid) { visible.checked = node.visible; name.focus(); return; }
+          const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked;
+          commit(next, node.id, 'visibility');
         });
         const visibleLabel = el('label'); visibleLabel.append(visible, el('span', label(node))); title.replaceChildren(visibleLabel);
       }
@@ -3460,7 +3583,9 @@
       for (const target of targets(layout, node)) { const option = el('option', path(target, layout)); option.value = target; parent.append(option); }
       parent.value = node.parent;
       parent.addEventListener('change', () => {
+        if (invalid) { parent.value = node.parent; name.focus(); return; }
         const next = effective(); next.nodes.find(entry => entry.id === node.id).parent = parent.value; commit(next);
+        location.focus();
       });
       item.append(parent);
       for (const [word, symbol, offset] of [['up','↑',-1],['down','↓',1]]) {
@@ -3475,7 +3600,7 @@
       }
       list.append(item);
       if (focusId === node.id) {
-        const preferred = item.querySelector(`[data-direction="${direction}"]`);
+        const preferred = item.querySelector(direction === 'visibility' ? 'input[type="checkbox"]' : `[data-direction="${direction}"]`);
         (preferred?.disabled ? item.querySelector('button:not(:disabled)') : preferred)?.focus();
       }
     }
@@ -3642,6 +3767,9 @@
   const collator = new Intl.Collator('en-GB', { numeric: true, sensitivity: 'base' });
   let saved = [], draft = [];
   let loaded = false, rowSequence = 0;
+  const isActive = () => typeof options.isActive === 'function' ? options.isActive() : loaded && (embedded || dialog.open);
+  let sessionGeneration = 0, saving = false;
+  const write = typeof options.write === 'function' ? options.write : callback => callback();
   let newRules = new WeakSet(), origin = null, editingRule = null;
   let importGeneration = 0, importToken = null, importText = null, updateImportPreview = null;
   let downloadUrl = null, downloadTimer = null;
@@ -3649,7 +3777,7 @@
   const copy = rules => rules.map(rule => ({ ...rule }));
   const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const hasDraft = () => loaded && !same(draft, saved);
-  function updateSaveState() { save.disabled = embedded && !hasDraft() && !editingRule; updateImportPreview?.(); }
+  function updateSaveState() { save.disabled = saving || embedded && !hasDraft() && !editingRule; updateImportPreview?.(); }
   function markChanged() {
     status.hidden = true; status.classList.remove('ytms-age-error'); updateSaveState();
   }
@@ -3688,7 +3816,7 @@
     const changed = filters.added || filters.changed || filters.removed || orderChanged;
     const update = () => {
       const dirty = hasDraft();
-      applyImport.disabled = !acknowledgement.checked || !changed || dirty;
+      applyImport.disabled = saving || !acknowledgement.checked || !changed || dirty;
       if (dirty) setTransferStatus('Save or discard your channel edits before importing. Your draft has been kept.', true);
       else if (!changed) setTransferStatus('This import would not change your saved channels.');
       else setTransferStatus('Preview only. Other settings are unchanged; nothing has been imported yet.');
@@ -3696,12 +3824,23 @@
     updateImportPreview = update;
     acknowledgement.addEventListener('change', update);
     cancelImport.addEventListener('click', () => { clearTransfer(); setTransferStatus('Import cancelled. Nothing has been changed.'); });
-    applyImport.addEventListener('click', () => {
+    applyImport.addEventListener('click', async event => {
+      if (!event.isTrusted || !isActive() || saving) return;
       if (hasDraft()) { update(); return; }
       if (!acknowledgement.checked || applyImport.disabled || !importToken) return;
+      const confirmed = importToken, request = importGeneration, session = sessionGeneration;
+      saving = true; updateSaveState();
       let restored;
-      try { restored = options.channelBackup.restoreChannels(importToken); }
+      try { restored = await write(() => {
+        if (!isActive() || session !== sessionGeneration || request !== importGeneration || confirmed !== importToken ||
+            !loaded || !acknowledgement.checked || hasDraft()) {
+          return { ok: false, error: 'The channel import changed while waiting. Review the preview and try again.' };
+        }
+        return options.channelBackup.restoreChannels(confirmed);
+      }); }
       catch { restored = { ok: false, error: 'Channels could not be imported. Review the saved list before trying again.' }; }
+      finally { saving = false; updateSaveState(); }
+      if (session !== sessionGeneration || request !== importGeneration || confirmed !== importToken) return;
       clearTransfer();
       if (!restored?.ok) {
         // A concurrent write or incomplete rollback may have changed the saved
@@ -3718,6 +3857,7 @@
     update();
   }
   function prepareImportPreview() {
+    if (!isActive()) return;
     importToken = null; updateImportPreview = null; importPreview.replaceChildren(); importPreview.hidden = true;
     if (importText === null) return;
     let result;
@@ -3727,6 +3867,7 @@
     else setTransferStatus(result?.error || 'The channel export could not be read. No channels were changed.', true);
   }
   importFile.addEventListener('change', async () => {
+    if (!isActive()) return;
     const file = importFile.files?.[0];
     importToken = null; importText = null; updateImportPreview = null; importPreview.replaceChildren(); importPreview.hidden = true;
     const request = ++importGeneration;
@@ -3736,12 +3877,18 @@
     try {
       const text = await file.text();
       if (request !== importGeneration) return;
+      if (!isActive()) { importFile.value = ''; setTransferStatus('Preview cancelled. Choose the file again.'); return; }
       importText = text; prepareImportPreview();
-    } catch { if (request === importGeneration) setTransferStatus('The selected file could not be read. No channels were changed.', true); }
+    } catch {
+      if (request !== importGeneration) return;
+      if (!isActive()) { importFile.value = ''; setTransferStatus('Preview cancelled. Choose the file again.'); return; }
+      setTransferStatus('The selected file could not be read. No channels were changed.', true);
+    }
   });
   importMode.addEventListener('change', prepareImportPreview);
-  fullBackup.addEventListener('click', () => options.openFullBackup?.());
-  exportChannels.addEventListener('click', () => {
+  fullBackup.addEventListener('click', event => { if (event.isTrusted && isActive()) options.openFullBackup?.(); });
+  exportChannels.addEventListener('click', event => {
+    if (!event.isTrusted || !isActive() || !loaded) return;
     let result;
     try { result = options.channelBackup.exportChannels(); }
     catch { result = { ok: false, error: 'The channel export could not be created.' }; }
@@ -3869,11 +4016,13 @@
     newRules.add(rule); draft.push(rule); search.value = ''; markChanged(); render(rule, true); return rule;
   }
   function loadSaved(clearView = false) {
+    sessionGeneration++;
     saved = service.read(); draft = copy(saved); loaded = true; newRules = new WeakSet(); editingRule = null;
     if (clearView) { search.value = ''; sort.value = 'saved'; }
     markChanged(); render(null);
   }
   function reset({ defer = false } = {}) {
+    sessionGeneration++;
     clearTransfer(true);
     origin = null;
     if (!defer) { loadSaved(true); return; }
@@ -3882,6 +4031,7 @@
     columns.hidden = true; count.textContent = ''; empty.hidden = true; markChanged();
   }
   function close() {
+    sessionGeneration++;
     clearTransfer(true);
     origin = null;
     if (embedded) reset();
@@ -3897,22 +4047,23 @@
     saved = latest; draft = copy(saved); loaded = true; newRules = new WeakSet(); render(null);
   }
   function add() { if (!loaded) loadSaved(); if (validateDraft()) appendRule(); }
-  addButton.addEventListener('click', add);
+  addButton.addEventListener('click', event => { if (event.isTrusted && isActive()) add(); });
   search.addEventListener('input', () => render());
   sort.addEventListener('change', () => render());
   clearSearch.addEventListener('click', () => { search.value = ''; render(); search.focus(); });
-  function cancelChanges() {
+  function cancelChanges(event) {
+    if (!event?.isTrusted || !isActive()) return;
     const state = { hadEditor: Boolean(editingRule), hadDraft: hasDraft() };
     close(); options.onCancel?.(state);
   }
   closeButton.addEventListener('click', cancelChanges); cancel.addEventListener('click', cancelChanges);
-  dialog.addEventListener('close', () => { if (!dialog.open) { clearTransfer(true); origin = null; loaded = false; editingRule = null; } });
+  dialog.addEventListener('close', () => { if (!dialog.open) { sessionGeneration++; clearTransfer(true); origin = null; loaded = false; editingRule = null; } });
   dialog.addEventListener('keydown', event => event.stopPropagation());
   for (const type of ['input', 'change']) dialog.addEventListener(type, event => event.stopPropagation());
   dialog.addEventListener('click', event => {
     if (embedded || event.target !== dialog) return;
     const bounds = dialog.getBoundingClientRect();
-    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) cancelChanges();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) cancelChanges(event);
   });
   function validateDraft() {
     const ids = new Set();
@@ -3930,16 +4081,32 @@
     }
     return true;
   }
-  save.addEventListener('click', () => {
+  save.addEventListener('click', async event => {
+    if (!event.isTrusted || !isActive() || saving || !loaded) return;
     if (!validateDraft()) return;
+    const confirmed = copy(draft), baseline = copy(saved), request = sessionGeneration, savedOrigin = origin;
+    saving = true; updateSaveState();
     let result;
-    try { result = service.save(draft, saved); }
-    catch { showStatus('Could not save channel upload filters. Your previous filters are unchanged.', true); return; }
+    try { result = await write(() => {
+      if (!isActive() || request !== sessionGeneration || !loaded || !same(draft, confirmed) || !same(saved, baseline)) {
+        return { ok: false, error: 'Channel edits changed while waiting to save. Review your draft and try again.' };
+      }
+      return service.save(confirmed, baseline);
+    }); }
+    catch { result = { ok: false, error: 'Could not save channel upload filters. Your previous filters are unchanged.' }; }
+    finally { saving = false; updateSaveState(); }
+    if (request !== sessionGeneration || !loaded) return;
     if (!result?.ok) { showStatus(result?.error || 'Could not save channel upload filters. Your previous filters are unchanged.', true); return; }
     clearTransfer();
-    const change = { origin, previousRules: saved, rules: service.getRules() };
+    const change = { origin: savedOrigin, previousRules: baseline, rules: service.getRules() };
     // A UI acknowledgement failure must not undo a successful storage write.
     try { onSaved?.(change); } catch { /* Filtering still applies if its card disappeared. */ }
+    if (!same(draft, confirmed)) {
+      saved = change.rules; updateSaveState();
+      showStatus('Your earlier channel edits were saved. Current edits are still unsaved.');
+      document.defaultView.dispatchEvent(new document.defaultView.CustomEvent('yt-master-channel-age-changed'));
+      return;
+    }
     saved = change.rules; draft = copy(saved); newRules = new WeakSet(); origin = null; render(null);
     showStatus('Saved. Channel upload filters apply immediately; no reload is needed.');
     document.defaultView.dispatchEvent(new document.defaultView.CustomEvent('yt-master-channel-age-changed'));
@@ -3969,17 +4136,18 @@
     },
     // reset/close discard drafts; refresh never overwrites one. View controls
     // are session-only and never reorder the persisted rule array.
-    close, refresh, reset, hasDraft, add,
+    close, refresh, reset, hasDraft, add, isSaving: () => saving,
   };
 },
     installVideoMenu: function installVideoMenu(suite) {
   const preferences = suite.settings.initial;
-  const cardSelector = 'ytd-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, yt-lockup-view-model, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer';
+  const cardSelector = 'ytd-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, yt-lockup-view-model, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer, ytd-watch-metadata, ytd-video-primary-info-renderer';
   const popupSelector = 'ytd-menu-popup-renderer, yt-sheet-view-model';
   const rowSelector = 'ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
-  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
+  const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
   const order = [...new Set([...(Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder.filter(id => defaultOrder.includes(id)) : []), ...defaultOrder])];
   const legacyVisible = id => id === 'download' ? preferences.menuShowDownload === true :
+    id === 'hype' ? preferences.menuShowHype !== false :
     id === 'channelAge' ? preferences.menuShowAgeLimit !== false :
     id === 'notInterested' ? preferences.menuShowNotInterested !== false :
     id === 'dontRecommend' ? preferences.menuShowDontRecommend !== false :
@@ -4060,6 +4228,7 @@
     if (['WATCH_LATER', 'WATCH_LATER_OUTLINE'].includes(icon)) return 'watchLater';
     if (['PLAYLIST_ADD', 'ADD_TO_PLAYLIST', 'PLAYLIST_ADD_OUTLINE', 'BOOKMARK_BORDER'].includes(icon)) return 'savePlaylist';
     if (['DOWNLOAD', 'OFFLINE_DOWNLOAD', 'FILE_DOWNLOAD'].includes(icon) || item?.menuServiceItemDownloadRenderer) return 'download';
+    if (['HYPE', 'HYPE_OUTLINE'].includes(icon) || title === 'Hype') return 'hype';
     if (['SHARE', 'SHARE_OUTLINE'].includes(icon)) return 'share';
     const library = location.pathname === '/feed/history' || location.pathname === '/playlist' ||
       selection.card.matches('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer');
@@ -4069,7 +4238,43 @@
     return null; // Unrecognised actions retain their native position and behaviour.
   }
 
+  function watchVideoId(card) {
+    // Description links do not identify the playing video. Bind watch menus
+    // only to the rendered owner and its current player, agreeing with the URL.
+    const id = location.pathname === '/watch' ? new URLSearchParams(location.search).get('v') :
+      /^\/live\/([\w-]{11})\/?$/.exec(location.pathname)?.[1];
+    const owner = card.closest('ytd-watch-flexy');
+    if (!owner || !/^[\w-]{11}$/.test(id || '')) return null;
+    const visible = (node, ownerOnly = false) => {
+      if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const box = node.getBoundingClientRect();
+      if (!(box.width > 0 && (ownerOnly === true || box.height > 0))) return false;
+      for (let current = node; current; current = current.parentElement) {
+        const css = getComputedStyle(current);
+        if (css.display === 'none' || css.visibility !== 'visible' || Number(css.opacity) === 0) return false;
+      }
+      return true;
+    };
+    try {
+      if (!visible(owner, true) || !visible(card) || (owner.getAttribute('video-id') && owner.getAttribute('video-id') !== id)) return null;
+      const model = typeof card.componentProps?.data === 'function' ? card.componentProps.data() : controller(card)?.data;
+      if (model?.videoId && model.videoId !== id) return null;
+      const players = [...owner.querySelectorAll('#movie_player')].filter(player =>
+        player.closest('ytd-watch-flexy') === owner && !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') && visible(player));
+      if (document.body?.classList.contains('ytsmp-scroll-miniplayer-active')) {
+        const placeholders = [...document.querySelectorAll('#ytsmp-player-placeholder')].filter(node =>
+          !node.hidden && !node.hasAttribute('inert') && node.getClientRects().length && node.getBoundingClientRect().width>0 && node.getBoundingClientRect().height>0 &&
+          !node.parentElement?.closest('[hidden], [inert], [aria-hidden="true"]') && visible(node.closest('ytd-watch-flexy'), true));
+        if (placeholders.length === 1 && placeholders[0].closest('ytd-watch-flexy') === owner) {
+          for (const player of document.body.querySelectorAll(':scope > #movie_player')) if (visible(player)) players.push(player);
+        }
+      }
+      return players.length === 1 && players[0].getVideoData?.()?.video_id === id ? id : null;
+    } catch { return null; }
+  }
+
   function videoIdFromCard(card) {
+    if (card.matches('ytd-watch-metadata, ytd-video-primary-info-renderer')) return watchVideoId(card);
     const ids = new Set();
     for (const anchor of card.querySelectorAll('a[href]')) {
       try {
@@ -4102,14 +4307,32 @@
     } catch { return null; }
   }
 
+  function sheetBindingMatches(row,item) {
+    const bound=typeof row?.componentProps?.data==='function' ? row.componentProps.data() : controller(row)?.data;
+    const expected=item?.downloadListItemViewModel || item?.listItemViewModel;
+    if(!bound || typeof bound!=='object' || bound===item || bound===expected)return true;
+    const candidate=bound.downloadListItemViewModel || bound.listItemViewModel || bound;
+    const expectedSignature=menuSignature([expected]);
+    return expectedSignature!==null && expectedSignature===menuSignature([candidate]);
+  }
+
   function nativeMenuSignature(button, card) {
     // Some queue/library menus have no Add to queue command. Require their
     // exact native model instead; a trusted click alone cannot bind a popup.
     const host = button.closest('ytd-menu-renderer');
-    if (!host || !card.contains(host)) return null;
+    if (host && !card.contains(host)) return null;
     try {
-      const items = controller(host)?.data?.items;
-      return Array.isArray(items) && !items.some(queuedVideoId) ? menuSignature(items) : null;
+      const models = [];
+      if (host) {
+        if (typeof host.componentProps?.data === 'function') models.push(host.componentProps.data());
+        const legacy = controller(host)?.data;
+        if (legacy && typeof legacy === 'object') models.push(legacy);
+      }
+      const model = typeof card.componentProps?.data === 'function' ? card.componentProps.data() : controller(card)?.data;
+      if (model?.menu?.menuRenderer) models.push(model.menu.menuRenderer);
+      const signatures = models.map(model => Array.isArray(model?.items) && !model.items.some(queuedVideoId) ? menuSignature(model.items) : null);
+      // Conflicting retained host/row models are not evidence of a safe target.
+      return signatures.length && signatures.every(value => value && value === signatures[0]) ? signatures[0] : null;
     } catch { return null; }
   }
 
@@ -4366,7 +4589,9 @@
 
   function enterPage(page) {
     const current = active;
-    if (!current) return;
+    // Keyboard submenu entry must retain the same card and native model
+    // ownership as pointer entry while YouTube recycles an open popup.
+    if (!current || !validCurrent(current)) return;
     current.stack.push(current.page); setPage(page);
   }
 
@@ -4523,9 +4748,9 @@
     if (rows.length !== items.length) return diagnostic('row-count');
     if (rows.some(row => row.parentElement !== rows[0].parentElement)) return diagnostic('row-parent');
     const parent = rows[0].parentElement;
-    if (sheet && rows.some((row, index) => items[index]?.downloadListItemViewModel
+    if (sheet && rows.some((row, index) => !sheetBindingMatches(row,items[index]) || (items[index]?.downloadListItemViewModel
       ? !row.matches('yt-download-list-item-view-model')
-      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model'))) return diagnostic('row-binding');
+      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return diagnostic('row-binding');
     if (rows.some(row => !popup.contains(row)) || rows.some((row, index) => {
       if (sheet) return false;
       const model = items[index].menuServiceItemRenderer || items[index].menuNavigationItemRenderer || items[index].menuServiceItemDownloadRenderer;
@@ -4604,10 +4829,15 @@
 
   function visiblePopup(popup) {
     if (!popup.isConnected || !popup.getClientRects().length) return false;
+    const box = popup.getBoundingClientRect();
+    // A newly stamped native popup can have no row height until refit. A
+    // transform-collapsed laid-out popup is different: its layout height is
+    // positive even though its painted height is zero.
+    if (!(box.width > 0) || (!(box.height > 0) && popup.offsetHeight > 0)) return false;
     for (let element = popup; element; element = element.parentElement) {
-      if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+      if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true') return false;
       const css = getComputedStyle(element);
-      if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility)) return false;
+      if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
     }
     return true;
   }
@@ -5011,7 +5241,7 @@
     for (const [target, type, handler] of listeners) target.removeEventListener(type, handler, true);
   };
 },
-    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog .miniplayer-size-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"range\"] { width: 120px; min-width: 0; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"number\"] { width: 80px; padding: 6px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }\n#ytms-settings-dialog .extra-settings h3 { margin: 0 0 8px; font-size: 16px; }\n#ytms-settings-dialog .extra-settings label { display: block; margin: 10px 0 6px; font-size: 13px; }\n#ytms-settings-dialog .extra-settings input[type=\"url\"], #ytms-settings-dialog .extra-settings input[type=\"file\"] { display: block; width: 100%; max-width: 100%; color: var(--text); background: var(--field); padding: 8px; border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }\n#ytms-settings-dialog .extra-settings-controls label { margin: 0; }\n#ytms-settings-dialog .extra-settings-controls input[type=\"range\"] { width: 140px; max-width: 100%; }\n#ytms-settings-dialog #ytms-marker-preview { object-fit: contain; }\n#ytms-settings-dialog .extra-settings .extension-link { display: inline-block; text-decoration: none; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog .settings-search { display: flex; align-items: center; gap: 8px; padding: 6px 24px 8px; flex-shrink: 0; }\n#ytms-settings-dialog #ytms-settings-search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--text); }\n#ytms-settings-dialog .settings-search-clear { padding: 7px 10px; border-radius: 16px; color: var(--text); white-space: nowrap; }\n#ytms-settings-dialog .settings-search-clear:hover { background: var(--hover); }\n#ytms-settings-dialog #ytms-settings-search-status, #ytms-settings-dialog .settings-search-empty { color: var(--muted); font-size: 12px; margin: 12px 0; }\n#ytms-settings-dialog .settings-search-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; width: 100%; padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }\n#ytms-settings-dialog .settings-search-result:hover { background: var(--hover); }\n#ytms-settings-dialog .settings-search-title { font-weight: 600; overflow-wrap: anywhere; }\n#ytms-settings-dialog .settings-search-section, #ytms-settings-dialog .settings-search-description { color: var(--muted); font-size: 12px; }\n#ytms-settings-dialog .settings-search-description { grid-column: 1 / -1; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); margin: 16px 0 0; }\n#ytms-settings-dialog .support-tools > section { padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog .reload-confirmation { border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-settings-dialog .reload-confirmation p { margin: 0 0 8px; color: var(--text); font-size: 13px; }\n#ytms-settings-dialog .reload-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 0; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 14px 0 0; }\n#ytms-section-extensions > .section-note { margin-top: 6px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(28, 28, 28, 0.9) !important; color: inherit !important; font-family: inherit !important; font-size: 118% !important; font-weight: 500 !important; line-height: 15px !important; text-shadow: none !important; pointer-events: none !important; }\n.ytp-big-mode #ytms-player-settings-tooltip { line-height: 22px !important; }\n/* Follow the current native player surface and its theme overrides. */\n.ytp-delhi-modern #ytms-player-settings-tooltip { border-radius: 8px !important; background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important; -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; text-shadow: 0 0 2px #000 !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog .feature-group { margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog .feature-group > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog .feature-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .feature-group .row:has(input:disabled, select:disabled) label { opacity: .65; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog .menu-editor-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }\n#ytms-settings-dialog .menu-editor-toolbar > select { flex: 1; min-width: 150px; max-width: 100%; }\n#ytms-settings-dialog .menu-editor-group { display: grid; grid-template-columns: auto minmax(100px, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 12px; }\n#ytms-settings-dialog .menu-editor-group[hidden] { display: none; }\n#ytms-settings-dialog .menu-editor-group > .section-note { grid-column: 1 / -1; margin: 0; }\n#ytms-settings-dialog .menu-editor-group > input { width: 100%; min-width: 0; }\n#ytms-settings-dialog #ytms-menu-order .menu-editor-item-label { flex: 1 1 160px; }\n#ytms-settings-dialog .menu-editor-item-label > label { display: flex; align-items: center; gap: 8px; }\n#ytms-settings-dialog .menu-editor-item-label input[type=\"checkbox\"] { width: 18px; height: 18px; flex-shrink: 0; }\n#ytms-settings-dialog .menu-editor-item-label > button { max-width: 100%; text-align: start; overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-menu-order li > select { max-width: 190px; min-width: 100px; }\n#ytms-settings-dialog .menu-editor-preview { margin-top: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-settings-dialog .menu-editor-preview li { overflow-wrap: anywhere; margin-block: 4px; }\n#ytms-settings-dialog .menu-layout-editor .error { color: var(--error, #f88); }\n@media (max-width: 600px) {\n  #ytms-settings-dialog #ytms-menu-order li { flex-wrap: wrap; }\n  #ytms-settings-dialog #ytms-menu-order li > select { flex: 1; max-width: none; }\n  #ytms-settings-dialog .menu-editor-group { grid-template-columns: minmax(0, 1fr) auto; }\n  #ytms-settings-dialog .menu-editor-group > label { grid-column: 1 / -1; }\n}\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAACg0lEQVRo3u2ZP2gTURzHP5eLSgNV1GqkClksomiHViFKaEENLl0USweHomARpAhxaIfSqWCXLlKHIlTQyWwuThUHSwsFm2qgHjhpQa2iLkWCRn8OOaEeueZy//IO8oUbDu73e9/P77137707aKqx0mo9IHAJyAEngJ0+tv0TMIB7wH0NpErbV4EjNvG/gXwt82MCEsL1QCzFFMg6iHu/lflOgXJIACIwYGn/mpO42BYdcBvQQxzO190ExWyqn8RSkRB0zDcA4AawI2SAmC9BAttNgEioGvUAcCDKAMOOo6enob9fHQCBM8Apx9EdHZDPw+IipNNK9MAtV1nSaVhYqMCkUo0BEDgIXHS/KdEqw2l1FSYnobU19B64CWzznDGRgJERMAwYGgJdDx5AoMXtSmir9naYmYGlJejtDbwHrgBtgbTQ1QUTE5BMBgowHEj2tTUYHISeHlhfD6SJuMBZoNPXrBsbMDVVmcylUqBzIG5OXn9ULsPsLIyPB1bxagDnfMk0Nwe5HBSLoa8DuzxlMAzo64NsNnTz/xYw96eoTEZE1/06kX1ycyKLe6Kfn1dyNxopxYA/UQd4F3WAR4p4EbcAd4DnCgB8sNx/dhDzNq5BSeCCeZC/DBxyaSDl8TvSY8v9U2AU6LZ5/gdw16++bxH45WENeCHhf8b5D+C0B/MvBXY3eh046TJuGchq8L3RAN0uYgqm+W8qvP+KdQ6bZYE9qry8E3VO4IIy5k2ATJ3m96q2mXM6/leA8xp8VWovIvDQQeVX/K58mBO4oKx5E+Bjjcq3obIEntiYf6W8eRPgsMAXi/nXAvsic6gQOLppKL2RCP3h2QxxXOCZwH6aaio6+gvdnzYIGXJx8wAAAABJRU5ErkJggg=="},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAALqklEQVR42t2beYxddRXHP+f37ltmOnsXoZQWClYpUBGtFlAokGIIJIAVQUHABaUQASUqCDaKCqiIGm1QliA0CCIKJgZZBAREQIu1uNAqDEgXWlptO/u85X79455XLpOWzvJmpvBLbjJz311+5/s75/s72zVqOJTJZIjjHFITsA+wLzADmA5MBSYDbUATkB1wewnoADYDm4C1wGrgBeB5oB2zLYRQtEqlUqs524gEDiGDVI/0VmAeMBeYA+wN1LmQIfUeDTgGziV9VK+PgTLQ52A8A/wZ+BNmKzHrtjiujBkACiEijicBRwDHAO8HpgF5F1Y+4aKv6EvAGuBlYKOvcBfQ46sOEAETgAagxTVld2AP16BmIOfXmYNS9Of+AXgAeIQQNlgcl2sOgLLZQKnUAhwJLASOAib6hAT0A68Ay/1YAazEbB1mRaBMFMU0N8s2btTrvmvyZGPrVqNSCUgZpDzSVGCWa9fBwLuAKQ5KcMA3Aw8DvwJ+Rza72UqleEQAKIQscTwLOA042VcjC1SATuAvwIPA7zH7ByH0UF9fts5OAai+3ujrC0iR3xchTQAaffLpUQQ6MatqRgmzCoVCxXp6kuc1NxtdXRFxXI+0n2vh0W56jUDGwVgN3AksJYSVFselIQEgszzSXGARcJyTFkA38CdH+V7M1tDQULTOTrmwiYDSXsD+wNuAmU6CU1xrCgN4gQH23g/8D9jggrQDK4FngXZC6CafL1lvr9TUZHR1ZYnjacAHgBOBQ9yU8EW6D1iC2ZMm9e/MvrOC9wnuEnQLYkFZ8ILgKsE7ZZZXW5tVSVDQLDhccKngN4LVgh5Bye/XCI/qHHoFawW/FSwWzBe0KoRM1XRklhfMEVwheN7nIJflLsF8hZDbvvCwm+A6QZffVBL8VXCuYIqy2eBbXRC0CU4Q3OAv6quRsEMBpc8X5ibBQsFEZTKZKmcJJgk+LVgmKKaAuEkJub5G+D0EjwoqjvZfBZ+UWbOamszNoiCYK/i+oD310F3hKDoYPxTMk1kBQC0tJrNGwemCp122WPCUEj4DmeUES/2HLsFlMmtVS4upudlk1uAI3+u/x7uQ4NvTjB7BA4JTZNakpibTxIkms2bBxSkZ7pRZAcFRKZv9ojKZyIFpEHzM0erfhYV+Pa1YJjhDTuLKZCLBhf5br+BYBD92RJbLrMlN4mDBY7uYmg/3KAmeVOKpVhf2Cf/tZgTLHYArVFdnMqtPXfBmOv4iswY1NprgKy7zP4O7ngL+Y729QmoFZvPmG7OQprqTts59jt1C6oL8gKDkzTbkHiypQKw/uHdn2wAw63Z0ahRvGiTb864AQJ//PcFl7g3uLhrQqJYWc1+6t2avPeAA+Na3YM6cBIzxG2XMuvzvRpe5I3gUBdBGT4+5mmyu2Wt32w0WLYLbb4eLL4Zp08YLgC1ARXV1BrQ6AJuDh7EAk6hUqqHlxpq+OpOB/faDxYvhttvgtNOgqWmsAdgElCmVggdmAK8EZ0QBU4njDCHEfq72o1CAww6DH/0IbrgBjjwSstmxAmAdZhXiOOPJFoC1wTM28uxLlny+4udGZ5hBSwssXAhLl8LVV8Ps2WPBDy+SzVY8NzHNiX51AF50u5+M1OrJh+dSW8bojBBgjz3g3HPh5z+Hiy6CqVNH620x0G79/TFSg2tADLwQPONa9AzNTL9hlXPB6I8oSnaKyy+HW2+FD38YGhpqvwMkSRVcxoLL3B4wW+8EkU15gP/ypOXYjbo6OOIIuPZauP56OPzwWvoPfSkA9nNZOzB7KWDW7+mmABykKMoQwhYHYWyHGbS1JVqwdGniP8yaVQt+aMdso3K5ALzDc4crE0cony95clPAwVQqOaKo6Ln38RkhwPTpcP75cMcdcMEF8Ja3jOSJywihSKmU9YyygOXkcqWqj3iSh75blRQ1EJyayqkN/1iwQOrr04hGd7d0//3SSSdJ9fVDnUNZcJbLtLtgk8t1atpJ3lOwOf2DYIafG38AJCmOpU2bpKVLpUMPlUIY7Bw6BG91mU7whe5QUrojuO294iWnCJivKMo4OT69y8RyZjBxInz0owk/nHPOYLnhGcxWe1L3SJfxWUJY9yoAdXVF4CG3jaOoVOppbCwC99Y0MhxxPCfo7IQVK+Bvf0v+33kEeB/19f2Uy3Ve0QJ4iFyuf+CVh3ierE9JxQXBbFeX8TeBvj7p8celM86QWloG+/4uwTtdlnme++zTq0C8pho0QbDCU0XXKIqCFxruHVcAymVp1Spp8WJp+vShvv8RmRWUywUvlsSCVdXc52sBSC76pl/0b5m1OHKfGNFuMFwA4lh6+WXpuuukgw6SzIbD/ueptbVaG/jHtsX1Is/2DObdrjZFwYf83BTBi2MGQBxLHR3Sr38tHXuslM8PV/vWVitAguM8td8jOHTHjJFUfx70B9ytEHJeZrpq2AWRoQDQ3y899ZR09tlSa+tICyTfVxRlvN55u59/XGZ1O6PNs1zlO1IE8nbBf0cNgHJZeu456fLLpb33rkUKfIuSXoIqkW92k1ik1lbbGQATBf92FJcoijJeUfnJsLTg9QCIY2nDBunGG6W5c4fi3Oxs9W9WCFlFURBc7edeFOzcn3YyvNQLpRuV1PgRHDgsLdgRAF1d0j33SMcfLxUKtSyAbFHi7yOYKVjvsnxjh+S3HS3Y00kkFvxAUZRRFGUE3xuyFgwEoFiUli2TzjtPmjRpNIqjP1YIka/+t/3c+qrrOzgAEuL7uiO3SXCAA7OX4KVhAVCpSO3t0pVXSvvsM5xtbTDHupTfP8sFjwXfURQNLbngPQMvvMam8nkTnD8kv+Doo6U1a6Sbb5bmzZMymdGq/ZUFX1I2GxRClCr6rqlGuEMDIBH2c/7gbsECB6bJmykGN7HJk6VjjhlOGDvU4wkldU68ZafD5/7lQdv+drSgxWvsEvxRSb8egkMF/9uFKr9blUR6uNf3sJ9fIZg00oLace5BlQWXKIqCstmM4LKaJExqo/rfUCaTce660OfVK1hYbfEZSTtszpuhYifE9zgwjR4ojXfLzEMpzTwoRXy3yixfq7LqdMEqf+FjShqeEbzNu8TGS/j/CA70uTQLfufCt+vVFH8NAGhoMM8bdvvW+F2FkNWECeYmsnUchO8QfFCFgrmnekWqn/AjXgStYTImCSqucQB6BKerUKjywfmeaBgr4fsFX1AURaqvN8HJHsVWBEt22AxZA1Noc5ureleHpFrtvj1GpFgS/GBbL2ASwq/ZFu0lneaj2mYxO2X3f1fyUUQ1o3SDq+FoCV/xnsbGlGe6PMUHc0Y/L5nY/QIPjGJ3inZP7Qy3+URHQ/jbUs7OlBTpbREcX3O73yEISaDx8VRD9T1KOsGrztMtNdaE8gDh2wS/SvHRZ4bs648YhIR5L3LyqwjuTG2PDYIlNWq0LLlpNaeEv9Pf2S+4VCFkGY/h5Pc1n0hFcHc16SCzOm9r7xmB8L2CK2RWn0rW/NLfVRRcWTNnZwQg5AVfTYHwQLUT27fOMwWvDEP4/wrOllkuFZ3ek1r5q3ea3xtjEC7x1Y49gHqHJkww988P8xb8eJBJjb8L5iubDWpqMsH+Hu3FrhVfrW6Du07VKlntRc7I8lzCcVVy8hX86U4cpn7BrYI91dZmTrbH+LYbCzoFF4yao1MDYsy4y7w2lZ/70jYbTjTlTN+z4wGrvlrwqW0OTsIhF6Yq1OsFp4w52w8ZhELB/MuSp12wohPXTDU0mPsR+7g2bPY44meCWcrnzbu5Z/i2V/RnPCM4xDs83hhDMNXVuSrEc4JTqurrJrOnYEbqXE5wokeeVfB+oeSrszfecDX+rGBDalu7RbBv9QMnd6wygr0FN6a2zU2Cz1fN5w07fBc42IOo6qd069y5OdeJ81o/V/1E7lHBexVFgTfL8Fzd55wgKyn/Pv33esEXZdY8Zo0nYwpCLhcoFmeQfIq7AM/hkzRr3g/cTjb7/GC++a3V+D8QDEckCg68HgAAAABJRU5ErkJggg=="},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAKjElEQVR4nNWbeWwc1RnAf292vb6TPby24zjO5SQU5yBNSAkJxEdzFAiF0vRCIWrUFlEKVaW2iEqtmgKlVWmklkoNtKKogDikFhRCQgKxnQsQEOIcjg8ScGJ8sN5d78aOj92def2DGDmJ7XlvvU7bn2TJO/N93/vmm5n3vvfNe0JKyUTj89UWg7lCCHGNlCxEMAOYfOEvC4gCUSRRDNGIRb0Q8kQsJvefO1cVmkjfxEQFwO+vmWdh3SmkuEXC4iTNmMBhhHjdwHquq6uqOZU+QooDIATCk1d9i5D8CFgNiJQZB4nkgDTkk91Bx4tSlidSYTRlAcjLq6mSyN8DS1JicGxaEOLRcFA8Nd5AjDsAXu+bJUIYf0Vw07gMJcdxpLw7FKp6O1kDSQdACITXu3czQmwFJiXrQAqwBHKb02n+vLNzzXld5aQCkJ9fm2NK6ykkG7SVJ456gfH1YLC8UUdJOwDugurZDpOXgQVaileGHgGbgsHKl1UVtALg89WUIaw3QExJyr0rg4ngnlBX5d9UhJUD4PPVXoewdgKe8XiXluHAMyWDTHca6VkO4gMmA70mkY4B+s/Fx2N6OBIpfxoKVW21E1QKgN9fs8SSspokOjtnuoNZS93MWuqhZKGbyQXpCGPk9CD66SCtxyI0HQzSUhfFjFu6zQ1HCtgcDFY+PZaQbQD8/r1zLSkOAPk6rXuKMll6WxFXV/hJz3bqqAJwvjvO4e3t1L3WwUBv0kN9HClvDYWqXh9NYMwATJpUm5fmst4DZqi2mJvnYuXG6ZRV5mM4xp8I9p+Lc/CZsxzd1YllJTVkR81EYnEksubjkU6OGgAhthhe38qdINaqtCIMweKbC7lx03RcWfp33I72xh52/KGJSMdAMurvhUOhlVJuiF16YtQA5OVV/07CAyrWM3PTuPlnc5m1dFz9oy3xAZNdfzpF476uZNQfDgUrf3npwRED4PXWrBCG3A8YdlY9UzPZ8FAZ7sKMZJzSRkp454VWDj57Bs0UJiYwFl2aKF12gVOn7sjCkE+PdO5S8mdmc+djC6/YxQMIAcu/PY0195VijDKajIJLIh+/9OBlFzkQy35IQKmdNXdhBhsenk/W5DQdJ1LGonWFrPtxKUIrBvLLPl/NRX3aRQFwu/fMFFLea2fG6TK449dXk+3571z8EPNXF7Bq80wtHSHkg8N/XxQAh8P5iIR0OyOrvjsDX0mWVsMTxbI7plJWpZ6iSFjl9dasGPr9eQDy8t78AoJv2Rnwz8jmi+v/t6YCa+6djXuKej9kGPKHn/8/7PB9KJSwbtg0fdRUVpX+gUGaWtp5t/40b9U1cbS5hdbOIFaStYm0DAfr7p+j3B9IuM3vP5QL4ATweGrdhoONdoqeokxmL/Mm5SRAa2eIfe/X09LeNeLFZmWks3BOCSsXX0VWpu2beBEliyYz70a/ao6QJWXsduCfBoDhtDYAOXZaC9cWaPa6n2GaFq/uP8zT22v4qC0w6p3uGxjkneMf8ufnX+d481ntdlZ+p0R5aJRYt8LQK2Bxm4rSvBvytJ1KmBbP7TrAkYaPlROXWDzOyzXvUvt+vVZb3mmZlC5XfUJFuRBbDCM/vzYHQaWt8eLMpBKeXYeO0NKWVOrK/sMNHG74SEtnwZpCVVGf279qoWGa1vWA7ZUVz5+s5QjA6dZPOdIw4iRMmd2HjhLp7VOWn7nETWauWn4ipPklQwq1rzYFs7OVnRhC9xEeiYRpUvuuuh3DEJRco3azBMZcQ0iuURHO00x8wtHztAXCWjqjcfKjVmIx9XLZtAWKT6slrzKEYJ6KbE6e3rB0qrVTS34sEqbF6baAsrx/uuLNEsw0JCh1mzmaeX93tEdL3o5wpFdZ1jM1U1V0kgG4VSSdLtvZ8UX0DV5WfBkXvX39yrIZOcoVqVwDsO3dHGmGdvrrSkvtTDEj3aUs63QZOJxK/mYZwKCdlJWwkJoFydys1BZJcrPV7UkJlqnkb68B2L6sUkIiplejL5minzWOxcypBcqyiUFTNeuMKAUAoDes905PK/SRmaE3cozGlDwPnknqeUhfVPE7gpQRQyLaVGS72/XK0Q7DYPnCOVo6o1F+bZmW/LmAoq+GaDaEtJTW3QROqw9DQyybX4p3sn4GOZy506cwp0Q5vwcg3KY2YgjJMQNDfKgifPZ4VMsJAFeakw2rl5PmTO5Dic+Ty+2Vy7T1OprUbpYlOGZgcUxF+JP6HmL9prYzBT43G9ffQLZmgaO4wMemW8pJd+kPp20nz6mIxa2466DhcBhvAbaJdmLQpPlgUNsZgOJ8H5tvr+SqGUW2si6nk/KlZdy1fhU5WfqdaHfHAKFWpdnj/khkZbczECjv9eVVHwFsn7W6XZ3MX60+HA3Hk5vNN9ZeT3sgTP3pT/i4PcC58/0MxuLkZmbg8+Qyd3oRZbOKtcthwzn1tuK6SilfhQs1QYncKxC2AWhv7OHs0Sgli/RrA0MU5Xspyk++rjgWUsLR3faTMAGDzjTzebhQEpOG4yXVRmr/0aKdFV4pWj6IEG61HwEs5IudnWsCcCEA3YHyOqBJpZHO5h6O7EzdVDdVSAkHnjmjJGvAX4b9P2RBPKfa2L6nWgidVS9TXQka9nXR2Wyf1ErYHgxWvTf0+/MAxFzObYBSBhEfMHnlkUYGz6dkue64OR+OU/2EUvHUFHKUb4M9HTd0IXlWtdFQax//3tKgPUlKNWZCsuOxRvqi9iUzidgWClWdHH7soiqHYYg/Asq3tfVElH9tOZlUgpQKpITdj5/iTJ1SltriEK4HLz14UQC6uiqaJGzTceLMkQjPP3Ccni7bskJKMeMWO7c2c+KNT1XEJZK7u7pWXNZJXLZExu0+6HE4Yx8CPh2HMnPTWHt/KXNXaKklRaRjgNe2NtNWr5TyIpGPhoNVvxjp3IhrhHz+6u8jeTIZ52Zf66Hie7PwTlMuTCoz0Jvgg+3tvPPSJzp9z55wKHSTlBtGfE9HXSXmzdv7ikB8NRlHhSEovc7LkvVFFC+YpLuW5zI6mnpo2NfFsT0BYn1aI09zPCavH2vf0agByJ1ywO+Kx+sA+xnMGGS505h1rZdpZZMoKM3BU5RBWoZjRNlE3KI/mqC7rZ/g2T46Gns4eyKaZP8iO8yEuWK0BZJDjLlS9MIa4VoUPp3rkJHjJCPHiTPdIDFoEes3ifWZJMa3Nng4YWnJinC4ynaqb7tW2Out/oow2M6FidP/AZ2WKdZ1d1ccVRG2/doRDlfuEohvAkmtUb2SSDhlOuUK1YsHzf0CQljbJfiT9nACEbAjkXDdFYms7NbS09kx4vHUzjAc1t+BKl0HJ5ABKcSvuoMVj0mJ9jxde8/QZ5sj9/5ASPFbFD+sTiB7HYZ5TyCwWqmwOxJJb5vz+w/lSjlwnxTiJ0hS+xnIDinrhBC/CYUqX0nmrg9n3BsnCwv3ZCcSzq9J2AhUAiMP8uPHRLLbMMQTwWDFq+O98CFSunc4P7+20LKs1RIqEKIcKfUW8l7OeYQ4gCV3OxzGC4FAecpLURO2exzA631zshBGGYaYD1YxkqlIChDCw2drkl1AGsheMCJgRQXilJSiGayGcNj9vpRLUraVbCT+AxbCE6Dct2fvAAAAAElFTkSuQmCC"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
+    settingsAssets: {"css":"\n#ytms-settings-dialog, #ytms-settings-button, #ytms-age-dialog {\n      color-scheme: dark;\n      --page: #0f0f0f; --surface: #212121; --hover: #383838; --text: #f1f1f1;\n      --muted: #aaa; --line: #3f3f3f; --accent: #ff0033; --accent-text: #fff; --button-accent: #c00; --link: #ff6b6b;\n      --error: #ff9a9a; --field: #181818;\n    }\n:root:not([dark]) #ytms-settings-dialog, :root:not([dark]) #ytms-settings-button, :root:not([dark]) #ytms-age-dialog {\n      color-scheme: light;\n      --page: #fff; --surface: #fff; --hover: #eee; --text: #0f0f0f;\n      --muted: #606060; --line: #d5d5d5; --accent: #c00; --accent-text: #fff; --link: #c00;\n      --error: #b3261e; --field: #fafafa;\n    }\n#ytms-settings-dialog * { box-sizing: border-box; }\n#ytms-settings-dialog .miniplayer-size-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"range\"] { width: 120px; min-width: 0; }\n#ytms-settings-dialog .miniplayer-size-controls input[type=\"number\"] { width: 80px; padding: 6px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }\n#ytms-settings-dialog .extra-settings h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .extra-settings > .section-note { margin-top: 8px; }\n#ytms-settings-dialog .extra-settings label { display: block; margin: 16px 0 8px; font-size: 13px; }\n#ytms-settings-dialog .extra-settings input[type=\"url\"], #ytms-settings-dialog .extra-settings input[type=\"file\"] { display: block; width: 100%; max-width: 100%; color: var(--text); background: var(--field); padding: 8px; border: 1px solid var(--line); border-radius: 6px; }\n#ytms-settings-dialog .extra-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .extra-settings-controls label { margin: 0; }\n#ytms-settings-dialog .extra-settings-controls input[type=\"range\"] { width: 140px; max-width: 100%; }\n#ytms-settings-dialog #ytms-marker-preview { object-fit: contain; }\n#ytms-settings-dialog .extra-settings .extension-link { display: inline-block; text-decoration: none; }\n#ytms-settings-dialog [hidden] { display: none !important; }\n#ytms-settings-dialog button,\n#ytms-settings-dialog input,\n#ytms-settings-dialog select { font: inherit; }\n#ytms-settings-dialog button { border: 0; color: inherit; background: transparent; cursor: pointer; }\n#ytms-settings-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog button:focus-visible,\n#ytms-settings-dialog input:focus-visible,\n#ytms-settings-dialog select:focus-visible,\n#ytms-settings-dialog summary:focus-visible {\n      outline: 2px solid var(--accent); outline-offset: 3px;\n    }\n#ytms-settings-dialog .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: 0 0 auto; }\n#ytms-settings-dialog .icon-button:hover { background: var(--hover); }\n#ytms-settings-dialog .icon-button svg,\n#ytms-settings-dialog .icon-button img { width: 24px; height: 24px; }\n#ytms-settings-dialog .icon-button img { display: block; pointer-events: none; }\n#ytms-settings-dialog .text-button { padding: 8px 14px; border-radius: 20px; font-weight: 600; white-space: nowrap; }\n#ytms-settings-dialog .text-button:hover { background: var(--hover); }\n#ytms-settings-dialog .primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog .primary:hover:not(:disabled) { filter: brightness(.92); background: var(--button-accent); }\n#ytms-settings-dialog .outlined-button, #ytms-settings-dialog .danger-button { border: 1px solid var(--line); background: var(--field); }\n#ytms-settings-dialog .danger-button { border-color: var(--error); color: var(--error); }\n#ytms-settings-dialog .primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog {\n      box-sizing: border-box; width: min(960px, calc(100vw - 24px)); height: min(840px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);\n      padding: 0; border: 1px solid var(--line); border-radius: 12px;\n      color: var(--text); background: var(--surface); box-shadow: 0 12px 48px #0008;\n    }\n#ytms-settings-dialog::backdrop { background: #0008; }\n#ytms-settings-dialog .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-settings-dialog .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-settings-dialog .panel-header h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-settings-dialog .panel-header .close { font-size: 28px; font-weight: 400; line-height: 1; }\n#ytms-settings-dialog #ytms-preference-status { color: var(--muted); font-size: 12px; margin: 0 24px 4px; }\n#ytms-settings-dialog .preference-badge { display: block; width: fit-content; margin-top: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); font-size: 12px; font-weight: normal; }\n#ytms-settings-dialog .custom-javascript { line-height: 1.6; }\n#ytms-settings-dialog .custom-js-warning { border: 1px solid var(--muted); border-radius: 8px; padding: 16px; margin: 0 0 20px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .custom-js-warning p { margin: 12px 0 0; }\n#ytms-settings-dialog .custom-javascript .section-note { line-height: 1.6; }\n#ytms-settings-dialog .custom-javascript .custom-js-load-note { margin: 0 0 8px; }\n#ytms-settings-dialog .custom-js-load-note p { margin: 0; }\n#ytms-settings-dialog .custom-js-load-note p + p { margin-top: 12px; }\n#ytms-settings-dialog .custom-javascript .row { margin-bottom: 20px; gap: 16px; }\n#ytms-settings-dialog #ytms-custom-js-help { margin: 8px 0 12px; }\n#ytms-settings-dialog #ytms-custom-js-code { box-sizing: border-box; display: block; width: 100%; min-height: 220px; resize: vertical; margin-top: 8px; padding: 12px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 Consolas, monospace; tab-size: 2; }\n#ytms-settings-dialog .custom-js-acknowledgement { display: flex; align-items: start; gap: 10px; margin: 20px 0; }\n#ytms-settings-dialog .custom-js-acknowledgement input { flex-shrink: 0; margin-top: 5px; }\n#ytms-settings-dialog .custom-js-acknowledgement[hidden] { display: none; }\n#ytms-settings-dialog .custom-js-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; margin-top: 20px; }\n#ytms-settings-dialog .settings-search { display: flex; align-items: center; gap: 8px; padding: 6px 24px 8px; flex-shrink: 0; }\n#ytms-settings-dialog #ytms-settings-search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--text); }\n#ytms-settings-dialog .settings-search-clear { padding: 7px 10px; border-radius: 16px; color: var(--text); white-space: nowrap; }\n#ytms-settings-dialog .settings-search-clear:hover { background: var(--hover); }\n#ytms-settings-dialog #ytms-settings-search-status, #ytms-settings-dialog .settings-search-empty { color: var(--muted); font-size: 12px; margin: 12px 0; }\n#ytms-settings-dialog .settings-search-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; width: 100%; padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }\n#ytms-settings-dialog .settings-search-result:hover { background: var(--hover); }\n#ytms-settings-dialog .settings-search-title { font-weight: 600; overflow-wrap: anywhere; }\n#ytms-settings-dialog .settings-search-section, #ytms-settings-dialog .settings-search-description { color: var(--muted); font-size: 12px; }\n#ytms-settings-dialog .settings-search-description { grid-column: 1 / -1; }\n#ytms-settings-dialog .settings-search-match { color: #1f1f1f; background: #ffdf80; border-radius: 2px; padding: 0; font: inherit; }\n#ytms-settings-dialog nav { display: flex; gap: 4px; overflow-x: auto; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }\n#ytms-settings-dialog nav button { padding: 10px 3px; white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent; }\n#ytms-settings-dialog nav button[aria-selected=\"true\"] { color: var(--text); border-color: var(--accent); }\n#ytms-settings-dialog .content { padding: 4px 24px 18px; overflow: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; }\n#ytms-settings-dialog .content > [role=\"tabpanel\"] { padding-top: 16px; }\n#ytms-settings-dialog .content > [role=\"tabpanel\"] > .row:first-child { padding-top: 0; }\n#ytms-settings-dialog .row { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .row > label { flex: 1; }\n#ytms-settings-dialog .row > .row-label { flex: 1; min-width: 0; }\n#ytms-settings-dialog .description { display: block; color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 4px; }\n#ytms-settings-dialog .switch {\n      appearance: none; width: 36px; height: 20px; border-radius: 12px; position: relative;\n      margin: 0 2px; background: #717171; cursor: pointer; flex: 0 0 auto;\n    }\n#ytms-settings-dialog .switch::after { content: \"\"; position: absolute; width: 16px; height: 16px; border-radius: 50%; top: 2px; left: 2px; background: white; }\n#ytms-settings-dialog .switch:checked { background: var(--accent); }\n#ytms-settings-dialog .switch:checked::after { left: 18px; }\n#ytms-settings-dialog select,\n#ytms-settings-dialog .hex { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-width: 190px; }\n#ytms-settings-dialog .hex { width: 108px; font-family: ui-monospace, monospace; text-transform: uppercase; }\n#ytms-settings-dialog .hex[aria-invalid=\"true\"] { border-color: var(--error); }\n#ytms-settings-dialog .colour-rows { padding-top: 8px; }\n#ytms-settings-dialog .colour-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }\n#ytms-settings-dialog .colour-row label { flex: 1; min-width: 145px; }\n#ytms-settings-dialog .swatch { width: 36px; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--swatch); }\n#ytms-settings-dialog .swatch:hover { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .field-error { color: var(--error); font-size: 12px; width: 100%; margin: 0; }\n#ytms-settings-dialog .picker { background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }\n#ytms-settings-dialog .picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }\n#ytms-settings-dialog .picker h3 { margin: 0; font-size: 14px; font-weight: 500; }\n#ytms-settings-dialog .channel { display: grid; grid-template-columns: 42px 1fr 36px; gap: 12px; align-items: center; margin: 10px 0; }\n#ytms-settings-dialog .channel output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }\n#ytms-settings-dialog input[type=\"range\"] { appearance: none; width: 100%; height: 6px; border-radius: 4px; margin: 8px 0; cursor: pointer; }\n#ytms-settings-dialog input[type=\"range\"]::-moz-range-thumb { width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog input[type=\"range\"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #fff; border: 1px solid #666; border-radius: 50%; }\n#ytms-settings-dialog .preview { background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; }\n#ytms-settings-dialog .preview p { margin: 4px 0 12px; }\n#ytms-settings-dialog .preview p:last-child { margin-bottom: 0; }\n#ytms-settings-dialog .preview .name { font-weight: 700; }\n#ytms-settings-dialog .preview time { color: var(--muted); margin-left: 10px; font-size: 12px; }\n#ytms-settings-dialog .preview .pin { color: var(--owner-colour, var(--muted)); font-size: 12px; margin-bottom: 6px; }\n#ytms-settings-dialog .preview .owner { color: var(--owner-colour, var(--text)); }\n#ytms-settings-dialog .preview .viewer { color: var(--viewer-colour, var(--text)); }\n#ytms-settings-dialog .preview[data-mode=\"off\"] .name { font-weight: 500; }\n#ytms-settings-dialog .warning { color: var(--error); font-size: 12px; margin: 10px 0 0; }\n#ytms-settings-dialog .section-note { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 16px 0 0; }\n#ytms-settings-dialog .content .section-note:empty { margin: 0; }\n#ytms-settings-dialog .support-tools > section { padding: 20px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .support-tools > section:first-child { padding-top: 0; }\n#ytms-settings-dialog .support-tools h3 { margin: 0; font-size: 16px; }\n#ytms-settings-dialog .support-tools h4 { margin: 0 0 8px; font-size: 14px; }\n#ytms-settings-dialog .support-tools .section-note { margin-top: 8px; }\n#ytms-settings-dialog .support-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }\n#ytms-settings-dialog .support-file-field { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }\n#ytms-settings-dialog .support-file-field input { min-width: 0; max-width: 100%; }\n#ytms-settings-dialog .support-file-field input::file-selector-button { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 20px; padding: 8px 14px; cursor: pointer; margin-right: 8px; }\n#ytms-settings-dialog .support-preview { padding: 14px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .support-preview p { margin: 8px 0; font-size: 12px; }\n#ytms-settings-dialog .support-preview summary { cursor: pointer; }\n#ytms-settings-dialog .support-preview ul { padding-left: 20px; font-size: 12px; }\n#ytms-settings-dialog .support-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }\n#ytms-settings-dialog .support-confirm input { accent-color: var(--accent); flex: 0 0 auto; margin-top: 4px; }\n#ytms-settings-dialog #ytms-support-report { display: block; width: 100%; min-height: 120px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--field); font: 12px/1.5 ui-monospace, monospace; resize: vertical; }\n#ytms-settings-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .support-tools .support-error { color: var(--error); }\n#ytms-settings-dialog .reload-confirmation { border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-settings-dialog .reload-confirmation p { margin: 0 0 8px; color: var(--text); font-size: 13px; }\n#ytms-settings-dialog .reload-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }\n#ytms-settings-dialog footer { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex-shrink: 0; }\n#ytms-settings-dialog footer .spacer { flex: 1; }\n#ytms-settings-dialog .footer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }\n#ytms-settings-dialog .footer-actions > button { flex: 0 0 auto; }\n#ytms-settings-dialog #ytms-settings-status { flex: 0 1 176px; max-width: 176px; min-width: 0; color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }\n@media (max-width: 480px) {\n#ytms-settings-dialog .row { gap: 10px; }\n#ytms-settings-dialog nav,\n#ytms-settings-dialog .content { padding-left: 16px; padding-right: 16px; }\n#ytms-settings-dialog footer .spacer { display: none; }\n#ytms-settings-dialog footer .text-button { padding: 8px 10px; }\n#ytms-settings-dialog select { max-width: 145px; }\n    }\n#ytms-settings-dialog { font: 14px/1.5 Roboto, Arial, sans-serif; margin: auto; }\n#ytms-settings-dialog button { line-height: 1.5; }\n#ytms-settings-button { display: inline-grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; margin: 0 8px 0 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }\n#ytms-settings-button:hover { background: var(--hover); }\n#ytms-settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-button img { display: block; width: 32px; height: 32px; pointer-events: none; }\n:root:not([dark]) #ytms-settings-button[data-icon=\"monochrome\"] img { filter: brightness(0); }\n#ytms-settings-dialog .credits { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 0 20px; text-align: center; }\n#ytms-settings-dialog .credits img { width: 96px; height: 96px; }\n#ytms-settings-dialog .credits h3 { margin: 0; font-size: 20px; font-weight: 600; }\n#ytms-settings-dialog .credits p { margin: 0; color: var(--muted); }\n#ytms-settings-dialog .credits a { color: var(--link); text-decoration: none; border-radius: 4px; padding: 6px 8px; }\n#ytms-settings-dialog .credits a:hover { text-decoration: underline; }\n#ytms-settings-dialog .credits a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-section-extensions > h3 { font-size: 16px; font-weight: 600; margin: 0; }\n#ytms-section-extensions > .section-note { margin-top: 8px; }\n#ytms-settings-dialog .extension-card { display: flex; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog .extension-card > img { display: block; width: 40px; height: 40px; object-fit: contain; flex: 0 0 40px; }\n#ytms-settings-dialog .extension-details { min-width: 0; flex: 1; }\n#ytms-settings-dialog .extension-details h4 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }\n#ytms-settings-dialog .extension-details p { margin: 0 0 6px; overflow-wrap: anywhere; }\n#ytms-settings-dialog .extension-details .extension-note { font-size: 12px; color: var(--muted); }\n#ytms-settings-dialog .extension-link { display: inline-block; color: var(--link); text-decoration: none; border-radius: 4px; }\n#ytms-settings-dialog .extension-link:hover { text-decoration: underline; }\n#ytms-settings-dialog .extension-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-player-settings-button.ytp-button { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; margin: 0 !important; line-height: 0 !important; }\n#ytms-player-settings-button img { box-sizing: border-box !important; display: block !important; width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; max-width: 36px !important; max-height: 36px !important; padding: 4px !important; pointer-events: none !important; }\n#ytms-player-settings-button:focus-visible { outline: 2px solid white; outline-offset: -2px; }\n#ytms-player-settings-tooltip { position: absolute !important; z-index: 1000 !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; max-width: calc(100% - 16px) !important; padding: 5px 9px !important; border-radius: 2px !important; background: rgba(28, 28, 28, 0.9) !important; color: inherit !important; font-family: inherit !important; font-size: 118% !important; font-weight: 500 !important; line-height: 15px !important; text-shadow: none !important; pointer-events: none !important; }\n.ytp-big-mode #ytms-player-settings-tooltip { line-height: 22px !important; }\n/* Follow the current native player surface and its theme overrides. */\n.ytp-delhi-modern #ytms-player-settings-tooltip { border-radius: 8px !important; background: var(--yt-sys-color-baseline--overlay-background-medium-light, rgba(0, 0, 0, 0.3)) !important; -webkit-backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; backdrop-filter: var(--yt-frosted-glass-backdrop-filter-override, blur(16px)) !important; text-shadow: 0 0 2px #000 !important; }\n\n#ytms-settings-dialog .menu-order { margin-top: 20px; }\n#ytms-settings-dialog .feature-group { margin: 20px 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog .content > [role=\"tabpanel\"] > .feature-group:first-child { margin-top: 0; }\n#ytms-settings-dialog .feature-group[open] { padding-bottom: 12px; }\n#ytms-settings-dialog .feature-group > .section-note { margin-top: 0; }\n#ytms-settings-dialog .feature-group > .row:last-child { border-bottom: 0; }\n#ytms-settings-dialog .feature-group > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog .feature-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n#ytms-settings-dialog .feature-group .row:has(input:disabled, select:disabled) label { opacity: .65; }\n#ytms-settings-dialog #ytms-video-menu-settings { margin: 20px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }\n#ytms-settings-dialog #ytms-video-menu-settings > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 12px 0; }\n#ytms-settings-dialog #ytms-video-menu-settings > .menu-order { margin-bottom: 16px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .65fr) 84px; column-gap: 14px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { padding: 12px 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span { min-width: 0; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns > span:last-child { text-align: center; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { padding: 12px 0; row-gap: 8px; align-items: start; border-bottom: 1px solid var(--line); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card:nth-child(even) { background: var(--field); background: color-mix(in srgb, var(--hover) 32%, var(--surface)); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card > * { min-width: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-id { font-family: ui-monospace, monospace; color: var(--muted); }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { display: flex; flex-direction: column; gap: 4px; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .text-button,\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions .ytms-age-button { width: 100%; min-height: 32px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; }\n@media (max-width: 520px) {\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-columns { display: none; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-card { grid-template-columns: minmax(0, 1fr) 84px; column-gap: 12px; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-identity { grid-column: 1; grid-row: 1; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-age { grid-column: 1; grid-row: 2; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-status { grid-column: 1; grid-row: 3; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-actions { grid-column: 2; grid-row: 1 / 4; }\n  :is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-field-label { display: block; position: static; width: auto; height: auto; margin: 0 0 2px; overflow: visible; clip-path: none; white-space: normal; color: var(--muted); }\n}\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help { display: inline-block; margin: 8px 0; font-size: 12px; color: var(--link); text-decoration: none; overflow-wrap: anywhere; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:hover { text-decoration: underline; }\n:is(#ytms-settings-dialog, #ytms-age-dialog) .channel-filter-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-settings-dialog .menu-order h3 { font-size: 16px; margin: 0; }\n#ytms-settings-dialog .menu-order .section-note { margin: 6px 0 12px; }\n#ytms-settings-dialog #ytms-menu-order { padding: 0; margin: 0; list-style: none; }\n#ytms-settings-dialog #ytms-menu-order li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }\n#ytms-settings-dialog #ytms-menu-order li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }\n#ytms-settings-dialog .menu-order-move { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 18px; flex: 0 0 auto; }\n#ytms-settings-dialog .menu-order-move:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog .menu-editor-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }\n#ytms-settings-dialog .menu-editor-toolbar > select { flex: 1; min-width: 150px; max-width: 100%; }\n#ytms-settings-dialog .menu-editor-group { display: grid; grid-template-columns: auto minmax(100px, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 12px; }\n#ytms-settings-dialog .menu-editor-group[hidden] { display: none; }\n#ytms-settings-dialog .menu-editor-group > .section-note { grid-column: 1 / -1; margin: 0; }\n#ytms-settings-dialog .menu-editor-group > input { width: 100%; min-width: 0; }\n#ytms-settings-dialog #ytms-menu-order .menu-editor-item-label { flex: 1 1 160px; }\n#ytms-settings-dialog .menu-editor-item-label > label { display: flex; align-items: center; gap: 8px; }\n#ytms-settings-dialog .menu-editor-item-label input[type=\"checkbox\"] { width: 18px; height: 18px; flex-shrink: 0; }\n#ytms-settings-dialog .menu-editor-item-label > button { max-width: 100%; text-align: start; overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-menu-order li > select { max-width: 190px; min-width: 100px; }\n#ytms-settings-dialog .menu-editor-preview { margin-top: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-settings-dialog .menu-editor-preview li { overflow-wrap: anywhere; margin-block: 4px; }\n#ytms-settings-dialog .menu-layout-editor .error { color: var(--error, #f88); }\n@media (max-width: 600px) {\n  #ytms-settings-dialog #ytms-menu-order li { flex-wrap: wrap; }\n  #ytms-settings-dialog #ytms-menu-order li > select { flex: 1; max-width: none; }\n  #ytms-settings-dialog .menu-editor-group { grid-template-columns: minmax(0, 1fr) auto; }\n  #ytms-settings-dialog .menu-editor-group > label { grid-column: 1 / -1; }\n}\n#ytms-age-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 48px #0008; font: 14px/1.5 Roboto, Arial, sans-serif; }\n#ytms-age-dialog::backdrop { background: #0008; }\n#ytms-age-dialog * { box-sizing: border-box; }\n#ytms-age-dialog [hidden] { display: none !important; }\n#ytms-age-dialog .ytms-age-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }\n#ytms-age-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 4px 24px; flex-shrink: 0; }\n#ytms-age-dialog h2 { font-size: 20px; font-weight: 600; margin: 0; }\n#ytms-age-dialog button, #ytms-age-dialog input, #ytms-age-dialog select { font: inherit; }\n#ytms-age-dialog button { border: 0; background: transparent; color: inherit; cursor: pointer; }\n#ytms-age-dialog button:disabled { opacity: .5; cursor: default; }\n#ytms-age-dialog button:focus-visible, #ytms-age-dialog input:focus-visible, #ytms-age-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n#ytms-age-dialog .ytms-age-close { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 28px; line-height: 1; }\n#ytms-age-dialog .ytms-age-close:hover, #ytms-age-dialog .ytms-age-button:hover { background: var(--hover); }\n#ytms-age-dialog .ytms-age-content { min-height: 0; overflow: auto; flex: 1; padding: 0 24px 20px; scrollbar-gutter: stable; }\n#ytms-age-dialog .ytms-age-note { color: var(--muted); font-size: 12px; margin: 10px 0 14px; }\n#ytms-age-dialog .ytms-age-channel-id { color: var(--muted); font-family: ui-monospace, monospace; }\n#ytms-age-dialog .ytms-age-fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog #ytms-age-add { margin: 0; }\n#ytms-age-dialog .ytms-age-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\n#ytms-age-dialog .ytms-age-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-field input, #ytms-age-dialog .ytms-age-field select { min-width: 0; width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }\n#ytms-age-dialog .ytms-age-wide input { font-family: ui-monospace, monospace; font-size: 12px; }\n#ytms-age-dialog .ytms-age-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }\n#ytms-age-dialog .ytms-age-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n#ytms-age-dialog .ytms-age-edit-actions label { display: flex; gap: 6px; align-items: center; }\n#ytms-age-dialog .ytms-age-blocked { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }\n#ytms-age-dialog input[type=\"checkbox\"] { accent-color: var(--accent); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-button { padding: 8px 14px; border-radius: 20px; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-outlined, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border: 1px solid var(--line); border-radius: 6px; background: var(--field); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-danger { border-color: var(--error); color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary, :is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-primary:hover { background: var(--button-accent); color: var(--accent-text); }\n#ytms-age-dialog .ytms-age-primary:hover { filter: brightness(.92); }\n#ytms-age-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 12px 16px; flex-shrink: 0; }\n#ytms-age-dialog .ytms-age-status { width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-age-status.ytms-age-error { color: var(--error); }\n:is(#ytms-age-dialog, #ytms-channel-footer) .ytms-age-spacer { flex: 1; }\n@media (max-width: 480px) {\n  #ytms-age-dialog header { padding-left: 16px; }\n  #ytms-age-dialog .ytms-age-content { padding-left: 16px; padding-right: 16px; }\n  #ytms-age-dialog h2 { font-size: 18px; }\n}\n\n\n#ytms-age-dialog.ytms-age-embedded { width: 100%; height: auto; max-height: none; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font: inherit; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-panel { display: block; height: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-content { overflow: visible; padding: 0; scrollbar-gutter: auto; }\n#ytms-age-dialog.ytms-age-embedded .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }\n#ytms-age-dialog .ytms-age-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0 8px; }\n#ytms-age-dialog .ytms-age-toolbar-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 180px; }\n#ytms-age-dialog .ytms-age-toolbar-field > span { color: var(--muted); font-size: 12px; }\n#ytms-age-dialog .ytms-age-toolbar-field input,\n#ytms-age-dialog .ytms-age-toolbar-field select { box-sizing: border-box; min-width: 0; max-width: none; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; }\n#ytms-age-dialog .ytms-age-sort-field { flex: 0 1 210px; }\n#ytms-age-dialog .ytms-age-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }\n#ytms-age-dialog .ytms-age-results .ytms-age-note { margin: 0; }\n#ytms-age-dialog .ytms-age-edit-actions .ytms-age-button { border-radius: 6px; }\n#ytms-age-dialog .ytms-channel-transfer { margin: 10px 0 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }\n#ytms-age-dialog .ytms-channel-transfer > summary { padding: 10px 0; cursor: pointer; font-size: 13px; font-weight: 600; }\n#ytms-age-dialog .ytms-channel-transfer .ytms-age-toolbar-field { margin: 12px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }\n#ytms-age-dialog .ytms-channel-transfer-actions .ytms-age-button { white-space: normal; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }\n#ytms-age-dialog .ytms-channel-import-preview h3 { margin: 0; font-size: 14px; }\n#ytms-age-dialog .ytms-channel-import-preview p { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-confirm { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }\n#ytms-age-dialog .ytms-channel-import-preview .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-age-dialog .ytms-transfer-error { color: var(--error); }\n#ytms-settings-dialog footer.ytms-channels-active > :not(#ytms-channel-footer) { display: none !important; }\n#ytms-settings-dialog #ytms-channel-footer { flex: 1; min-width: 0; width: 100%; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; border: 0; padding: 0; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button { min-height: 38px; padding: 8px 14px; border: 0; border-radius: 20px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:hover:not(:disabled) { background: var(--hover); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary { background: var(--button-accent); color: var(--accent-text); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:hover:not(:disabled) { background: var(--button-accent); filter: brightness(.92); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status { flex: 0 0 100%; min-width: 0; max-width: 100%; margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-status.ytms-age-error { color: var(--error); }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:disabled { opacity: .5; cursor: default; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-primary:disabled { background: var(--line); color: var(--muted); opacity: 1; }\n#ytms-settings-dialog #ytms-channel-footer .ytms-age-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }\n@media (max-width: 520px) {\n  #ytms-age-dialog .ytms-age-toolbar-field, #ytms-age-dialog .ytms-age-sort-field { flex-basis: 100%; }\n  #ytms-age-dialog .ytms-age-toolbar > #ytms-age-add { align-self: flex-start; }\n}\n","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbGxlZGJ5PSJsb2dvLXRpdGxlIGxvZ28tZGVzY3JpcHRpb24iPgogIDx0aXRsZSBpZD0ibG9nby10aXRsZSI+WW91VHViZSBNYXN0ZXIgU3VpdGUgbG9nbzwvdGl0bGU+CiAgPGRlc2MgaWQ9ImxvZ28tZGVzY3JpcHRpb24iPkEgcmVkIGNvZyB3aXRoIGFuIG9mZi13aGl0ZSB2aWRlbyBwYW5lbCBhbmQgYSByZWQgcGxheSB0cmlhbmdsZS48L2Rlc2M+CiAgPCEtLSBPcmlnaW5hbCBjb2cgYW5kIHZpZGVvLXBhbmVsIGdlb21ldHJ5IGZyb20gU1ZHIFJlcG8uIC0tPgogIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmNjAwMDIiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogIDxwYXRoIGlkPSJ2aWRlby1wYW5lbCIgZmlsbD0iI2Y2ZjZmNiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTU5LjUyLDI2LjMzNDE2MjcgQzU5LjUyLDI2LjMzNDE2MjcgNTkuMDUwNSwyMy4wMDMxOTkgNTcuNjEyLDIxLjUzNjM2NjUgQzU1Ljc4NjUsMTkuNjEwMjk5IDUzLjc0MDUsMTkuNjAxMjM1MiA1Mi44MDMsMTkuNDg5NDQ3NyBDNDYuMDg2LDE5IDM2LjAxMDUsMTkgMzYuMDEwNSwxOSBMMzUuOTg5NSwxOSBDMzUuOTg5NSwxOSAyNS45MTQsMTkgMTkuMTk3LDE5LjQ4OTQ0NzcgQzE4LjI1OCwxOS42MDEyMzUyIDE2LjIxMzUsMTkuNjEwMjk5IDE0LjM4NjUsMjEuNTM2MzY2NSBDMTIuOTQ4LDIzLjAwMzE5OSAxMi40OCwyNi4zMzQxNjI3IDEyLjQ4LDI2LjMzNDE2MjcgQzEyLjQ4LDI2LjMzNDE2MjcgMTIsMzAuMjQ2NzIzMiAxMiwzNC4xNTc3NzMxIEwxMiwzNy44MjU2MDk4IEMxMiw0MS43MzgxNzAzIDEyLjQ4LDQ1LjY0OTIyMDIgMTIuNDgsNDUuNjQ5MjIwMiBDMTIuNDgsNDUuNjQ5MjIwMiAxMi45NDgsNDguOTgwMTgzOSAxNC4zODY1LDUwLjQ0NzAxNjUgQzE2LjIxMzUsNTIuMzczMDgzOSAxOC42MTIsNTIuMzEyNjU4MyAxOS42OCw1Mi41MTM1NzM2IEMyMy41Miw1Mi44ODUxOTEzIDM2LDUzIDM2LDUzIEMzNiw1MyA0Ni4wODYsNTIuOTg0ODkzNiA1Mi44MDMsNTIuNDk1NDQ1OSBDNTMuNzQwNSw1Mi4zODIxNDc4IDU1Ljc4NjUsNTIuMzczMDgzOSA1Ny42MTIsNTAuNDQ3MDE2NSBDNTkuMDUwNSw0OC45ODAxODM5IDU5LjUyLDQ1LjY0OTIyMDIgNTkuNTIsNDUuNjQ5MjIwMiBDNTkuNTIsNDUuNjQ5MjIwMiA2MCw0MS43MzgxNzAzIDYwLDM3LjgyNTYwOTggTDYwLDM0LjE1Nzc3MzEgQzYwLDMwLjI0NjcyMzIgNTkuNTIsMjYuMzM0MTYyNyA1OS41MiwyNi4zMzQxNjI3IEw1OS41MiwyNi4zMzQxNjI3IFoiLz4KICA8cGF0aCBpZD0icGxheS10cmlhbmdsZSIgZmlsbD0iI2Y2MDAwMiIgdHJhbnNmb3JtPSJzY2FsZSgxNC4yMjIyMjIyMjIyKSIgZD0iTTMxLjA0NCw0Mi4yNjk5MTYgTDMxLjA0MjUsMjguNjg3NzQxNiBMNDQuMDExNSwzNS41MDIyNDM3IEwzMS4wNDQsNDIuMjY5OTE2IFoiLz4KPC9zdmc+Cg==","playerLogo":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCI+CiAgPCEtLSBNb25vY2hyb21lIHZhcmlhbnQgb2YgdGhlIG9yaWdpbmFsIHN1aXRlIGxvZ287IHRyYW5zcGFyZW50IHBhbmVsIHdpdGggd2hpdGUgcGxheSB0cmlhbmdsZS4gLS0+CiAgPGRlZnM+CiAgICA8bWFzayBpZD0ic3VpdGUtbG9nby1tYXNrIiBtYXNrVW5pdHM9InVzZXJTcGFjZU9uVXNlIiB4PSIwIiB5PSIwIiB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBzdHlsZT0ibWFzay10eXBlOmx1bWluYW5jZSI+CiAgICAgIDxwYXRoIGlkPSJjb2ciIGZpbGw9IiNmZmYiIHRyYW5zZm9ybT0ibWF0cml4KDgzLjg0MjEzOCAwIDAgODMuODQyMTM4IC0xNTguNTI4MjExIC0xNTguNTI4MjExKSIgZD0iTTYuODIzMiwybC0yLjIxNjguOTE0NC41MTUyLDEuMjQ4OGE0Ljc0Mjg2LDQuNzQyODYsMCwwLDAtLjk0OTYuOTQ0OEwyLjkyNDgsNC41ODk2LDIuMDAzMiw2LjgwMjRsMS4yNDcyLjUxOTJhNC44Miw0LjgyLDAsMCwwLS4wMDI0LDEuMzRMMiw5LjE3NmwuOTEzNiwyLjIxNzYsMS4yNDg4LS41MTQ0YTQuODI0NDUsNC44MjQ0NSwwLDAsMCwuOTQ0OC45NDg4bC0uNTE4NCwxLjI0NzIsMi4yMTQ0LjkyMDguNTE4NC0xLjI0NjRhNC42Nzk1Miw0LjY3OTUyLDAsMCwwLC42NzQ0LjA0OCw0LjczOTcyLDQuNzM5NzIsMCwwLDAsLjY2NTYtLjA0NjRMOS4xNzYsMTRsMi4yMTc2LS45MTM2LS41MTQ0LTEuMjQ4OGE0LjgyODIyLDQuODI4MjIsMCwwLDAsLjk0OTYtLjk0NDhsMS4yNDU2LjUxODQuOTIxNi0yLjIxNDQtMS4yNDcyLS41MTg0YTQuNzI5ODQsNC43Mjk4NCwwLDAsMCwuMDAyNC0xLjM0TDE0LDYuODI0bC0uOTE0NC0yLjIxNzYtMS4yNDg4LjUxNDRhNC43Mzg5MSw0LjczODkxLDAsMCwwLS45NDQ4LS45NDg4bC41MTg0LTEuMjQ2NEw5LjE5NzYsMi4wMDQsOC42Nzg0LDMuMjUxMmE0LjcxNCw0LjcxNCwwLDAsMC0uNjc2OC0uMDQ4OCw0LjgwOCw0LjgwOCwwLDAsMC0uNjYyNC4wNDY0WiIvPgogICAgICA8cGF0aCBpZD0idmlkZW8tcGFuZWwiIGZpbGw9IiMwMDAiIHRyYW5zZm9ybT0ic2NhbGUoMTQuMjIyMjIyMjIyMikiIGQ9Ik01OS41MiwyNi4zMzQxNjI3IEM1OS41MiwyNi4zMzQxNjI3IDU5LjA1MDUsMjMuMDAzMTk5IDU3LjYxMiwyMS41MzYzNjY1IEM1NS43ODY1LDE5LjYxMDI5OSA1My43NDA1LDE5LjYwMTIzNTIgNTIuODAzLDE5LjQ4OTQ0NzcgQzQ2LjA4NiwxOSAzNi4wMTA1LDE5IDM2LjAxMDUsMTkgTDM1Ljk4OTUsMTkgQzM1Ljk4OTUsMTkgMjUuOTE0LDE5IDE5LjE5NywxOS40ODk0NDc3IEMxOC4yNTgsMTkuNjAxMjM1MiAxNi4yMTM1LDE5LjYxMDI5OSAxNC4zODY1LDIxLjUzNjM2NjUgQzEyLjk0OCwyMy4wMDMxOTkgMTIuNDgsMjYuMzM0MTYyNyAxMi40OCwyNi4zMzQxNjI3IEMxMi40OCwyNi4zMzQxNjI3IDEyLDMwLjI0NjcyMzIgMTIsMzQuMTU3NzczMSBMMTIsMzcuODI1NjA5OCBDMTIsNDEuNzM4MTcwMyAxMi40OCw0NS42NDkyMjAyIDEyLjQ4LDQ1LjY0OTIyMDIgQzEyLjQ4LDQ1LjY0OTIyMDIgMTIuOTQ4LDQ4Ljk4MDE4MzkgMTQuMzg2NSw1MC40NDcwMTY1IEMxNi4yMTM1LDUyLjM3MzA4MzkgMTguNjEyLDUyLjMxMjY1ODMgMTkuNjgsNTIuNTEzNTczNiBDMjMuNTIsNTIuODg1MTkxMyAzNiw1MyAzNiw1MyBDMzYsNTMgNDYuMDg2LDUyLjk4NDg5MzYgNTIuODAzLDUyLjQ5NTQ0NTkgQzUzLjc0MDUsNTIuMzgyMTQ3OCA1NS43ODY1LDUyLjM3MzA4MzkgNTcuNjEyLDUwLjQ0NzAxNjUgQzU5LjA1MDUsNDguOTgwMTgzOSA1OS41Miw0NS42NDkyMjAyIDU5LjUyLDQ1LjY0OTIyMDIgQzU5LjUyLDQ1LjY0OTIyMDIgNjAsNDEuNzM4MTcwMyA2MCwzNy44MjU2MDk4IEw2MCwzNC4xNTc3NzMxIEM2MCwzMC4yNDY3MjMyIDU5LjUyLDI2LjMzNDE2MjcgNTkuNTIsMjYuMzM0MTYyNyBMNTkuNTIsMjYuMzM0MTYyNyBaIi8+CiAgICAgIDxwYXRoIGlkPSJwbGF5LXRyaWFuZ2xlIiBmaWxsPSIjZmZmIiB0cmFuc2Zvcm09InNjYWxlKDE0LjIyMjIyMjIyMjIpIiBkPSJNMzEuMDQ0LDQyLjI2OTkxNiBMMzEuMDQyNSwyOC42ODc3NDE2IEw0NC4wMTE1LDM1LjUwMjI0MzcgTDMxLjA0NCw0Mi4yNjk5MTYgWiIvPgogICAgPC9tYXNrPgogIDwvZGVmcz4KICA8cmVjdCB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiBmaWxsPSIjZmZmIiBtYXNrPSJ1cmwoI3N1aXRlLWxvZ28tbWFzaykiLz4KPC9zdmc+Cg==","recommendedExtensions":[{"id":"ryd","name":"Return YouTube Dislike","description":"Shows estimated dislike counts beside YouTube’s dislike button.","note":"Counts are estimates from community data, not an official live YouTube count.","url":"https://returnyoutubedislike.com/install","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAACg0lEQVRo3u2ZP2gTURzHP5eLSgNV1GqkClksomiHViFKaEENLl0USweHomARpAhxaIfSqWCXLlKHIlTQyWwuThUHSwsFm2qgHjhpQa2iLkWCRn8OOaEeueZy//IO8oUbDu73e9/P77137707aKqx0mo9IHAJyAEngJ0+tv0TMIB7wH0NpErbV4EjNvG/gXwt82MCEsL1QCzFFMg6iHu/lflOgXJIACIwYGn/mpO42BYdcBvQQxzO190ExWyqn8RSkRB0zDcA4AawI2SAmC9BAttNgEioGvUAcCDKAMOOo6enob9fHQCBM8Apx9EdHZDPw+IipNNK9MAtV1nSaVhYqMCkUo0BEDgIXHS/KdEqw2l1FSYnobU19B64CWzznDGRgJERMAwYGgJdDx5AoMXtSmir9naYmYGlJejtDbwHrgBtgbTQ1QUTE5BMBgowHEj2tTUYHISeHlhfD6SJuMBZoNPXrBsbMDVVmcylUqBzIG5OXn9ULsPsLIyPB1bxagDnfMk0Nwe5HBSLoa8DuzxlMAzo64NsNnTz/xYw96eoTEZE1/06kX1ycyKLe6Kfn1dyNxopxYA/UQd4F3WAR4p4EbcAd4DnCgB8sNx/dhDzNq5BSeCCeZC/DBxyaSDl8TvSY8v9U2AU6LZ5/gdw16++bxH45WENeCHhf8b5D+C0B/MvBXY3eh046TJuGchq8L3RAN0uYgqm+W8qvP+KdQ6bZYE9qry8E3VO4IIy5k2ATJ3m96q2mXM6/leA8xp8VWovIvDQQeVX/K58mBO4oKx5E+Bjjcq3obIEntiYf6W8eRPgsMAXi/nXAvsic6gQOLppKL2RCP3h2QxxXOCZwH6aaio6+gvdnzYIGXJx8wAAAABJRU5ErkJggg=="},{"id":"sponsorblock","name":"SponsorBlock","description":"Skips community-marked sponsor segments, intros and other optional categories.","note":"Complements the Suite without replacing its player or queue controls.","url":"https://sponsor.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAALqklEQVR42t2beYxddRXHP+f37ltmOnsXoZQWClYpUBGtFlAokGIIJIAVQUHABaUQASUqCDaKCqiIGm1QliA0CCIKJgZZBAREQIu1uNAqDEgXWlptO/u85X79455XLpOWzvJmpvBLbjJz311+5/s75/s72zVqOJTJZIjjHFITsA+wLzADmA5MBSYDbUATkB1wewnoADYDm4C1wGrgBeB5oB2zLYRQtEqlUqs524gEDiGDVI/0VmAeMBeYA+wN1LmQIfUeDTgGziV9VK+PgTLQ52A8A/wZ+BNmKzHrtjiujBkACiEijicBRwDHAO8HpgF5F1Y+4aKv6EvAGuBlYKOvcBfQ46sOEAETgAagxTVld2AP16BmIOfXmYNS9Of+AXgAeIQQNlgcl2sOgLLZQKnUAhwJLASOAib6hAT0A68Ay/1YAazEbB1mRaBMFMU0N8s2btTrvmvyZGPrVqNSCUgZpDzSVGCWa9fBwLuAKQ5KcMA3Aw8DvwJ+Rza72UqleEQAKIQscTwLOA042VcjC1SATuAvwIPA7zH7ByH0UF9fts5OAai+3ujrC0iR3xchTQAaffLpUQQ6MatqRgmzCoVCxXp6kuc1NxtdXRFxXI+0n2vh0W56jUDGwVgN3AksJYSVFselIQEgszzSXGARcJyTFkA38CdH+V7M1tDQULTOTrmwiYDSXsD+wNuAmU6CU1xrCgN4gQH23g/8D9jggrQDK4FngXZC6CafL1lvr9TUZHR1ZYnjacAHgBOBQ9yU8EW6D1iC2ZMm9e/MvrOC9wnuEnQLYkFZ8ILgKsE7ZZZXW5tVSVDQLDhccKngN4LVgh5Bye/XCI/qHHoFawW/FSwWzBe0KoRM1XRklhfMEVwheN7nIJflLsF8hZDbvvCwm+A6QZffVBL8VXCuYIqy2eBbXRC0CU4Q3OAv6quRsEMBpc8X5ibBQsFEZTKZKmcJJgk+LVgmKKaAuEkJub5G+D0EjwoqjvZfBZ+UWbOamszNoiCYK/i+oD310F3hKDoYPxTMk1kBQC0tJrNGwemCp122WPCUEj4DmeUES/2HLsFlMmtVS4upudlk1uAI3+u/x7uQ4NvTjB7BA4JTZNakpibTxIkms2bBxSkZ7pRZAcFRKZv9ojKZyIFpEHzM0erfhYV+Pa1YJjhDTuLKZCLBhf5br+BYBD92RJbLrMlN4mDBY7uYmg/3KAmeVOKpVhf2Cf/tZgTLHYArVFdnMqtPXfBmOv4iswY1NprgKy7zP4O7ngL+Y729QmoFZvPmG7OQprqTts59jt1C6oL8gKDkzTbkHiypQKw/uHdn2wAw63Z0ahRvGiTb864AQJ//PcFl7g3uLhrQqJYWc1+6t2avPeAA+Na3YM6cBIzxG2XMuvzvRpe5I3gUBdBGT4+5mmyu2Wt32w0WLYLbb4eLL4Zp08YLgC1ARXV1BrQ6AJuDh7EAk6hUqqHlxpq+OpOB/faDxYvhttvgtNOgqWmsAdgElCmVggdmAK8EZ0QBU4njDCHEfq72o1CAww6DH/0IbrgBjjwSstmxAmAdZhXiOOPJFoC1wTM28uxLlny+4udGZ5hBSwssXAhLl8LVV8Ps2WPBDy+SzVY8NzHNiX51AF50u5+M1OrJh+dSW8bojBBgjz3g3HPh5z+Hiy6CqVNH620x0G79/TFSg2tADLwQPONa9AzNTL9hlXPB6I8oSnaKyy+HW2+FD38YGhpqvwMkSRVcxoLL3B4wW+8EkU15gP/ypOXYjbo6OOIIuPZauP56OPzwWvoPfSkA9nNZOzB7KWDW7+mmABykKMoQwhYHYWyHGbS1JVqwdGniP8yaVQt+aMdso3K5ALzDc4crE0cony95clPAwVQqOaKo6Ln38RkhwPTpcP75cMcdcMEF8Ja3jOSJywihSKmU9YyygOXkcqWqj3iSh75blRQ1EJyayqkN/1iwQOrr04hGd7d0//3SSSdJ9fVDnUNZcJbLtLtgk8t1atpJ3lOwOf2DYIafG38AJCmOpU2bpKVLpUMPlUIY7Bw6BG91mU7whe5QUrojuO294iWnCJivKMo4OT69y8RyZjBxInz0owk/nHPOYLnhGcxWe1L3SJfxWUJY9yoAdXVF4CG3jaOoVOppbCwC99Y0MhxxPCfo7IQVK+Bvf0v+33kEeB/19f2Uy3Ve0QJ4iFyuf+CVh3ierE9JxQXBbFeX8TeBvj7p8celM86QWloG+/4uwTtdlnme++zTq0C8pho0QbDCU0XXKIqCFxruHVcAymVp1Spp8WJp+vShvv8RmRWUywUvlsSCVdXc52sBSC76pl/0b5m1OHKfGNFuMFwA4lh6+WXpuuukgw6SzIbD/ueptbVaG/jHtsX1Is/2DObdrjZFwYf83BTBi2MGQBxLHR3Sr38tHXuslM8PV/vWVitAguM8td8jOHTHjJFUfx70B9ytEHJeZrpq2AWRoQDQ3y899ZR09tlSa+tICyTfVxRlvN55u59/XGZ1O6PNs1zlO1IE8nbBf0cNgHJZeu456fLLpb33rkUKfIuSXoIqkW92k1ik1lbbGQATBf92FJcoijJeUfnJsLTg9QCIY2nDBunGG6W5c4fi3Oxs9W9WCFlFURBc7edeFOzcn3YyvNQLpRuV1PgRHDgsLdgRAF1d0j33SMcfLxUKtSyAbFHi7yOYKVjvsnxjh+S3HS3Y00kkFvxAUZRRFGUE3xuyFgwEoFiUli2TzjtPmjRpNIqjP1YIka/+t/3c+qrrOzgAEuL7uiO3SXCAA7OX4KVhAVCpSO3t0pVXSvvsM5xtbTDHupTfP8sFjwXfURQNLbngPQMvvMam8nkTnD8kv+Doo6U1a6Sbb5bmzZMymdGq/ZUFX1I2GxRClCr6rqlGuEMDIBH2c/7gbsECB6bJmykGN7HJk6VjjhlOGDvU4wkldU68ZafD5/7lQdv+drSgxWvsEvxRSb8egkMF/9uFKr9blUR6uNf3sJ9fIZg00oLace5BlQWXKIqCstmM4LKaJExqo/rfUCaTce660OfVK1hYbfEZSTtszpuhYifE9zgwjR4ojXfLzEMpzTwoRXy3yixfq7LqdMEqf+FjShqeEbzNu8TGS/j/CA70uTQLfufCt+vVFH8NAGhoMM8bdvvW+F2FkNWECeYmsnUchO8QfFCFgrmnekWqn/AjXgStYTImCSqucQB6BKerUKjywfmeaBgr4fsFX1AURaqvN8HJHsVWBEt22AxZA1Noc5ureleHpFrtvj1GpFgS/GBbL2ASwq/ZFu0lneaj2mYxO2X3f1fyUUQ1o3SDq+FoCV/xnsbGlGe6PMUHc0Y/L5nY/QIPjGJ3inZP7Qy3+URHQ/jbUs7OlBTpbREcX3O73yEISaDx8VRD9T1KOsGrztMtNdaE8gDh2wS/SvHRZ4bs648YhIR5L3LyqwjuTG2PDYIlNWq0LLlpNaeEv9Pf2S+4VCFkGY/h5Pc1n0hFcHc16SCzOm9r7xmB8L2CK2RWn0rW/NLfVRRcWTNnZwQg5AVfTYHwQLUT27fOMwWvDEP4/wrOllkuFZ3ek1r5q3ea3xtjEC7x1Y49gHqHJkww988P8xb8eJBJjb8L5iubDWpqMsH+Hu3FrhVfrW6Du07VKlntRc7I8lzCcVVy8hX86U4cpn7BrYI91dZmTrbH+LYbCzoFF4yao1MDYsy4y7w2lZ/70jYbTjTlTN+z4wGrvlrwqW0OTsIhF6Yq1OsFp4w52w8ZhELB/MuSp12wohPXTDU0mPsR+7g2bPY44meCWcrnzbu5Z/i2V/RnPCM4xDs83hhDMNXVuSrEc4JTqurrJrOnYEbqXE5wokeeVfB+oeSrszfecDX+rGBDalu7RbBv9QMnd6wygr0FN6a2zU2Cz1fN5w07fBc42IOo6qd069y5OdeJ81o/V/1E7lHBexVFgTfL8Fzd55wgKyn/Pv33esEXZdY8Zo0nYwpCLhcoFmeQfIq7AM/hkzRr3g/cTjb7/GC++a3V+D8QDEckCg68HgAAAABJRU5ErkJggg=="},{"id":"dearrow","name":"DeArrow","description":"Replaces sensational titles and thumbnails with community alternatives.","note":"Optional: changes titles and thumbnails. Check the project website for activation and pricing.","url":"https://dearrow.ajay.app/","logo":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAKjElEQVR4nNWbeWwc1RnAf292vb6TPby24zjO5SQU5yBNSAkJxEdzFAiF0vRCIWrUFlEKVaW2iEqtmgKlVWmklkoNtKKogDikFhRCQgKxnQsQEOIcjg8ScGJ8sN5d78aOj92def2DGDmJ7XlvvU7bn2TJO/N93/vmm5n3vvfNe0JKyUTj89UWg7lCCHGNlCxEMAOYfOEvC4gCUSRRDNGIRb0Q8kQsJvefO1cVmkjfxEQFwO+vmWdh3SmkuEXC4iTNmMBhhHjdwHquq6uqOZU+QooDIATCk1d9i5D8CFgNiJQZB4nkgDTkk91Bx4tSlidSYTRlAcjLq6mSyN8DS1JicGxaEOLRcFA8Nd5AjDsAXu+bJUIYf0Vw07gMJcdxpLw7FKp6O1kDSQdACITXu3czQmwFJiXrQAqwBHKb02n+vLNzzXld5aQCkJ9fm2NK6ykkG7SVJ456gfH1YLC8UUdJOwDugurZDpOXgQVaileGHgGbgsHKl1UVtALg89WUIaw3QExJyr0rg4ngnlBX5d9UhJUD4PPVXoewdgKe8XiXluHAMyWDTHca6VkO4gMmA70mkY4B+s/Fx2N6OBIpfxoKVW21E1QKgN9fs8SSspokOjtnuoNZS93MWuqhZKGbyQXpCGPk9CD66SCtxyI0HQzSUhfFjFu6zQ1HCtgcDFY+PZaQbQD8/r1zLSkOAPk6rXuKMll6WxFXV/hJz3bqqAJwvjvO4e3t1L3WwUBv0kN9HClvDYWqXh9NYMwATJpUm5fmst4DZqi2mJvnYuXG6ZRV5mM4xp8I9p+Lc/CZsxzd1YllJTVkR81EYnEksubjkU6OGgAhthhe38qdINaqtCIMweKbC7lx03RcWfp33I72xh52/KGJSMdAMurvhUOhlVJuiF16YtQA5OVV/07CAyrWM3PTuPlnc5m1dFz9oy3xAZNdfzpF476uZNQfDgUrf3npwRED4PXWrBCG3A8YdlY9UzPZ8FAZ7sKMZJzSRkp454VWDj57Bs0UJiYwFl2aKF12gVOn7sjCkE+PdO5S8mdmc+djC6/YxQMIAcu/PY0195VijDKajIJLIh+/9OBlFzkQy35IQKmdNXdhBhsenk/W5DQdJ1LGonWFrPtxKUIrBvLLPl/NRX3aRQFwu/fMFFLea2fG6TK449dXk+3571z8EPNXF7Bq80wtHSHkg8N/XxQAh8P5iIR0OyOrvjsDX0mWVsMTxbI7plJWpZ6iSFjl9dasGPr9eQDy8t78AoJv2Rnwz8jmi+v/t6YCa+6djXuKej9kGPKHn/8/7PB9KJSwbtg0fdRUVpX+gUGaWtp5t/40b9U1cbS5hdbOIFaStYm0DAfr7p+j3B9IuM3vP5QL4ATweGrdhoONdoqeokxmL/Mm5SRAa2eIfe/X09LeNeLFZmWks3BOCSsXX0VWpu2beBEliyYz70a/ao6QJWXsduCfBoDhtDYAOXZaC9cWaPa6n2GaFq/uP8zT22v4qC0w6p3uGxjkneMf8ufnX+d481ntdlZ+p0R5aJRYt8LQK2Bxm4rSvBvytJ1KmBbP7TrAkYaPlROXWDzOyzXvUvt+vVZb3mmZlC5XfUJFuRBbDCM/vzYHQaWt8eLMpBKeXYeO0NKWVOrK/sMNHG74SEtnwZpCVVGf279qoWGa1vWA7ZUVz5+s5QjA6dZPOdIw4iRMmd2HjhLp7VOWn7nETWauWn4ipPklQwq1rzYFs7OVnRhC9xEeiYRpUvuuuh3DEJRco3azBMZcQ0iuURHO00x8wtHztAXCWjqjcfKjVmIx9XLZtAWKT6slrzKEYJ6KbE6e3rB0qrVTS34sEqbF6baAsrx/uuLNEsw0JCh1mzmaeX93tEdL3o5wpFdZ1jM1U1V0kgG4VSSdLtvZ8UX0DV5WfBkXvX39yrIZOcoVqVwDsO3dHGmGdvrrSkvtTDEj3aUs63QZOJxK/mYZwKCdlJWwkJoFydys1BZJcrPV7UkJlqnkb68B2L6sUkIiplejL5minzWOxcypBcqyiUFTNeuMKAUAoDes905PK/SRmaE3cozGlDwPnknqeUhfVPE7gpQRQyLaVGS72/XK0Q7DYPnCOVo6o1F+bZmW/LmAoq+GaDaEtJTW3QROqw9DQyybX4p3sn4GOZy506cwp0Q5vwcg3KY2YgjJMQNDfKgifPZ4VMsJAFeakw2rl5PmTO5Dic+Ty+2Vy7T1OprUbpYlOGZgcUxF+JP6HmL9prYzBT43G9ffQLZmgaO4wMemW8pJd+kPp20nz6mIxa2466DhcBhvAbaJdmLQpPlgUNsZgOJ8H5tvr+SqGUW2si6nk/KlZdy1fhU5WfqdaHfHAKFWpdnj/khkZbczECjv9eVVHwFsn7W6XZ3MX60+HA3Hk5vNN9ZeT3sgTP3pT/i4PcC58/0MxuLkZmbg8+Qyd3oRZbOKtcthwzn1tuK6SilfhQs1QYncKxC2AWhv7OHs0Sgli/RrA0MU5Xspyk++rjgWUsLR3faTMAGDzjTzebhQEpOG4yXVRmr/0aKdFV4pWj6IEG61HwEs5IudnWsCcCEA3YHyOqBJpZHO5h6O7EzdVDdVSAkHnjmjJGvAX4b9P2RBPKfa2L6nWgidVS9TXQka9nXR2Wyf1ErYHgxWvTf0+/MAxFzObYBSBhEfMHnlkUYGz6dkue64OR+OU/2EUvHUFHKUb4M9HTd0IXlWtdFQax//3tKgPUlKNWZCsuOxRvqi9iUzidgWClWdHH7soiqHYYg/Asq3tfVElH9tOZlUgpQKpITdj5/iTJ1SltriEK4HLz14UQC6uiqaJGzTceLMkQjPP3Ccni7bskJKMeMWO7c2c+KNT1XEJZK7u7pWXNZJXLZExu0+6HE4Yx8CPh2HMnPTWHt/KXNXaKklRaRjgNe2NtNWr5TyIpGPhoNVvxjp3IhrhHz+6u8jeTIZ52Zf66Hie7PwTlMuTCoz0Jvgg+3tvPPSJzp9z55wKHSTlBtGfE9HXSXmzdv7ikB8NRlHhSEovc7LkvVFFC+YpLuW5zI6mnpo2NfFsT0BYn1aI09zPCavH2vf0agByJ1ywO+Kx+sA+xnMGGS505h1rZdpZZMoKM3BU5RBWoZjRNlE3KI/mqC7rZ/g2T46Gns4eyKaZP8iO8yEuWK0BZJDjLlS9MIa4VoUPp3rkJHjJCPHiTPdIDFoEes3ifWZJMa3Nng4YWnJinC4ynaqb7tW2Out/oow2M6FidP/AZ2WKdZ1d1ccVRG2/doRDlfuEohvAkmtUb2SSDhlOuUK1YsHzf0CQljbJfiT9nACEbAjkXDdFYms7NbS09kx4vHUzjAc1t+BKl0HJ5ABKcSvuoMVj0mJ9jxde8/QZ5sj9/5ASPFbFD+sTiB7HYZ5TyCwWqmwOxJJb5vz+w/lSjlwnxTiJ0hS+xnIDinrhBC/CYUqX0nmrg9n3BsnCwv3ZCcSzq9J2AhUAiMP8uPHRLLbMMQTwWDFq+O98CFSunc4P7+20LKs1RIqEKIcKfUW8l7OeYQ4gCV3OxzGC4FAecpLURO2exzA631zshBGGYaYD1YxkqlIChDCw2drkl1AGsheMCJgRQXilJSiGayGcNj9vpRLUraVbCT+AxbCE6Dct2fvAAAAAElFTkSuQmCC"},{"id":"ublock","name":"uBlock Origin","description":"Blocks adverts, trackers and unwanted requests using filter lists.","note":"Works best on Firefox and Firefox-based browsers. Full uBlock Origin is no longer available in Chrome; uBlock Origin Lite is a separate project.","url":"https://github.com/gorhill/uBlock","logo":"data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIgogICB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiCiAgIHZlcnNpb249IjEuMSIKICAgdmlld0JveD0iMCAwIDEyOCAxMjgiCiAgIGhlaWdodD0iMTI4IgogICB3aWR0aD0iMTI4Ij4KICA8ZwogICAgIHN0eWxlPSJkaXNwbGF5OmlubGluZTtvcGFjaXR5OjEiPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiM4MDAwMDA7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuNjIxMDA3NDQ7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZTtkaXNwbGF5OmlubGluZSIKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDAuNjc3ODY1NCwwLDAsMC41NjE0MTgyOCwtMjQxLjA3NTM3LC0yNDcuMjc3MTIpIiAvPgogICAgPGcKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KC0wLjY5NDUyMDMsMCwwLDAuNTYxMDk2ODcsMzc1LjAyOTY0LC0yNDcuNDI5NDcpIgogICAgICAgc3R5bGU9ImZpbGw6IzgwMDAwMDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6I2ZmZmZmZjtzdHJva2Utd2lkdGg6MS42MDE5MTE3ODAwMDAwMDAwMTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lO2Rpc3BsYXk6aW5saW5lO3N0cm9rZS1saW5lam9pbjpyb3VuZCI+CiAgICAgIDxwYXRoCiAgICAgICAgIGQ9Im0gNDQ3LjgzMzc2LDY2OS4wOTkyMSBjIC04MC42MzExOSwtNTcuMDMxMTUgLTgwLjYzMTE5LC01Ny4wMzExNSAtODAuNjMxMTksLTE5OS42MDkwMyAzNC41NTYyMywwIDQ2LjA3NDk3LDAgODAuNjMxMTksLTI4LjUxNTU4IG0gMCwyMjguMTI0NjEgYyA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC01Ny4wMzExNSA4MC42MzEyLC0xOTkuNjA5MDMgLTM0LjU1NjIzLDAgLTQ2LjA3NDk3LDAgLTgwLjYzMTIsLTI4LjUxNTU4IgogICAgICAgICBzdHlsZT0iZmlsbDojODAwMDAwO2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpub256ZXJvO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDoxLjYwMTkxMTc4O3N0cm9rZS1saW5lY2FwOnJvdW5kO3N0cm9rZS1saW5lam9pbjpyb3VuZDtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1vcGFjaXR5OjE7c3Ryb2tlLWRhc2hhcnJheTpub25lIiAvPgogICAgPC9nPgogIDwvZz4KICA8ZwogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNy44NzI1NDgsLTE3LjMyNTM1KSIKICAgICBzdHlsZT0iZGlzcGxheTppbmxpbmUiPgogICAgPGVsbGlwc2UKICAgICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuMzMzMzMzNSwwLDAsMS4zMzMzMzM0LC00Mi4yOTA4NjIsLTMxLjEwODQ2MSkiCiAgICAgICByeT0iMTIiCiAgICAgICByeD0iMTEuOTk5OTk5IgogICAgICAgY3k9IjgxLjMyNTM1NiIKICAgICAgIGN4PSIxMDIuMTIyNTQiCiAgICAgICBzdHlsZT0iZmlsbDpub25lO3N0cm9rZTojZmZmZmZmO3N0cm9rZS13aWR0aDo1Ljk5OTk5OTUyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLW9wYWNpdHk6MTtzdHJva2UtZGFzaGFycmF5Om5vbmU7ZGlzcGxheTppbmxpbmU7IiAvPgogICAgPGcKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjE7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjEuOTk5OTk5OTY5OTk5OTk5OTY7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2Utb3BhY2l0eToxO3N0cm9rZS1kYXNoYXJyYXk6bm9uZSIKICAgICAgIHRyYW5zZm9ybT0ic2NhbGUoMS4wMDE4MDI2LDAuOTk4MjAwNjcpIj4KICAgICAgPHBhdGgKICAgICAgICAgZD0ibSA4MS43MjUyMyw4MS40NzE5NDUgYyAwLDExLjAxOTgyOCAtNC45OTEwMDMsMTYuMDI4ODQxIC0xNS45NzEyMSwxNi4wMjg4NDEgLTEwLjk4MDIwNywwIC0xNS45NzEyMSwtNS4wMDkwMTMgLTE1Ljk3MTIxLC0xNi4wMjg4NDEgbCAwLC0yNC4wNDMyNjIgNy45ODU2MDUsMCAwLDI0LjA0MzI2MiBjIDAsNy4wMTI2MTggMC45OTgyLDguMDE0NDIxIDcuOTg1NjA1LDguMDE0NDIxIDYuOTg3NDA0LDAgNy45ODU2MDUsLTEuMDAxODAzIDcuOTg1NjA1LC04LjAxNDQyMSBsIDAsLTI0LjA0MzI2MiA3Ljk4NTYwNSwwIHoiCiAgICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7c3Ryb2tlOiNmZmZmZmY7c3Ryb2tlLXdpZHRoOjA7c3Ryb2tlLWxpbmVjYXA6c3F1YXJlO3N0cm9rZS1saW5lam9pbjptaXRlcjtzdHJva2UtbWl0ZXJsaW1pdDo0O3N0cm9rZS1kYXNoYXJyYXk6bm9uZTsiIC8+CiAgICA8L2c+CiAgPC9nPgo8L3N2Zz4K"}]},
     createSettingsDialog: function createSettingsDialog(document) {
   function element(tag, attributes = {}, ...children) {
     const node = document.createElement(tag);
@@ -5083,9 +5313,10 @@
   }, element("div", { class: "panel" },
     element("div", { class: "panel-header" }, element("h2", { id: id("panel-title") }, "Suite settings"),
       button("close-panel", "×", "icon-button close", { "aria-label": "Close settings" })),
+    element("p", { id: id("preference-status"), role: "status" }),
     element("nav", { role: "tablist", "aria-label": "Settings sections" }),
     element("div", { class: "content" }, comments,
-      ...["feed", "channels", "player", "layout", "miniplayer", "interface", "extensions", "support", "credits"].map(name => element("section", {
+      ...["feed", "channels", "player", "layout", "miniplayer", "interface", "extensions", "javascript", "support", "credits"].map(name => element("section", {
         id: id(`section-${name}`), role: "tabpanel", "aria-labelledby": id(`tab-${name}`), hidden: true,
       })),
       element("p", { id: id("button-access-error"), class: "field-error", role: "alert", hidden: true }, "Keep at least one settings button enabled.")),
@@ -5142,6 +5373,8 @@
   let downloadUrl = null;
   let downloadTimer = null;
   let disposed = false;
+  let restoring = false;
+  const isActive = () => !disposed && (typeof hooks.isActive !== 'function' || hooks.isActive());
   function clearDownload() {
     if (downloadTimer !== null) document.defaultView.clearTimeout(downloadTimer);
     if (downloadUrl) document.defaultView.URL.revokeObjectURL(downloadUrl);
@@ -5161,7 +5394,8 @@
     supportStatus.textContent = '';
     updatePreview?.();
   }
-  exportButton.addEventListener('click', () => {
+  exportButton.addEventListener('click', event => {
+    if (!event.isTrusted || !isActive()) return;
     const result = suite.backup.exportData();
     if (!result.ok) { setBackupStatus(result.error, true); return; }
     try {
@@ -5221,10 +5455,20 @@
     updatePreview = update;
     check.addEventListener('change', update);
     cancel.addEventListener('click', () => { clearPreview(); setBackupStatus('Restore cancelled. Nothing has been changed.'); });
-    restore.addEventListener('click', () => {
+    restore.addEventListener('click', async event => {
+      if (!event.isTrusted || !isActive() || restoring) return;
       if (hooks.hasDraft()) { update(); return; }
       if (!check.checked || restore.disabled || !token) return;
-      const restored = suite.backup.restore(token);
+      const confirmed = token;
+      restore.disabled = true;
+      const write = () => isActive() && token === confirmed && check.checked && !hooks.hasDraft()
+        ? suite.backup.restore(confirmed) : { ok: false, error: 'The restore preview changed. Review it and try again.' };
+      let restored;
+      restoring = true;
+      try { restored = suite.writeSettings ? await suite.writeSettings(write, suite.writeChannelFilters) : write(); }
+      catch { restored = { ok: false, error: 'The backup could not be restored. Review your saved settings before retrying.' }; }
+      finally { restoring = false; }
+      if (token !== confirmed) return;
       clearPreview();
       if (!restored.ok) { setBackupStatus(restored.error, true); return; }
       hooks.onRestored(restored);
@@ -5234,6 +5478,7 @@
     update();
   }
   fileInput.addEventListener('change', async () => {
+    if (!isActive()) return;
     const file = fileInput.files?.[0];
     token = null; updatePreview = null; preview.replaceChildren(); preview.hidden = true;
     const request = ++generation;
@@ -5242,22 +5487,28 @@
     setBackupStatus('Reading backup for preview…');
     try {
       const text = await file.text();
-      if (request !== generation || disposed) return;
+      if (request !== generation) return;
+      if (!isActive()) { fileInput.value = ''; setBackupStatus('Preview cancelled. Choose the file again.'); return; }
       const result = suite.backup.preview(text);
       if (result.ok) showPreview(result); else setBackupStatus(result.error, true);
-    } catch { if (request === generation && !disposed) setBackupStatus('The selected file could not be read.', true); }
+    } catch {
+      if (request !== generation) return;
+      if (!isActive()) { fileInput.value = ''; setBackupStatus('Preview cancelled. Choose the file again.'); return; }
+      setBackupStatus('The selected file could not be read.', true);
+    }
   });
   refreshButton.addEventListener('click', refresh);
-  copyButton.addEventListener('click', async () => {
+  copyButton.addEventListener('click', async event => {
+    if (!event.isTrusted || !isActive()) return;
     refresh();
     const request = generation;
     try {
       const clipboard = document.defaultView.navigator.clipboard;
       if (!clipboard?.writeText) throw new Error('Clipboard unavailable');
       await clipboard.writeText(report.value);
-      if (!disposed && request === generation) supportStatus.textContent = 'Report copied. Review it before sharing.';
+      if (!disposed && request === generation && isActive()) supportStatus.textContent = 'Report copied. Review it before sharing.';
     } catch {
-      if (disposed || request !== generation) return;
+      if (disposed || request !== generation || !isActive()) return;
       report.focus(); report.select();
       supportStatus.textContent = 'Clipboard access is unavailable. The report is selected; copy it manually.';
     }
@@ -5266,6 +5517,7 @@
   for (const type of ['input', 'change']) root.addEventListener(type, event => event.stopPropagation());
   return Object.freeze({
     element: root,
+    isSaving: () => restoring,
     refresh,
     updateDraftState() { updatePreview?.(); },
     reset() {
@@ -5288,6 +5540,9 @@
   };
   let opened = false, generation = 0, updateGeneration = 0, markerDraft = null, markerChanged = false, markerPreparing = false, markerConflict = false, markerBaseline = null, updateResult = null, sourceBaseline = '';
   let unsubscribeStorage = null;
+  let markerSaving = false, sourceSaving = false;
+  const writeMarker = suite.writeMarker || (callback => callback());
+  const writeSource = suite.writeUpdateSource || (callback => callback());
   const marker = make('section', 'playhead-marker'); marker.className = 'extra-settings';
   const markerHeading = make('h3', 'playhead-marker-heading', 'Playback marker image');
   const markerNote = make('p', null, 'Replace the red playback dot with a small image. Your image stays in this browser profile and is saved separately from other settings.');
@@ -5311,8 +5566,9 @@
     if (markerDraft) preview.src = markerDraft.dataUrl;
     else preview.removeAttribute('src');
     markerSize.value = String(markerDraft?.size || suite.playheadMarker.defaultSize);
-    markerSizeValue.value = `${markerSize.value} px`; markerSize.disabled = markerPreparing || !markerDraft;
-    markerSave.disabled = markerPreparing || markerConflict || !markerDraft || !markerChanged;
+    markerSizeValue.value = `${markerSize.value} px`; markerSize.disabled = markerSaving || markerPreparing || !markerDraft;
+    markerSave.disabled = markerSaving || markerPreparing || markerConflict || !markerDraft || !markerChanged;
+    markerRemove.disabled = markerSaving || markerConflict || !markerDraft;
   }
   function resetMarker() {
     const result = suite.playheadMarker.read();
@@ -5329,6 +5585,10 @@
     markerStatus.textContent = current.ok ? 'The saved marker changed in another window. Close and reopen settings before saving or restoring the red dot.' : current.error;
     return false;
   }
+  function markerWriteFailure(result) {
+    if (!result.conflict) markerStatus.textContent = result.error;
+    else if (markerPreflight()) markerStatus.textContent = 'The marker is still synchronising or changed in another window. Keep your draft and try again.';
+  }
   file.addEventListener('change', async () => {
     const token = ++generation, selected = file.files?.[0];
     if (!selected) { markerPreparing = false; markerStatus.textContent = ''; renderMarker(); return; }
@@ -5341,46 +5601,88 @@
     renderMarker();
   });
   markerSize.addEventListener('input', () => {
-    if (!markerDraft || markerPreparing) return;
+    if (!markerDraft || markerPreparing || markerSaving) return;
+    ++generation;
     markerDraft = { ...markerDraft, size: Number(markerSize.value) }; markerChanged = true; renderMarker();
   });
-  markerSave.addEventListener('click', () => {
-    if (!markerDraft || markerPreparing || markerSave.disabled || !markerPreflight()) return;
-    const result = suite.playheadMarker.save(markerDraft);
+  markerSave.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || markerSaving || !markerDraft || markerPreparing || markerSave.disabled) return;
+    const token = generation, confirmed = { ...markerDraft }, baseline = markerBaseline;
+    markerSaving = true; renderMarker();
+    let result;
+    try { result = await writeMarker(() => {
+      if (!opened || token !== generation || baseline !== markerBaseline || JSON.stringify(markerDraft) !== JSON.stringify(confirmed)) return { ok: false, error: 'The marker draft changed while waiting. Review it and try again.' };
+      return markerPreflight() ? suite.playheadMarker.save(confirmed) : { ok: false, error: markerStatus.textContent };
+    }); } catch { result = { ok: false, error: 'The marker could not be saved. Keep your draft and try again.' }; }
+    finally { markerSaving = false; renderMarker(); }
+    if (!opened || token !== generation) return;
     if (result.ok) { resetMarker(); markerStatus.textContent = 'Playback marker saved. No reload needed.'; }
-    else markerStatus.textContent = result.error;
+    else markerWriteFailure(result);
   });
-  markerRemove.addEventListener('click', () => {
-    if (!markerPreflight()) return;
-    const result = suite.playheadMarker.remove();
+  markerRemove.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || markerSaving || markerRemove.disabled) return;
+    const token = generation, baseline = markerBaseline;
+    markerSaving = true; renderMarker();
+    let result;
+    try { result = await writeMarker(() => {
+      if (!opened || token !== generation || baseline !== markerBaseline) return { ok: false, error: 'The marker draft changed while waiting. Review it and try again.' };
+      return markerPreflight() ? suite.playheadMarker.remove() : { ok: false, error: markerStatus.textContent };
+    }); } catch { result = { ok: false, error: 'The marker could not be removed. Review the saved marker and try again.' }; }
+    finally { markerSaving = false; renderMarker(); }
+    if (!opened || token !== generation) return;
     if (result.ok) { ++generation; resetMarker(); markerStatus.textContent = 'The native red playback dot is restored.'; }
-    else markerStatus.textContent = result.error;
+    else markerWriteFailure(result);
   });
 
   const updates = make('section', 'updates'); updates.className = 'extra-settings';
   const updatesHeading = make('h3', 'updates-heading', 'Script updates');
-  const updatesNote = make('p', null, 'The latest stable GitHub release is selected by default. You can change the source to another public GitHub Releases page or a hosted release-manifest.json. Installation opens in Tampermonkey.');
+  const updatesNote = make('p', null, 'The latest stable GitHub release is selected by default. Save a different source only if you trust its publisher. The check reads release metadata. Installation opens in Tampermonkey.');
   updatesNote.className = 'section-note';
   const sourceLabel = make('label', null, 'Release source URL'); sourceLabel.htmlFor = 'ytms-updates-source';
   const source = make('input', 'updates-source'); source.type = 'url'; source.maxLength = 2048; source.autocomplete = 'off'; source.spellcheck = false;
   const latest = make('p', 'updates-latest', 'Latest version: Not checked'); latest.className = 'section-note';
   const updateActions = make('div'); updateActions.className = 'extra-settings-controls';
   const check = button('updates-check', 'Check for updates');
+  const saveSource = button('updates-save-source', 'Save release source');
+  saveSource.disabled = true;
+  let trustedSourceDraft = null;
+  const renderSource = () => { saveSource.disabled = sourceSaving || trustedSourceDraft === null || trustedSourceDraft === sourceBaseline; };
   const install = make('a', 'updates-install', 'Install update'); install.className = 'text-button extension-link';
   install.target = '_blank'; install.rel = 'noopener noreferrer'; install.hidden = true;
-  updateActions.append(check, install);
+  updateActions.append(saveSource, check, install);
   const updateStatus = make('p', 'updates-status'); updateStatus.className = 'section-note'; updateStatus.setAttribute('role', 'status');
   updates.append(updatesHeading, updatesNote, sourceLabel, source, latest, updateActions, updateStatus); find('section-credits').append(updates);
   function cancelUpdate() {
-    ++updateGeneration; suite.updates.cancel(); updateResult = null; install.hidden = true; install.removeAttribute('href'); check.disabled = false;
+    ++updateGeneration; suite.updates.cancel(); updateResult = null; install.hidden = true; install.removeAttribute('href'); check.disabled = sourceSaving;
   }
-  source.addEventListener('input', () => { cancelUpdate(); latest.textContent = 'Latest version: Not checked'; updateStatus.textContent = ''; });
-  check.addEventListener('click', async () => {
+  source.addEventListener('input', event => {
+    cancelUpdate(); latest.textContent = 'Latest version: Not checked'; updateStatus.textContent = '';
+    trustedSourceDraft = event.isTrusted ? source.value : null;
+    renderSource();
+  });
+  saveSource.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || sourceSaving || trustedSourceDraft === null || trustedSourceDraft !== source.value) return;
+    const token = updateGeneration, confirmed = trustedSourceDraft, baseline = sourceBaseline;
+    sourceSaving = true; renderSource(); check.disabled = true;
+    let saved;
+    try { saved = await writeSource(() => {
+      if (!opened || token !== updateGeneration || trustedSourceDraft !== confirmed || source.value !== confirmed || sourceBaseline !== baseline) return { ok: false, error: 'The release source draft changed while waiting. Review it and try again.' };
+      const current = suite.updates.readSource();
+      if (!current.ok || current.url !== baseline) return { ok: false, error: 'The saved release source changed. Reopen settings before saving.' };
+      return suite.updates.saveSource(confirmed);
+    }); } catch { saved = { ok: false, error: 'The release source could not be saved. Keep your draft and try again.' }; }
+    finally { sourceSaving = false; renderSource(); check.disabled = false; }
+    if (!opened || token !== updateGeneration) return;
+    if (!saved.ok) { updateStatus.textContent = saved.conflict ? 'The release source is still synchronising or changed in another window. Keep your draft and try again.' : saved.error; return; }
+    source.value = sourceBaseline = saved.url;
+    trustedSourceDraft = null; saveSource.disabled = true;
+    updateStatus.textContent = saved.url ? `Release source saved. Checks use ${new URL(saved.url).host}.` : 'Release source cleared.';
+  });
+  check.addEventListener('click', async event => {
+    if (!event.isTrusted || !opened || sourceSaving) return;
     cancelUpdate();
     latest.textContent = 'Latest version: Not checked';
-    const saved = suite.updates.saveSource(source.value);
-    if (!saved.ok) { updateStatus.textContent = saved.error; return; }
-    source.value = sourceBaseline = saved.url;
+    if (source.value !== sourceBaseline) { updateStatus.textContent = 'Save the edited release source before checking.'; return; }
     const token = updateGeneration; check.disabled = true; updateStatus.textContent = 'Checking for updates…';
     const result = await suite.updates.check();
     if (!opened || token !== updateGeneration) return;
@@ -5388,13 +5690,13 @@
     if (!result.ok) { updateStatus.textContent = result.error; return; }
     updateResult = result; latest.textContent = `Latest version: ${result.latestVersion}`;
     const url = suite.updates.installationUrl(result);
-    if (url) { install.href = url; install.hidden = false; }
+    if (url) { install.href = url; install.hidden = false; install.textContent = `Install update from ${new URL(url).host}`; }
     updateStatus.textContent = result.status === 'newer' ? 'An update is available. Complete installation in Tampermonkey, then reload YouTube.' :
       result.status === 'older' ? 'Your installed version is newer than this release source.' : 'You have the latest version from this source.';
   });
   const validateInstall = event => {
     const url = suite.updates.installationUrl(updateResult);
-    if (!url) { event.preventDefault(); cancelUpdate(); updateStatus.textContent = 'Check for updates again before installing.'; }
+    if (!event.isTrusted || !url) { event.preventDefault(); cancelUpdate(); updateStatus.textContent = 'Check for updates again before installing.'; }
     else install.href = url;
   };
   install.addEventListener('click', validateInstall);
@@ -5407,6 +5709,7 @@
     const result = suite.updates.readSource();
     if (!hasDraft && result.ok) source.value = result.url;
     sourceBaseline = result.ok ? result.url : '';
+    trustedSourceDraft = null; saveSource.disabled = true;
     updateStatus.textContent = result.ok ? 'The release source changed in another window. Check again before installing.' : result.error;
   }
   for (const section of [marker, updates]) {
@@ -5414,9 +5717,15 @@
     section.addEventListener('change', event => event.stopPropagation());
   }
   return {
+    draftCategories: () => opened ? [
+      (markerPreparing || markerChanged && JSON.stringify(markerDraft) !== markerBaseline) && 'playback marker edits',
+      source.value !== sourceBaseline && 'release source edits',
+    ].filter(Boolean) : [],
+    savingCategories: () => [markerSaving && 'playback marker', sourceSaving && 'release source'].filter(Boolean),
     open() {
       opened = true; ++generation; resetMarker(); cancelUpdate();
       const result = suite.updates.readSource(); source.value = sourceBaseline = result.ok ? result.url : '';
+      trustedSourceDraft = null; saveSource.disabled = true;
       unsubscribeStorage?.();
       if (suite.storage?.subscribe) unsubscribeStorage = suite.storage.subscribe(sourceChanged);
       else {
@@ -5429,7 +5738,264 @@
     selectTab(id) { if (id !== 'credits') { cancelUpdate(); if (updateStatus.textContent === 'Checking for updates…') updateStatus.textContent = ''; } },
   };
 },
+    createCustomJavascriptPanel: function createCustomJavascriptPanel(document, service) {
+  function node(tag, text, attributes = {}) {
+    const element = document.createElement(tag);
+    if (text) element.textContent = text;
+    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+    return element;
+  }
+  const section = node('div', '', { class: 'custom-javascript', id: 'ytms-custom-js-heading', tabindex: '-1' });
+  const warning = node('div', '', { class: 'custom-js-warning', id: 'ytms-custom-js-warning' });
+  warning.append(node('strong', 'Run only code you understand and trust.'),
+    node('p', 'Malicious code can read page data, act through your signed-in YouTube session, send information to other sites, alter settings or playback, and freeze the tab. A warning cannot make arbitrary code safe. The Suite cannot stop a long-running loop.'),
+    node('p', 'If code prevents the page opening, disable this userscript in Tampermonkey or open https://www.youtube.com/?ytms-custom-js=off to skip it for that load. Then open these settings and disable the saved code.'));
+  const note = node('div', '', { class: 'section-note custom-js-load-note' });
+  note.append(
+    node('p', 'Saved code runs once after the page DOM is ready on each full YouTube page load. YouTube’s internal navigation does not run it again. Saves take effect on the next load.'),
+    node('p', 'The Suite saves code in this browser profile, separately from its settings and backups.'));
+  const enabled = node('input', '', { id: 'ytms-custom-js-enabled', type: 'checkbox', role: 'switch', class: 'switch' });
+  const enableLabel = node('label', 'Run saved JavaScript on page load', { for: enabled.id });
+  const row = node('div', '', { class: 'row' }); row.append(enableLabel, enabled);
+  const codeLabel = node('label', 'JavaScript code', { for: 'ytms-custom-js-code' });
+  const codeHelp = node('p', 'Use regular JavaScript. Return a promise from async work to report failures here. Displayed code is readable by page scripts and extensions with page access. Code can conflict with other scripts or extensions.', { id: 'ytms-custom-js-help', class: 'section-note' });
+  const code = node('textarea', '', { id: 'ytms-custom-js-code', maxlength: String(service.maxLength), rows: '14',
+    spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', 'aria-describedby': warning.id + ' ' + codeHelp.id });
+  const ack = node('input', '', { id: 'ytms-custom-js-acknowledge', type: 'checkbox' });
+  const ackLabel = node('label', '', { class: 'custom-js-acknowledgement' });
+  ackLabel.append(ack, document.createTextNode('I understand this code can access page data and affect my account, playback and browser performance.'));
+  const save = node('button', 'Save JavaScript', { id: 'ytms-custom-js-save', type: 'button', class: 'text-button primary' });
+  const discard = node('button', 'Reload saved code', { id: 'ytms-custom-js-discard', type: 'button', class: 'text-button' });
+  const actions = node('div', '', { class: 'custom-js-actions' }); actions.append(discard, save);
+  const message = node('p', '', { id: 'ytms-custom-js-status', role: 'status', class: 'section-note' });
+  section.append(warning, note, row, codeLabel, codeHelp, code, ackLabel, actions, message);
+  let baseline = null, draft = { enabled: false, code: '' }, acknowledged = false, available = false, saving = false, generation = 0;
+  let sessionOpen = false, visible = false, loaded = false, unsubscribe = null;
+  const statuses = { ran: 'Saved code ran on this load.', failed: 'Custom JavaScript failed on this load. Review or disable it.',
+    skipped: 'Custom JavaScript was skipped on this load.', unavailable: 'Saved JavaScript was unavailable on this load.',
+    scheduled: 'Custom JavaScript is scheduled for this load.', disabled: 'Custom JavaScript was disabled when this page loaded.' };
+  function isDirty() {
+    return available && (draft.enabled !== baseline.value.enabled || draft.code !== baseline.value.code);
+  }
+  function syncEditor() {
+    const displayed = visible && loaded ? draft.code : '';
+    if (code.value !== displayed) code.value = displayed;
+    enabled.checked = visible && draft.enabled;
+    ack.checked = visible && acknowledged;
+  }
+  function render() {
+    save.disabled = !visible || saving || !isDirty() || draft.enabled && (!acknowledged || !draft.code.trim());
+    ackLabel.hidden = !visible || !draft.enabled;
+    discard.disabled = !visible || saving;
+    code.disabled = enabled.disabled = !visible || saving || !available;
+    ack.disabled = !visible || saving;
+  }
+  function loadSaved() {
+    generation++;
+    baseline = service.read(); available = baseline.ok;
+    draft = available ? { ...baseline.value } : { enabled: false, code: '' };
+    acknowledged = false; loaded = true;
+    syncEditor();
+    message.textContent = available ? statuses[service.status] : baseline.error;
+    render();
+  }
+  function close() {
+    generation++;
+    sessionOpen = visible = loaded = available = acknowledged = false;
+    unsubscribe?.(); unsubscribe = null;
+    baseline = null; draft = { enabled: false, code: '' };
+    syncEditor(); message.textContent = ''; render();
+  }
+  function open() { close(); sessionOpen = true; }
+  function selectTab(id) {
+    unsubscribe?.(); unsubscribe = null;
+    visible = sessionOpen && id === 'javascript';
+    if (!visible) { syncEditor(); render(); return; }
+    if (!loaded) loadSaved();
+    else {
+      syncEditor(); render();
+      if (available && !saving && !isDirty()) message.textContent = statuses[service.status];
+    }
+    unsubscribe = service.subscribe(() => {
+      if (!saving && !isDirty() && available) message.textContent = statuses[service.status];
+    });
+  }
+  for (const input of [code, enabled]) input.addEventListener(input === code ? 'input' : 'change', event => {
+    if (!event.isTrusted || !visible || saving || !available) return;
+    if (input === code) draft = { ...draft, code: code.value };
+    else draft = { ...draft, enabled: enabled.checked };
+    acknowledged = false; syncEditor();
+    message.textContent = 'Unsaved JavaScript draft.'; render();
+  });
+  ack.addEventListener('change', event => {
+    if (!event.isTrusted || !visible || saving || !available) return;
+    const matches = code.value === draft.code && enabled.checked === draft.enabled;
+    acknowledged = matches && ack.checked;
+    syncEditor(); render();
+    if (!matches) message.textContent = 'The editor changed outside a trusted edit. Review the restored draft and acknowledge again.';
+  });
+  save.addEventListener('click', async event => {
+    if (!event.isTrusted || !visible || saving || !available || save.disabled ||
+        code.value !== draft.code || enabled.checked !== draft.enabled || (draft.enabled && (!acknowledged || !ack.checked))) return;
+    const request = generation;
+    saving = true; render();
+    let result;
+    try { result = await service.save({ ...draft }, baseline.raw, acknowledged); }
+    catch { result = { ok: false, error: 'JavaScript could not be saved. Keep your draft and try again.' }; }
+    finally { saving = false; render(); }
+    if (request !== generation) {
+      loaded = false;
+      if (visible) loadSaved();
+      return;
+    }
+    if (!result.ok) { message.textContent = result.error; return; }
+    baseline = result; acknowledged = false; syncEditor(); render();
+    message.textContent = draft.enabled ? 'JavaScript saved and enabled for the next full page load.' : 'JavaScript saved and disabled for future loads. Reload when ready. Changes already made to saved data or your account may persist.';
+  });
+  discard.addEventListener('click', event => { if (event.isTrusted && visible && !saving) loadSaved(); });
+  for (const type of ['input', 'change']) section.addEventListener(type, event => event.stopPropagation());
+  render();
+  return Object.freeze({ element: section, open, close, selectTab,
+    hasDraft: () => sessionOpen && isDirty(), isSaving: () => saving });
+},
   };
+  suite.customJavascript = (function createCustomJavascript({ document, window, getValue, setValue, write = callback => callback() }) {
+  const key = 'yt-master-suite.custom-javascript.v1';
+  const maxLength = 65536;
+  const empty = () => ({ enabled: false, code: '' });
+  const CompileFunction = window.Function, PageURL = window.URL;
+  const resolveResult = Promise.resolve.bind(Promise);
+  const subscribers = new Set();
+  let status = 'disabled', started = false, timer = null;
+  function setStatus(next) {
+    if (next === status) return;
+    status = next;
+    for (const callback of subscribers) {
+      try { callback(status); } catch { /* A settings view cannot break execution tracking. */ }
+    }
+  }
+  function recoveryRequested() {
+    try { return new PageURL(window.location.href).searchParams.getAll('ytms-custom-js').includes('off'); }
+    catch { return true; }
+  }
+  function read() {
+    try {
+      const raw = getValue(key, null);
+      if (raw === null) return { ok: true, raw, value: empty() };
+      if (typeof raw !== 'string' || raw.length > 524288) throw new Error();
+      const value = JSON.parse(raw);
+      if (!value || Array.isArray(value) || Object.keys(value).length !== 3 || value.version !== 1 ||
+          typeof value.enabled !== 'boolean' || typeof value.code !== 'string' || value.code.length > maxLength) throw new Error();
+      return { ok: true, raw, value: { enabled: value.enabled, code: value.code } };
+    } catch { return { ok: false, error: 'Saved JavaScript is unavailable or incompatible. It has been left unchanged.' }; }
+  }
+  const initial = read();
+  const skipped = recoveryRequested();
+  function compile(code) {
+    // A global function cannot capture the Suite's lexical scope. User code
+    // still has page access and must be treated as fully trusted code.
+    return new CompileFunction('"use strict";\n' + code);
+  }
+  async function save(value, expectedRaw, acknowledged) {
+    if (!value || typeof value.enabled !== 'boolean' || typeof value.code !== 'string' || value.code.length > maxLength) {
+      return { ok: false, error: 'Enter JavaScript no longer than 65,536 characters.' };
+    }
+    const checked = { enabled: value.enabled, code: value.code };
+    if (checked.enabled) {
+      if (!checked.code.trim()) return { ok: false, error: 'Enter JavaScript before enabling it.' };
+      if (!acknowledged) return { ok: false, error: 'Acknowledge the risks before enabling this code.' };
+      try { compile(checked.code); }
+      catch { return { ok: false, error: 'JavaScript could not be compiled. Check its syntax and whether this page allows dynamic scripts.' }; }
+    }
+    return write(() => {
+      let desired;
+      try {
+        const current = read();
+        if (!current.ok) return current;
+        if (current.raw !== expectedRaw) return { ok: false, conflict: true, error: 'Saved JavaScript changed in another tab. Copy any edits you want to keep, then choose Reload saved code.' };
+        desired = JSON.stringify({ version: 1, ...checked });
+        setValue(key, desired);
+        if (getValue(key, null) !== desired) throw new Error();
+        if (status === 'scheduled' && desired !== initial.raw) stop();
+        return { ok: true, raw: desired, value: checked };
+      } catch {
+        try { if (desired !== undefined && getValue(key, null) === desired) setValue(key, expectedRaw); }
+        catch { /* Retain the explicit save failure if protected storage is unavailable. */ }
+        return { ok: false, error: 'JavaScript could not be saved. Keep your draft and try again.' };
+      }
+    });
+  }
+  function run() {
+    timer = null;
+    if (status !== 'scheduled') return;
+    if (skipped || recoveryRequested()) { setStatus('skipped'); return; }
+    const current = read();
+    if (!current.ok) { setStatus('unavailable'); return; }
+    if (current.raw !== initial.raw) { setStatus('skipped'); return; }
+    setStatus('ran');
+    try {
+      const result = compile(initial.value.code).call(window);
+      resolveResult(result).catch(() => { setStatus('failed'); });
+    } catch { setStatus('failed'); }
+  }
+  function ready() {
+    if (status !== 'scheduled' || document.readyState === 'loading' || timer !== null) return;
+    document.removeEventListener('DOMContentLoaded', ready);
+    timer = window.setTimeout(run, 0);
+  }
+  function stop() {
+    document.removeEventListener('DOMContentLoaded', ready);
+    if (timer !== null) window.clearTimeout(timer);
+    timer = null;
+    if (status === 'scheduled') setStatus('skipped');
+  }
+  function start() {
+    if (started) return;
+    started = true;
+    if (!initial.ok) { setStatus('unavailable'); return; }
+    if (skipped) { setStatus('skipped'); return; }
+    if (!initial.value.enabled || !initial.value.code.trim()) return;
+    setStatus('scheduled');
+    window.addEventListener('pagehide', stop, { once: true });
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready);
+    else ready();
+  }
+  return Object.freeze({ key, maxLength, read, save, start,
+    subscribe(callback) {
+      if (typeof callback !== 'function') throw new TypeError('Expected a status callback.');
+      subscribers.add(callback); return () => subscribers.delete(callback);
+    },
+    get status() { return status; } });
+})({ document, window,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    write: createSettingsWriteGuard({
+      key: 'yt-master-suite.custom-javascript-write.v1', locks: navigator.locks,
+      getCoordinationStorage: () => window.localStorage, getValue: storageApis.getValue, setValue: storageApis.setValue,
+      getMainRecord: () => storageApis.getValue('yt-master-suite.custom-javascript.v1', null),
+      newRevision: () => window.crypto.randomUUID(),
+    }),
+  });
+  const writeMainSettings = createSettingsWriteGuard({
+    locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.settings.key), newRevision: () => window.crypto.randomUUID(),
+  });
+  suite.writeCorner = createSettingsWriteGuard({
+    key: 'yt-master-suite.corner-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.settings.cornerKey), newRevision: () => window.crypto.randomUUID(),
+  });
+  // Every main save/restore also writes the corner. Share its lock with the
+  // live player control, including when a tab's protected GM cache is delayed.
+  suite.writeSettings = (write, coordinate) => writeMainSettings(write,
+    callback => suite.writeCorner(callback, coordinate));
+  suite.writeChannelFilters = createSettingsWriteGuard({
+    key: 'yt-master-suite.channel-filters-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.channelAge.key), newRevision: () => window.crypto.randomUUID(),
+  });
   suite.channelLookup = (function createChannelLookup({ fetch, origin = 'https://www.youtube.com', now = () => Date.now(), timeoutMs = 12000, maximumBytes = 4 * 1024 * 1024 } = {}) {
   const canonicalOrigin = 'https://www.youtube.com';
   const idPattern = /^UC[A-Za-z0-9_-]{22}$/;
@@ -6074,7 +6640,7 @@
   const markerAttribute = 'data-ytms-playhead-marker';
   const markerClass = 'ytms-playhead-marker';
   const styleId = 'ytms-playhead-marker-style';
-  const selector = '[id="movie_player"], .ytp-scrubber-container, .ytp-scrubber-button';
+  const selector = '[id="movie_player"], video, .ytp-scrubber-container, .ytp-scrubber-button';
   let started = false, disposed = false, navigationPending = false, pageSuspended = false, frame = 0;
   let current = null, record = null, style = null, unrenderableData = null;
   let discoveryTimer = 0, discoveryExpired = false;
@@ -6246,8 +6812,11 @@
   }
   function visible(node) {
     if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
-    const computed = window.getComputedStyle(node);
-    return computed.display !== 'none' && computed.visibility !== 'hidden' && computed.visibility !== 'collapse';
+    for (let current = node; current; current = current.parentElement) {
+      const computed = window.getComputedStyle(current);
+      if (computed.display === 'none' || (current === node && ['hidden','collapse'].includes(computed.visibility)) || Number(computed.opacity) === 0) return false;
+    }
+    return true;
   }
   function clearMarker() {
     if (!record) return;
@@ -6284,15 +6853,24 @@
   function disconnectObservers() {
     treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect(); stopDiscovery();
   }
-  function observePlayers(candidates) {
+  function observePlayers(candidates, containers) {
     treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect();
     const observed = new Set();
+    const attributes = { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert'] };
     for (const candidate of candidates.slice(0, 8)) {
       treeObserver.observe(candidate, { childList: true, subtree: true });
       for (let ancestor = candidate; ancestor; ancestor = ancestor.parentElement) {
         if (observed.has(ancestor)) continue;
         structureObserver.observe(ancestor, { childList: true });
-        attributeObserver.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
+        attributeObserver.observe(ancestor, attributes);
+        observed.add(ancestor);
+      }
+    }
+    for (const container of containers) {
+      for (let ancestor = container; ancestor && !observed.has(ancestor); ancestor = ancestor.parentElement) {
+        // The scrubber's own inline styles move on every playback tick.
+        attributeObserver.observe(ancestor, ancestor === container
+          ? { ...attributes, attributeFilter: ['class', 'hidden', 'aria-hidden', 'inert'] } : attributes);
         observed.add(ancestor);
       }
     }
@@ -6314,11 +6892,12 @@
     if (!started || disposed || pageSuspended || navigationPending || document.hidden || !playbackPage() ||
         !current || unrenderableData === current.dataUrl) { disconnectObservers(); clearMarker(); return; }
     const candidates = [...document.querySelectorAll('[id="movie_player"]')];
-    observePlayers(candidates);
     const players = candidates.filter(player => visible(player) && !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer'));
+    const scrubbers = players.length === 1 ? [...players[0].querySelectorAll('.ytp-scrubber-container')] : [];
+    observePlayers(candidates, scrubbers);
     if (players.length !== 1) { clearMarker(); return; }
     const player = players[0];
-    const containers = [...player.querySelectorAll('.ytp-scrubber-container')].filter(visible);
+    const containers = scrubbers.filter(visible);
     if (player.matches('.ad-showing, .ad-interrupting') || !player.querySelector('video') || containers.length !== 1) { clearMarker(); return; }
     const container = containers[0], buttons = container.querySelectorAll(':scope > .ytp-scrubber-button');
     if (buttons.length !== 1 || !container.offsetWidth || !container.offsetHeight ||
@@ -6655,6 +7234,18 @@
     defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
     fetch: (...args) => window.fetch(...args),
   });
+  suite.writeMarker = createSettingsWriteGuard({
+    key: 'yt-master-suite.marker-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.playheadMarker.key), newRevision: () => window.crypto.randomUUID(),
+  });
+  suite.writeUpdateSource = createSettingsWriteGuard({
+    key: 'yt-master-suite.update-source-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.updates.key), newRevision: () => window.crypto.randomUUID(),
+  });
 
   let nativeQueueLayoutStarted = false;
   suite.startNativeQueueLayout = () => {
@@ -6674,7 +7265,8 @@
   let disposed = false, frame = 0, host = null, panel = null, gesture = null, released = false;
   let nativeSignature = '', resizeTargets = new Set(), sizes = null, style = null;
   let visibilityObserver = null, visibilityAncestors = [];
-  let suspended = document.hidden, settleTimer = 0, settling = '', settled = '';
+  let visibilitySignatures = new WeakMap();
+  let suspended = document.hidden, pageSuspended = false, settleTimer = 0, settling = '', settled = '';
   let clickGuard = null, clickTimer = 0;
   let measurements = null;
   function measure(node, property) {
@@ -6718,10 +7310,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       .map(name => node.style.getPropertyValue(name)).join('|') : '';
   }
   function visible(node) {
-    if (!node?.isConnected || node.hidden) return false;
+    if (!node?.isConnected) return false;
     const box = measure(node,'rect'), css = measure(node,'css');
-    return box.width > 0 && box.height > 0 && css.display !== 'none' &&
-      css.visibility === 'visible' && Number(css.opacity) > 0;
+    if (!(box.width > 0 && box.height > 0) || css.visibility !== 'visible') return false;
+    for (let current = node; current; current = current.parentElement) {
+      const currentCss = measure(current,'css');
+      if (current.hidden || current.hasAttribute('inert') || current.getAttribute('aria-hidden') === 'true' ||
+          currentCss.display === 'none' || Number(currentCss.opacity) === 0) return false;
+    }
+    return true;
   }
   function animating(node) {
     const transform = measure(node,'css').transform;
@@ -6747,29 +7344,49 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     for (const node of next) if (!resizeTargets.has(node)) sizes.observe(node);
     resizeTargets = next;
   }
-  function observeHiddenAncestors(hidden) {
-    const next = [];
-    if (hidden) for (let node = host?.parentElement; node; node = node.parentElement) next.push(node);
+  function visibilitySignature(node) {
+    const css = measure(node, 'css');
+    return [node.hidden, node.hasAttribute('inert'), node.getAttribute('aria-hidden'), css.display, css.visibility, css.opacity, css.transform].join('|');
+  }
+  function observeHostVisibility(hosts) {
+    const candidates = new Set();
+    for (const candidate of hosts) for (let node = candidate; node; node = node.parentElement) candidates.add(node);
+    const next = [...candidates];
     if (next.length === visibilityAncestors.length && next.every((node,index) => node === visibilityAncestors[index])) return;
     visibilityObserver?.disconnect();
     visibilityAncestors = next;
+    visibilitySignatures = new WeakMap();
     if (!next.length) return;
     // Keep these non-subtree registrations separate from the shared broker:
     // merging ancestor attributes with global child discovery would capture
     // unrelated descendant style changes throughout the page.
-    visibilityObserver ||= new window.MutationObserver(schedule);
-    for (const node of next) visibilityObserver.observe(node,{ attributes:true,
-      attributeFilter:['class','style','hidden','aria-hidden'] });
+    visibilityObserver ||= new window.MutationObserver(() => {
+      let changed = false;
+      // An ancestor selector or inherited custom property can change a host
+      // without changing the ancestor's own paint. Compare this scoped chain,
+      // not only the attribute target; unrelated variables still schedule no fit.
+      for (const node of visibilityAncestors) {
+        const signature = visibilitySignature(node);
+        if (signature !== visibilitySignatures.get(node)) changed = true;
+        visibilitySignatures.set(node, signature);
+      }
+      if (changed) schedule();
+    });
+    for (const node of next) {
+      visibilitySignatures.set(node, visibilitySignature(node));
+      visibilityObserver.observe(node,{ attributes:true,
+        attributeFilter:['class','style','hidden','aria-hidden','inert'] });
+    }
   }
   function adopt(next) {
     if (host === next) return;
-    clearOwned(); clearSettlement(); clearClickGuard(); details.disconnect(); observeSizes([]); observeHiddenAncestors(false);
+    clearOwned(); clearSettlement(); clearClickGuard(); details.disconnect(); observeSizes([]); observeHostVisibility([]);
     host?.removeEventListener('mousedown', startMain);
     host?.removeEventListener('touchstart', startMain);
     host = next; panel = null; gesture = null; released = false;
     nativeSignature = signature(host);
     if (host) details.observe(host, { subtree: true, attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'collapsed', 'loading', 'is-loading', 'aria-expanded'] });
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert', 'collapsed', 'loading', 'is-loading', 'aria-expanded'] });
     host?.addEventListener('mousedown', startMain, { passive: true });
     host?.addEventListener('touchstart', startMain, { passive: true });
   }
@@ -6777,25 +7394,33 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     frame = 0;
     if (disposed || suspended) return;
     try {
+      measurements = new WeakMap();
       const hosts = [...document.querySelectorAll(hostSelector)];
       const shown = hosts.filter(visible);
       adopt(shown.length === 1 ? shown[0] : hosts.length === 1 ? hosts[0] : null);
-      if (!host) return;
       // Adoption can release a previous owner's geometry. Reuse measurements
       // only within this read phase, never across frames, writes or gestures.
       measurements = new WeakMap();
+      observeHostVisibility(hosts);
+      if (!host) { observeSizes(hosts); return; }
       nativeSignature = signature(host);
       // A stylesheet or an ancestor can reveal this host without changing any
       // of its own attributes. Keep one size observation until it is visible.
-      if (!visible(host)) { release(); observeSizes([host]); observeHiddenAncestors(true); return; }
-      observeHiddenAncestors(false);
+      if (!visible(host)) { release(); observeSizes(hosts); return; }
       if (gesture?.dragging || animating(host)) { release(); return; }
       released = false;
       const candidates = [...host.querySelectorAll(panelSelector)]
         .filter(node => node.closest(hostSelector) === host && visible(node));
       const nextPanel = candidates.length === 1 ? candidates[0] : null;
-      if (panel !== nextPanel) { clearOwned(); panel = nextPanel; }
-      const basicTargets = [host, panel];
+      if (panel !== nextPanel) {
+        clearOwned(); panel = nextPanel;
+        // Releasing the old fit moves bottom-anchored panels. Discard the
+        // candidate geometry measured before that write, even in this frame.
+        measurements = new WeakMap();
+      }
+      // Retained zero-size hosts can become visible without an attribute on
+      // the selected host. Keep their size in the existing observation set.
+      const basicTargets = [...hosts, panel];
       if (!panel || panel.matches('[collapsed], [loading], [is-loading]') ||
           host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]')) {
         release(); observeSizes(basicTargets); return;
@@ -6859,8 +7484,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const node = record.target;
       if (node === host) return record.attributeName !== 'style' || signature(host) !== nativeSignature;
       if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button')) return true;
-      if (node.closest?.('#movie_player') || !panel?.contains(node)) return false;
-      return node === panel || node.matches?.('.playlist-items, .header, #container, ytd-playlist-panel-video-renderer');
+      if (node.closest?.('#movie_player')) return false;
+      if (node.matches?.('.ytdMiniplayerComponentContent')) return true;
+      // A hidden panel releases ownership. Observe its native structure too so
+      // an attribute-only reveal can select it again without a resize/event.
+      const targetPanel = node.closest?.(panelSelector);
+      if (!targetPanel || targetPanel.closest(hostSelector) !== host) return false;
+      return node === targetPanel || node.matches?.('.playlist-items, .header, #container, ytd-playlist-panel-video-renderer');
     })) schedule();
   });
   const discovery = new MutationObserver(records => {
@@ -6941,11 +7571,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     schedule();
   }
   function lifecycle(event) {
-    suspended = event.type === 'pagehide' || document.hidden;
+    if (event.type === 'pagehide') pageSuspended = true;
+    else if (event.type === 'pageshow') pageSuspended = false;
+    suspended = pageSuspended || document.hidden;
     if (suspended) {
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0; gesture = null; released = false;
-      clearSettlement(); clearClickGuard(); release(); observeSizes([]); observeHiddenAncestors(false);
+      clearSettlement(); clearClickGuard(); release(); observeSizes([]); observeHostVisibility([]);
     } else schedule();
   }
   function animation(event) { if (event.target === host) schedule(); }
@@ -6982,7 +7614,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   suite.startFeatureControls = () => {
     if (featureControlsStarted) return;
     featureControlsStarted = true;
-    const options = { document, window, preferences: suite.settings.initial, classifyFilm: suite.classifyFilm,
+    const options = { document, window, preferences: suite.settings.initial, menuLayout: suite.menuLayout, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
     for (const install of [function installPlayerControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver, reportError = () => {} }) {
@@ -7032,6 +7664,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   (document.head || document.documentElement).appendChild(style);
   let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, observing = false, snapshotPending = false, captureGeneration = 0, frame = 0, statusTimer = 0, status = null, owner = null;
   const buttons = new Set(), attempts = new WeakMap(), downloads = new Map();
+  let manualIdentityGeneration = 0;
+  let nativePreferenceEpoch = 0;
   let tooltip = null, tooltipButton = null;
   const visible = el => {
     if (!el?.isConnected || el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
@@ -7057,18 +7691,56 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     } catch { /* A changing player can expose its identity on a later native signal. */ }
     return '';
   }
-  function attempt(player, name, callback) {
+  function attemptRecord(player, manual = false) {
     const id = identity(player), video = player.querySelector('video');
-    if (!id || !video) return;
+    if (!video || !id && !manual) return null;
     let record = attempts.get(player);
-    if (!record || record.id !== id || record.video !== video) {
-      record = { id, video, done: new Set(), counts: new Map() }; attempts.set(player, record);
+    const route = window.location.pathname + window.location.search;
+    const source = video.currentSrc || video.src || '';
+    // A visible native menu can be usable before getVideoData settles. Keep its
+    // manual intent only for this exact media node, source and navigation epoch,
+    // then bind it once to the first confirmed identity.
+    if (record && (!id || !record.id) && record.video === video &&
+        record.route === route && record.source === source &&
+        record.generation === manualIdentityGeneration) {
+      if (!record.id && id) record.id = id;
+      return record;
     }
+    if (!record || !record.id || record.id !== id || record.video !== video) {
+      record = { id, video, done: new Set(), counts: new Map(), epochs: new Map(), reported: new Set(), route, source, generation: manualIdentityGeneration }; attempts.set(player, record);
+    }
+    return record;
+  }
+  function attempt(player, name, callback) {
+    const record = attemptRecord(player);
+    if (!record) return;
     const count = record.counts.get(name) || 0;
-    if (record.done.has(name) || count >= 8) return;
+    if (record.done.has(name) || count >= 8 || record.epochs.get(name) === nativePreferenceEpoch) return;
+    record.epochs.set(name, nativePreferenceEpoch);
     record.counts.set(name, count + 1);
     try { if (callback()) record.done.add(name); }
-    catch (error) { record.done.add(name); reportError(name, error); }
+    catch (error) {
+      // Transient native readiness errors may recover on a later native signal.
+      // Keep the same bounded budget, and report at most once for this video.
+      if (!record.reported.has(name)) { record.reported.add(name); reportError(name, error); }
+    }
+  }
+  function manualNativePreference(event) {
+    if (disposed || suspended || document.hidden || !event.isTrusted || event.defaultPrevented ||
+        event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+        event.type === 'keydown' && (event.repeat || event.isComposing || event.keyCode === 229 || !['Enter', ' '].includes(event.key))) return;
+    const settings = event.target?.closest?.('.ytp-settings-button,.ytp-settings-menu');
+    const autoplay = event.target?.closest?.('.ytp-autonav-toggle-button');
+    if ((!settings || !p.originalAudio && !p.disableStableVolume) && (!autoplay || !p.disableAutoplay)) return;
+    const player = selectedPlayer();
+    if (!player || (settings || autoplay).closest('#movie_player') !== player) return;
+    const record = attemptRecord(player, true);
+    if (!record) return;
+    // Native menu labels/contracts vary. Opening settings is conservative manual
+    // intent: later metadata must not override the choice the user is making.
+    if (settings && p.originalAudio) record.done.add('original audio');
+    if (settings && p.disableStableVolume) record.done.add('stable volume');
+    if (autoplay && p.disableAutoplay) record.done.add('autoplay');
   }
   function applyNativePreferences(player) {
     if (p.originalAudio) attempt(player, 'original audio', () => {
@@ -7086,22 +7758,24 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       const current = player.getAudioTrack(), currentId = current?.getLanguageInfo?.()?.getId?.();
       const originalId = originals[0].getLanguageInfo()?.getId?.();
       const sameId = typeof currentId === 'string' && currentId.length > 0 && currentId === originalId;
-      if (current !== originals[0] && !sameId) player.setAudioTrack(originals[0]);
-      return true;
+      if (current === originals[0] || sameId) return true;
+      player.setAudioTrack(originals[0]);
+      const selected = player.getAudioTrack(), selectedId = selected?.getLanguageInfo?.()?.getId?.();
+      return selected === originals[0] || typeof originalId === 'string' && originalId.length > 0 && selectedId === originalId;
     });
     if (p.disableAutoplay) attempt(player, 'autoplay', () => {
       const toggle = player.querySelector('.ytp-autonav-toggle-button[aria-checked]');
       const checked = toggle?.getAttribute('aria-checked');
       if (!['true', 'false'].includes(checked) || typeof player.setAutonav !== 'function') return false;
       if (checked === 'true') player.setAutonav(false, true);
-      return true;
+      return toggle.getAttribute('aria-checked') === 'false';
     });
     if (p.disableStableVolume) attempt(player, 'stable volume', () => {
       if (typeof player.getDrcUserPreference !== 'function' || typeof player.setDrcUserPreference !== 'function') return false;
       const current = player.getDrcUserPreference();
       if (current !== 0 && current !== 1) return false;
       if (current === 1) player.setDrcUserPreference(0);
-      return true;
+      return current === 0 || player.getDrcUserPreference() === 0;
     });
   }
   function message(text) {
@@ -7231,10 +7905,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (download(new window.Blob([text + '\n'], { type: 'text/plain;charset=utf-8' }), 'youtube-transcript.txt')) message('Loaded transcript saved.');
   }
   function actionButton(player, id, label, path, handler, competingSelector) {
-    const controls = player.querySelector('.ytp-right-controls');
+    const rows = [...player.querySelectorAll('.ytp-right-controls')].filter(row =>
+      row.getClientRects().length > 0 && !row.closest('[hidden], [inert], [aria-hidden="true"]'));
+    // Retain a sole toolbar during native autohide, but prefer a rendered row
+    // over hidden retained controls when YouTube restamps the player.
+    const controls = rows.find(visible) || (rows.length === 1 ? rows[0] : null);
     if (!controls) return;
     let button = document.getElementById(id);
-    if (player.querySelector(competingSelector)) {
+    const competing = [...player.querySelectorAll(competingSelector)].some(candidate => visible(candidate) ||
+      (player.classList.contains('ytp-autohide') && controls.contains(candidate) &&
+        candidate.getClientRects().length > 0 && !candidate.closest('[hidden], [inert], [aria-hidden="true"]')));
+    if (competing) {
       if (button && buttons.has(button)) {
         if (tooltipButton === button) hideTooltip();
         button.remove(); buttons.delete(button);
@@ -7281,7 +7962,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(reconcile);
   }
   function numberKey(event) {
-    if (!p.disableNumberKeySeeking || !event.isTrusted || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || !/^[0-9]$/.test(event.key)) return;
+    if (event.isTrusted && event.key === 'Escape') { hideTooltip(); return; }
+    if (disposed || suspended || document.hidden || !p.disableNumberKeySeeking || !event.isTrusted || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || !/^[0-9]$/.test(event.key)) return;
     const target = event.target?.closest ? event.target : event.target?.parentElement;
     if (!target || target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], .ytp-settings-menu, .ytp-popup')) return;
     const player = selectedPlayer();
@@ -7290,6 +7972,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   const relevant = '#movie_player, .html5-video-player, .ytp-right-controls, .ytp-autonav-toggle-button, ytd-transcript-renderer';
   const observer = new MutationObserver(records => {
+    // Retry unconfirmed native preferences only on meaningful readiness signals,
+    // not class/ARIA animation churn or our own export-button insertion.
+    const nativeStructure = '#movie_player,.html5-video-player,.ytp-right-controls,.ytp-autonav-toggle-button,video';
+    if (records.some(record => record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].some(node =>
+      node.nodeType === 1 && (node.matches(nativeStructure) ||
+        node.matches('ytd-app,ytd-watch-flexy,ytd-player,#player-container') && node.querySelector(nativeStructure))))) nativePreferenceEpoch++;
     if (records.some(record => record.type === 'attributes'
       ? record.target.matches?.('.ytp-autonav-toggle-button, #movie_player, .ytp-chrome-bottom, .ytp-chrome-controls, .ytp-right-controls')
       : record.target.matches?.('.ytp-right-controls') || [...record.addedNodes, ...record.removedNodes].some(node =>
@@ -7308,23 +7996,38 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (disposed || pageSuspended || navigationPending || document.hidden) return;
     suspended = false; startObservation(); schedule();
   }
-  function navigateStart() { navigationPending = true; suspend(); }
-  function navigateFinish() { navigationPending = false; resume(); }
+  function navigateStart() { manualIdentityGeneration++; navigationPending = true; suspend(); }
+  function navigateFinish() { navigationPending = false; nativePreferenceEpoch++; resume(); }
   function pageHide() { pageSuspended = true; suspend(); }
   function pageShow() {
     const restoring = pageSuspended; pageSuspended = false;
-    if (restoring) navigationPending = false;
+    if (restoring) { navigationPending = false; nativePreferenceEpoch++; }
     resume();
   }
-  function visibility() { if (document.hidden) suspend(); else resume(); }
-  function media(event) { if (event.target?.localName === 'video' && event.target.closest('#movie_player')) schedule(); }
+  function visibility() {
+    if (document.hidden) suspend();
+    else { if (suspended && !pageSuspended && !navigationPending) nativePreferenceEpoch++; resume(); }
+  }
+  function media(event) {
+    if (event.target?.localName !== 'video') return;
+    const player = event.target.closest('#movie_player');
+    if (!player) return;
+    if (event.type === 'emptied' && !attempts.get(player)?.id) attempts.delete(player);
+    nativePreferenceEpoch++;
+    schedule();
+  }
   const listeners = [];
   function listen(target, type, callback) { target.addEventListener(type, callback, true); listeners.push([target, type, callback]); }
   listen(document, 'keydown', numberKey);
+  if (p.originalAudio || p.disableStableVolume || p.disableAutoplay) {
+    listen(document, 'click', manualNativePreference);
+    listen(document, 'keydown', manualNativePreference);
+  }
   for (const type of ['loadedmetadata', 'emptied', 'durationchange']) listen(document, type, media);
   listen(window, 'yt-navigate-start', navigateStart); listen(window, 'pagehide', pageHide);
   listen(window, 'yt-navigate-finish', navigateFinish); listen(window, 'pageshow', pageShow);
-  for (const type of ['yt-page-data-updated', 'resize']) listen(window, type, resume);
+  listen(window, 'yt-page-data-updated', () => { nativePreferenceEpoch++; resume(); });
+  listen(window, 'resize', resume);
   listen(document, 'visibilitychange', visibility);
   startObservation(); schedule();
   return () => {
@@ -7336,9 +8039,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const p = preferences, root = document.documentElement;
   const keys = ['homeRedirect','logoToSubscriptions','homeList','subscriptionsList','hideSubscriptionsHeaders','fullFeedTitles','squareCorners','disableThemedHover','disableVideoPreviews','hideSearchPrompts','hideSearchAI','hideAIChapters','hideCommentGifs','hideAllComments','hideFeedPlaylists','hideFeedVods','hideFeedCollaborations','hideFeedLowViews','hideFeedDubbed','hideHomePosts','hideThumbnailBadges','hidePremiumUpsells','hideOpenApp','hideViewsIcon','viewsSeparateLine','listChannelHeaders','hideSidebarSubscriptions','hideExplore','hideSubscriptionsChannels','restoreSubscriptionsLink','channelDefaultVideos','pauseChannelTrailers','hideChannelBanner','fullWidthChannel','shortsHideMetadata','shortsHideActions','shortsHideRelated','shortsHideMusic','shortsHideRemix'];
   if (!root || (!['free','paid','none'].includes(p.filmVisibility) && !keys.some(key => p[key] === true) && !['dark','light'].includes(p.interfaceTheme) && !/^[2-6]$/.test(p.feedColumns || '') && !/^[3-6]$/.test(p.shortsColumns || '') && !['small','medium','large'].includes(p.searchThumbnailSize))) return () => {};
-  const attr = 'data-ytms-discovery-hidden', reasonAttr = 'data-ytms-discovery-reason';
+  const attr = 'data-ytms-discovery-hidden', uiAttr = 'data-ytms-discovery-ui-hidden', reasonAttr = 'data-ytms-discovery-reason';
   const owned = new Set(), filteredCards = new Set(), pendingCards = new Set(), badgeNodes = new Set(), viewNodes = new Set(), headings = new Set(), restoredNavigation = new Set(), cardHeadings = new WeakMap(), cardDecorations = new WeakMap(), decorationOwners = new WeakMap(), rootOwned = new Map(), logoRecords = new Map(), attemptedRoutes = new Set();
-  const manuallyPlayed = new WeakSet(), pausedTrailers = new WeakSet();
+  const trailerStates = new WeakMap();
   let filmResults = new WeakMap();
   const outerCardSelector = 'ytd-rich-item-renderer,ytd-video-renderer,ytd-grid-video-renderer,ytd-playlist-renderer,ytd-movie-renderer';
   const cardSelector = outerCardSelector+',yt-lockup-view-model';
@@ -7364,20 +8067,27 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const hide = (el, reason, found) => {
     if (!el || el.closest(excluded)) return;
     found.add(el); owned.add(el);
-    if (el.getAttribute(attr) !== '1') el.setAttribute(attr,'1');
+    if (el.getAttribute(uiAttr) !== '1') el.setAttribute(uiAttr,'1');
     if (el.getAttribute(reasonAttr) !== reason) el.setAttribute(reasonAttr,reason);
   };
   const style = document.createElement('style'); style.id = 'ytms-discovery-controls-style';
   const rules = [];
   const add = (enabled, selector, css = 'display:none!important') => { if (enabled) rules.push(`${selector}{${css}}`); };
   add(true, `:root:not([data-yt-master-show-filtered="1"]) [${attr}="1"]`);
+  // Temporary card reveal must not override independent sidebar/AI settings.
+  add(true, `[${uiAttr}="1"]`);
   add(p.hideAllComments, 'ytd-watch-flexy ytd-comments,ytd-watch-grid ytd-comments');
   // Native comment GIFs can be proxied or served as WebP, without a GIF URL.
   // Hide the attachment host so its reserved space disappears as well. CSS
   // covers lazy-loaded replies without observing or scanning every comment.
   add(p.hideCommentGifs, ':is(ytd-comment-view-model,yt-comment-view-model,ytd-comment-renderer) :is(.ytwCommentImageAttachmentViewModelHost,.ytwCommentImageAttachmentViewModelImageContainer,yt-comment-image-view-model)');
   add(p.hideCommentGifs, 'ytd-comments img:is([src*="tenor.com" i],[src*="giphy.com" i],[src$=".gif" i],[src*=".gif?" i],[src*=".gif#" i]):not(:is(#author-thumbnail,yt-avatar-shape,.yt-spec-avatar-shape,#creator-heart,ytd-creator-heart-renderer) *):not(.emoji,.yt-core-attributed-string__image-element)');
-  add(p.hideHomePosts, '[data-ytms-discovery-route="home"] ytd-browse ytd-post-renderer,[data-ytms-discovery-route="home"] ytd-browse ytd-backstage-post-thread-renderer');
+  const outsideExcluded = `:not(${excluded.split(',').map(selector => selector+' *').join(',')})`;
+  const homePost = '[data-ytms-discovery-route="home"] ytd-browse ';
+  add(p.hideHomePosts, ['ytd-post-renderer','ytd-backstage-post-thread-renderer'].map(selector => homePost+selector+outsideExcluded).join(','));
+  // Removing only the inner post leaves its native rich-item grid slot empty.
+  // Keep mixed/ambiguous cards and excluded queues intact; no feed scan is needed.
+  add(p.hideHomePosts, homePost+'ytd-rich-grid-renderer ytd-rich-item-renderer:has(ytd-post-renderer,ytd-backstage-post-thread-renderer):not(:has(ytd-rich-grid-media,ytd-video-renderer,ytd-grid-video-renderer,yt-lockup-view-model))'+outsideExcluded);
   add(p.hideSubscriptionsHeaders, '[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-rich-grid-renderer #header,[data-ytms-discovery-route="subscriptions"] ytd-browse ytd-feed-filter-chip-bar-renderer');
   add(p.hideChannelBanner, '[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #channel-header-container #banner,[data-ytms-discovery-route="channel"] yt-page-header-renderer yt-image-banner-view-model,[data-ytms-discovery-route="channel"] ytd-c4-tabbed-header-renderer #banner');
   add(p.fullWidthChannel, '[data-ytms-discovery-route="channel"] ytd-two-column-browse-results-renderer,[data-ytms-discovery-route="channel"] ytd-browse #primary', 'max-width:none!important;width:100%!important');
@@ -7557,9 +8267,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     }
     for (const node of restoredNavigation) if (!found.has(node)) { if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.delete(node); }
   }
+  function trailerState(video) {
+    const source = video.currentSrc || video.src || '', path = route();
+    let state = trailerStates.get(video);
+    if (!state || state.source !== source || state.path !== path) {
+      state = { source, path, manual: false, paused: false }; trailerStates.set(video,state);
+    }
+    return state;
+  }
   function pauseTrailer(video) {
-    if (!p.pauseChannelTrailers || !isChannel() || !video?.matches?.('video') || !video.closest('ytd-channel-video-player-renderer') || manuallyPlayed.has(video) || pausedTrailers.has(video)) return;
-    if (!video.paused && !video.ended) { pausedTrailers.add(video); video.pause(); }
+    if (disposed || suspended || !p.pauseChannelTrailers || !isChannel() || !video?.matches?.('video') || !video.closest('ytd-channel-video-player-renderer')) return;
+    const state = trailerState(video);
+    if (!state.manual && !state.paused && !video.paused && !video.ended) { state.paused = true; video.pause(); }
   }
   function reconcile() {
     frame = 0; if (disposed || suspended) return;
@@ -7570,7 +8289,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       setRoot('data-ytms-discovery-list', (kind === 'home' && p.homeList || kind === 'subscriptions' && p.subscriptionsList) ? '1' : null);
       const darkReader = document.querySelector('style.darkreader,link.darkreader') || root.hasAttribute('data-darkreader-mode');
       setRoot('data-ytms-discovery-theme', !darkReader && ['dark','light'].includes(p.interfaceTheme) ? p.interfaceTheme : null);
-      const candidates = !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
+      const candidates = !filters ? [] : !eligibleFeed() ? [...filteredCards,...badgeNodes,...viewNodes,...headings] : scanAllCards ? document.querySelectorAll(cardSelector) : pendingCards;
       const cards = new Set([...candidates].map(canonicalCard).filter(Boolean));
       for (const card of cards) {
         clearNestedCardOwnership(card);
@@ -7587,10 +8306,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       if (p.hideSearchAI && kind === 'search') for (const el of document.querySelectorAll('ytd-search yt-ai-search-input-view-model,ytd-search yt-ai-search-result-section-renderer,ytd-search yt-ai-search-ghost-card-view-model')) hide(el,'AI search',found);
       if (p.hideSearchAI && kind === 'search') for (const shelf of document.querySelectorAll('ytd-search ytd-shelf-renderer')) if (/^(?:AI-powered overview|AI overview|AI-generated summary)$/i.test(text(shelf.querySelector('#title')))) hide(shelf,'AI search',found);
       if (p.hideAIChapters) for (const panel of document.querySelectorAll('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-macro-markers-description-chapters"]')) {
-        if ([...panel.querySelectorAll('#header,.ytd-macro-markers-list-renderer')].some(el => /^(?:AI-generated chapters|Chapters generated with AI)$/i.test(text(el)))) { found.add(panel); owned.add(panel); if (panel.getAttribute(attr) !== '1') panel.setAttribute(attr,'1'); }
+        if ([...panel.querySelectorAll('#header,.ytd-macro-markers-list-renderer')].some(el => /^(?:AI-generated chapters|Chapters generated with AI)$/i.test(text(el)))) { found.add(panel); owned.add(panel); if (panel.getAttribute(uiAttr) !== '1') panel.setAttribute(uiAttr,'1'); }
       }
       if (p.hideSidebarSubscriptions) for (const section of document.querySelectorAll('ytd-guide-section-renderer')) if (/^Subscriptions$/i.test(text(section.querySelector('#guide-section-title')))) hide(section,'Subscribed channels',found);
-      for (const el of owned) if (!found.has(el)) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); owned.delete(el); }
+      for (const el of owned) if (!found.has(el)) { el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); owned.delete(el); }
       syncLogos(); syncSubscriptionsLink();
       if (p.homeRedirect && kind === 'home' && document.querySelector('ytd-masthead #avatar-btn') && !hasActivePlayback()) nativeNavigate('subscriptions');
       if (p.channelDefaultVideos && channelBase() && !hasActivePlayback()) nativeNavigate('videos');
@@ -7623,7 +8342,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       if (m.attributeName === 'data-darkreader-mode' && el === root) changed = true;
       if (['dark','light'].includes(p.interfaceTheme) && m.attributeName === 'class' && el.matches('style,link')) changed = true;
       if (p.hideSearchAI && routeKind() === 'search' && el.closest(searchAiSurfaces)) changed = true;
-      const card = canonicalCard(el);
+      const card = filters ? canonicalCard(el) : null;
       if (card) {
         if ((!eligibleFeed() || card.closest(excluded) || !card.closest(feedSurface)) && !filteredCards.has(card) && !cardDecorations.has(card) && !cardHeadings.has(card)) continue;
         const filmChanged = ['free','paid','none'].includes(p.filmVisibility) && affectsFilm(m,el);
@@ -7633,14 +8352,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       }
       if (el.closest('ytd-masthead,ytd-guide-renderer,yt-tab-group-shape,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer')) changed = true;
       for (const node of m.addedNodes) if (node.nodeType === 1) {
-        if (node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
-        for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        if (filters && node.matches(cardSelector)) { const card = canonicalCard(node); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
+        if (filters) for (const child of node.querySelectorAll(cardSelector)) { const card = canonicalCard(child); if (card) { filmResults.delete(card); pendingCards.add(card); } changed = true; }
         if (node.matches('ytd-browse,ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab,ytd-engagement-panel-section-list-renderer,style.darkreader,link.darkreader') || node.querySelector('ytd-guide-renderer,ytd-masthead,yt-tab-shape,tp-yt-paper-tab')) changed = true;
         if (p.hideSearchAI && routeKind() === 'search' && (node.matches(searchAiSurfaces) || node.querySelector(searchAiSurfaces))) changed = true;
       }
       // Native virtualisation can remove cards without adding a replacement.
       // Release detached owned markers in the next batch, without a feed scan.
-      for (const node of m.removedNodes) if (node.nodeType === 1 &&
+      for (const node of m.removedNodes) if (filters && node.nodeType === 1 &&
         (node.matches(cardSelector) || node.querySelector(cardSelector))) changed = true;
       if (!changed && m.removedNodes.length && [...owned].some(node => !node.isConnected)) changed = true;
       if (['dark','light'].includes(p.interfaceTheme) && [...m.removedNodes].some(node => node.nodeType === 1 &&
@@ -7655,7 +8374,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
   function clearAllDecorations() { for (const node of badgeNodes) { node.removeAttribute('data-ytms-discovery-badge-hidden'); decorationOwners.delete(node); } for (const node of viewNodes) { node.removeAttribute('data-ytms-discovery-view-line'); decorationOwners.delete(node); } for (const node of headings) node.remove(); badgeNodes.clear(); viewNodes.clear(); headings.clear(); }
-  const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
+  const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
   const navigateStart = () => { navigationPending = true; start(); };
   const navigateFinish = () => { navigationPending = false; if (!pageSuspended) { suspended = false; schedule(); } };
   const pageHide = () => { pageSuspended = true; start(); };
@@ -7671,15 +8390,16 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     event.preventDefault(); event.stopImmediatePropagation(); native.click();
   });
   if (p.pauseChannelTrailers) {
-    const interaction = event => { if (event.type === 'keydown' && ![' ','Enter','k','K'].includes(event.key)) return; event.target?.closest?.('ytd-channel-video-player-renderer')?.querySelectorAll('video').forEach(video => manuallyPlayed.add(video)); };
+    const interaction = event => { if (disposed || suspended || !event.isTrusted || event.type === 'keydown' && ![' ','Enter','k','K'].includes(event.key)) return; event.target?.closest?.('ytd-channel-video-player-renderer')?.querySelectorAll('video').forEach(video => { trailerState(video).manual = true; }); };
     listen(document,'pointerdown',interaction); listen(document,'keydown',interaction); listen(document,'play',event => pauseTrailer(event.target));
+    listen(document,'emptied',event => { if (event.target?.matches?.('ytd-channel-video-player-renderer video')) trailerStates.delete(event.target); });
   }
   reconcile();
   return () => {
     disposed = true; cancel(); restoreLogos(); style.remove();
     for (const node of restoredNavigation) if (node.getAttribute('data-ytms-subscriptions-restore') === '1') node.removeAttribute('data-ytms-subscriptions-restore'); restoredNavigation.clear();
     for (const [target,type,handler] of listeners) target.removeEventListener(type,handler,true);
-    for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear();
+    for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear();
     clearAllDecorations();
     for (const [name,record] of rootOwned) if (root.getAttribute(name) === record.value) { if (record.previous === null) root.removeAttribute(name); else root.setAttribute(name,record.previous); }
   };
@@ -7769,7 +8489,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (!onWatchRoute() || suspended) marker(document.documentElement, headerAttribute, null);
   }
   const relevant = '#secondary, #secondary-inner, #related, ytd-watch-flexy, ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer';
-  function rendered(element, boundary) {
+  function rendered(element, boundary, requireBox = true) {
     if (!element?.isConnected) return false;
     for (let current = element; current; current = current.parentElement) {
       if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.hasAttribute('collapsed')) return false;
@@ -7777,7 +8497,20 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || css.opacity === '0') return false;
       if (current === boundary) break;
     }
-    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    return requireBox === false || [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  }
+  function renderedRailContent(node, boundary) {
+    if (node.nodeType === 3) {
+      if (!node.textContent.trim() || !rendered(node.parentElement, boundary, false)) return false;
+      const range = document.createRange(); range.selectNode(node);
+      return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    }
+    if (node.nodeType !== 1 || node.tagName === 'STYLE' || node.tagName === 'SCRIPT' ||
+        !rendered(node, boundary, false)) return false;
+    if ([...node.getClientRects()].some(rect => rect.width > 0 && rect.height > 0)) return true;
+    // display:contents and zero-height overflow wrappers can have visible
+    // children without a box of their own. Descend only through such wrappers.
+    return [...node.childNodes].some(child => renderedRailContent(child, node));
   }
   function railHasOtherContent(watch, secondary, related) {
     const surfaces = secondary.querySelectorAll('ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer');
@@ -7789,11 +8522,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     }
     // Unknown native or extension surfaces keep their rail. Do not hide or
     // relocate a new feature merely because its custom-element name changed.
-    for (const child of secondary.children) {
-      const children = child.id === 'secondary-inner' ? [...child.children] : [child];
-      for (const surface of children) {
-        if (surface === related || surface.contains(related) || surface.tagName === 'STYLE' || surface.tagName === 'SCRIPT') continue;
-        if (rendered(surface, watch)) return true;
+    // A native or extension wrapper can contain both #related and unrelated
+    // controls. Check siblings along its ancestor path, rather than treating
+    // the whole shared wrapper as related content. Do not scan inside #related.
+    for (let branch = related; branch && branch !== secondary; branch = branch.parentElement) {
+      for (const surface of branch.parentElement?.childNodes || []) {
+        if (surface === branch) continue;
+        if (renderedRailContent(surface, watch)) return true;
       }
     }
     return false;
@@ -7802,11 +8537,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     frame = 0;
     if (disposed || suspended) return;
     const route = onWatchRoute();
-    const hideHeader = flags.theatreHideHeader && route && [...document.querySelectorAll(theatreHost)].some(watch => rendered(watch, watch));
+    const visibleWatches = route && (flags.theatreHideHeader || flags.relatedBelowPlayer)
+      ? [...document.querySelectorAll('ytd-watch-flexy')].filter(watch => rendered(watch, document.documentElement)) : [];
+    // The masthead is global. A retained or ambiguous watch root cannot decide
+    // its visibility on behalf of the currently displayed page.
+    const hideHeader = flags.theatreHideHeader && visibleWatches.length === 1 && visibleWatches[0].matches(theatreHost);
     marker(document.documentElement, headerAttribute, hideHeader ? '1' : null);
     const active = new Set();
     if (flags.relatedBelowPlayer && route) {
-      for (const watch of document.querySelectorAll('ytd-watch-flexy')) {
+      for (const watch of visibleWatches) {
         const secondary = watch.querySelector('#secondary');
         const related = secondary?.querySelector('#related');
         if (!secondary || !related || !rendered(related, watch) || railHasOtherContent(watch, secondary, related)) continue;
@@ -7833,17 +8572,25 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (mutations.some(mutation => {
       const target = mutation.target?.nodeType === 1 ? mutation.target : mutation.target?.parentElement;
       if (target?.closest('#secondary, #secondary-inner')) return true;
-      if (mutation.type === 'attributes') return target?.matches('ytd-watch-flexy');
+      if (mutation.type === 'attributes') return observedTargets.includes(target);
       return [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === 1 && (node.matches(relevant) || node.querySelector(relevant)));
     })) schedule();
   }) : null;
   function observe() {
     if (!observer) return;
-    const targets = onWatchRoute() ? [document.documentElement, ...document.querySelectorAll('ytd-watch-flexy, ytd-watch-flexy #secondary')] : [];
+    const targets = [];
+    if (onWatchRoute()) {
+      const unique = new Set([document.documentElement]);
+      for (const watch of document.querySelectorAll('ytd-watch-flexy')) {
+        for (let ancestor = watch; ancestor; ancestor = ancestor.parentElement) unique.add(ancestor);
+        for (const secondary of watch.querySelectorAll('#secondary')) unique.add(secondary);
+      }
+      targets.push(...unique);
+    }
     if (targets.length === observedTargets.length && targets.every((target, index) => target === observedTargets[index])) return;
     const registrations = targets.map(target => [target, target === document.documentElement
       ? { childList: true, subtree: true }
-      : { attributes: true, subtree: target.id === 'secondary', attributeFilter: ['hidden', 'collapsed', 'visibility', 'aria-hidden', 'class', 'style', 'theater', 'theatre'] }]);
+      : { attributes: true, characterData: target.id === 'secondary', subtree: target.id === 'secondary', attributeFilter: ['hidden', 'collapsed', 'visibility', 'aria-hidden', 'class', 'style', 'theater', 'theatre'] }]);
     if (typeof observer.replaceRegistrations === 'function') observer.replaceRegistrations(registrations);
     else { observer.disconnect(); for (const [target, options] of registrations) observer.observe(target, options); }
     observedTargets = targets;
@@ -7876,6 +8623,879 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     for (const [type, handler] of listeners) window.removeEventListener(type, handler);
     style.remove();
   };
+}, function installMiniplayerControls({ document, window, preferences = {}, MutationObserver = window.MutationObserver }) {
+  const navigation = preferences.miniplayerNavigation !== false;
+  const style = document.createElement('style');
+  style.id = 'ytms-miniplayer-controls-style';
+  style.textContent = `
+    ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button { position:relative !important; }
+    /* Native control tooltips can retain zero inline width after minimisation.
+       Correct only the hovered/focused central control, never seek previews. */
+    ytd-miniplayer #movie_player:has(.ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)):not(:has(:is(button,[role="button"]):not(.ytp-play-button):hover)) .ytp-tooltip.ytp-bottom:not(.ytp-preview) {
+      width:max-content !important;height:auto !important;max-width:calc(100% - 16px) !important;
+      left:var(--ytms-mini-play-tip-x,50%) !important;right:auto !important;
+      top:var(--ytms-mini-play-tip-y,calc(50% - 30px)) !important;bottom:auto !important;
+      transform:translate(-50%,-100%) !important;
+    }
+    ytd-miniplayer #movie_player:has(.ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)):not(:has(:is(button,[role="button"]):not(.ytp-play-button):hover)) .ytp-tooltip.ytp-bottom:not(.ytp-preview) .ytp-tooltip-text-wrapper {
+      width:max-content !important;height:auto !important;max-width:100% !important;
+    }
+    ytd-miniplayer #movie_player:has(.ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)):not(:has(:is(button,[role="button"]):not(.ytp-play-button):hover)) .ytp-tooltip.ytp-bottom:not(.ytp-preview) .ytp-tooltip-bottom-text {
+      width:max-content !important;height:auto !important;max-width:100% !important;box-sizing:border-box;white-space:nowrap;
+    }
+    [data-ytms-mini-navigation] .ytp-miniplayer-controls { width:min(100%,264px); }
+    [data-ytms-mini-navigation] .ytp-miniplayer-controls :is(.ytp-prev-button,.ytp-next-button) svg,
+    [data-ytms-mini-navigation] [data-ytms-mini-nav-button] { opacity:0; }
+    [data-ytms-mini-navigation]:is(:hover,:focus-within) .ytp-miniplayer-controls :is(.ytp-prev-button,.ytp-next-button) svg,
+    [data-ytms-mini-navigation]:is(:hover,:focus-within) [data-ytms-mini-nav-button] { opacity:1; }
+    [data-ytms-mini-navigation]:is(:hover,:focus-within) [data-ytms-mini-nav-button]:disabled { opacity:.35; }
+    [data-ytms-mini-nav-button] { position:relative;width:32px;height:32px;flex:0 0 32px;border-radius:50%;color:white;padding:0;border:0;background:transparent;cursor:pointer; }
+    [data-ytms-mini-nav-button] svg { width:100%;height:100%;fill:currentColor;pointer-events:none; }
+    [data-ytms-mini-nav-button]:not(:disabled):is(:hover,:focus-visible) { background:var(--yt-sys-color-baseline--overlay-button-secondary,rgba(255,255,255,.1)); }
+    [data-ytms-mini-nav-button]:focus-visible { outline:2px solid white;outline-offset:2px; }
+    ytd-miniplayer #movie_player:is(.ad-showing,.ad-interrupting) [data-ytms-mini-nav-button] { display:none; }
+    /* Use YouTube's tooltip elements so its current theme owns the backing,
+       opacity, typography and keyboard badge, including frosted-glass themes. */
+    #ytms-mini-navigation-tooltip { position:absolute;z-index:1004;pointer-events:none;box-sizing:border-box;width:max-content;max-width:calc(100% - 16px);padding:0;border:0;outline:0;background:transparent;white-space:nowrap; }
+    #ytms-mini-navigation-tooltip .ytp-tooltip-bottom-text { display:flex;align-items:center;width:max-content;max-width:100%;box-sizing:border-box; }
+    #ytms-mini-navigation-tooltip .ytp-tooltip-keyboard-shortcut { display:inline-flex;align-items:center;justify-content:center;border:1px solid #ffffff4d;min-width:11px;border-radius:4px;margin-left:4px;color:#fff;padding:0 2px; }
+  `;
+  if (!navigation) style.textContent += 'ytd-miniplayer .ytp-miniplayer-controls :is(.ytp-prev-button,.ytp-next-button){display:none !important;}';
+  (document.head || document.documentElement).append(style);
+  const anchors = new Map();
+  let observer = null;
+  function restoreAnchors(except=null){
+    for(const [player,values]of anchors)if(player!==except){
+      for(const [name,old]of values)if(player.style.getPropertyValue(name)===old.written){if(old.value)player.style.setProperty(name,old.value,old.priority);else player.style.removeProperty(name);}
+      anchors.delete(player);
+    }
+    if(!navigation && !anchors.size)observer?.disconnect();
+  }
+  function positionPlayTooltip(event) {
+    if(disposed || suspended || navigating || document.hidden){restoreAnchors();return;}
+    const button=event?.target?.closest?.('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button') ||
+      (!event ? document.querySelector('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)') : null);
+    const player=button?.closest('#movie_player');
+    if(!player){if(!event)restoreAnchors();return;}
+    const box=player.getBoundingClientRect(),target=button.getBoundingClientRect();
+    const sx=box.width/player.clientWidth,sy=box.height/player.clientHeight;if(!(sx>0&&sy>0))return;
+    restoreAnchors(player);
+    let saved=anchors.get(player);if(!saved){
+      saved=new Map();anchors.set(player,saved);
+      // With arrows disabled, only observe this hovered/focused player's
+      // geometry while its native tooltip needs an anchor.
+      if(!navigation)observer?.observe(player,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden','aria-hidden','inert']});
+    }
+    for(const [name,value] of [['--ytms-mini-play-tip-x',`${(target.left+target.width/2-box.left)/sx}px`],['--ytms-mini-play-tip-y',`${Math.max(0,(target.top-box.top)/sy-8)}px`]]){
+      if(!saved.has(name))saved.set(name,{value:player.style.getPropertyValue(name),priority:player.style.getPropertyPriority(name),written:null});
+      if(player.style.getPropertyValue(name)!==value)player.style.setProperty(name,value);
+      saved.get(name).written=value;
+    }
+  }
+  function releaseUnusedAnchors(event) {
+    if(!event.target?.closest?.('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button'))return;
+    window.queueMicrotask(()=>{
+      const active=document.querySelector('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)');
+      restoreAnchors(active?.closest('#movie_player') || null);
+    });
+  }
+  const refreshPlayTooltip=()=>positionPlayTooltip();
+  document.addEventListener('pointerover',positionPlayTooltip,true);document.addEventListener('focusin',positionPlayTooltip,true);window.addEventListener('resize',refreshPlayTooltip,true);
+  document.addEventListener('pointerout',releaseUnusedAnchors,true);document.addEventListener('focusout',releaseUnusedAnchors,true);
+  function clearAnchors(){
+    document.removeEventListener('pointerover',positionPlayTooltip,true);document.removeEventListener('focusin',positionPlayTooltip,true);window.removeEventListener('resize',refreshPlayTooltip,true);
+    document.removeEventListener('pointerout',releaseUnusedAnchors,true);document.removeEventListener('focusout',releaseUnusedAnchors,true);
+    restoreAnchors();
+  }
+  let disposed = false, suspended = false, navigating = false, frame = 0, generation = 0;
+  const records = new Map(), hosts = new Set(), visibilityPaths = new Set();
+  let tooltip = null, tooltipButton = null;
+  function hideTooltip() {
+    if (tooltipButton) {
+      const ids=(tooltipButton.getAttribute('aria-describedby') || '').split(/\s+/).filter(id=>id && id!=='ytms-mini-navigation-tooltip');
+      if(ids.length)tooltipButton.setAttribute('aria-describedby',ids.join(' '));else tooltipButton.removeAttribute('aria-describedby');
+    }
+    tooltip?.remove();tooltip=null;tooltipButton=null;
+  }
+  function positionTooltip() {
+    const record=records.get(tooltipButton);
+    if(!tooltip || !record || !visible(tooltipButton)){hideTooltip();return;}
+    const box=record.player.getBoundingClientRect(),target=tooltipButton.getBoundingClientRect();
+    const sx=box.width/record.player.clientWidth,sy=box.height/record.player.clientHeight;
+    if(!(sx>0&&sy>0)){hideTooltip();return;}
+    const left=`${Math.max(8,Math.min((target.left+target.width/2-box.left)/sx-tooltip.offsetWidth/2,record.player.clientWidth-tooltip.offsetWidth-8))}px`;
+    const top=`${Math.max(0,(target.top-box.top)/sy-tooltip.offsetHeight-8)}px`;
+    if(tooltip.style.left!==left)tooltip.style.left=left;
+    if(tooltip.style.top!==top)tooltip.style.top=top;
+  }
+  function showTooltip(button) {
+    hideTooltip();const record=records.get(button);
+    if(disposed || suspended || navigating || !record || !visible(record.player))return;
+    tooltipButton=button;tooltip=document.createElement('div');tooltip.id='ytms-mini-navigation-tooltip';tooltip.className='ytp-tooltip';tooltip.setAttribute('role','tooltip');
+    const wrapper=document.createElement('div');wrapper.className='ytp-tooltip-text-wrapper';
+    const backing=document.createElement('div');backing.className='ytp-tooltip-bottom-text';
+    const label=document.createElement('span');label.className='ytp-tooltip-text';label.textContent=button.getAttribute('aria-label');
+    const key=document.createElement('div');key.className='ytp-tooltip-keyboard-shortcut';key.textContent=button.getAttribute('aria-keyshortcuts');
+    backing.append(label,key);wrapper.append(backing);tooltip.append(wrapper);record.player.append(tooltip);
+    const ids=(button.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);ids.push(tooltip.id);button.setAttribute('aria-describedby',ids.join(' '));
+    positionTooltip();
+  }
+  const selector = 'ytd-miniplayer,#movie_player,.ytp-miniplayer-ui,.ytp-miniplayer-controls';
+  const visible = node => {
+    if (!node?.isConnected || !node.getClientRects().length) return false;
+    const box = node.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0)) return false;
+    for (let parent = node; parent; parent = parent.parentElement) {
+      if (parent.hidden || parent.hasAttribute('inert') || parent.getAttribute('aria-hidden') === 'true') return false;
+      const css = window.getComputedStyle(parent);
+      if (css.display === 'none' || css.visibility !== 'visible' || Number(css.opacity) === 0) return false;
+    }
+    return true;
+  };
+  function clear() {
+    generation++;
+    hideTooltip();
+    restoreAnchors();
+    for (const button of records.keys()) button.remove();
+    records.clear(); for (const host of hosts) host.removeAttribute('data-ytms-mini-navigation'); hosts.clear();
+    visibilityPaths.clear();
+  }
+  function eligibility(player, direction) {
+    try {
+      const request=generation;
+      const candidates = [...document.querySelectorAll('ytd-miniplayer #movie_player')].filter(visible);
+      if (disposed || suspended || navigating || document.hidden || candidates.length !== 1 || candidates[0] !== player ||
+          player.matches('.ad-showing,.ad-interrupting')) return false;
+      const ids = player.getPlaylist?.(), current = player.getVideoData?.()?.video_id;
+      if (!Array.isArray(ids) || ids.length < 2 || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !/^[\w-]{11}$/.test(id)) ||
+          typeof player.getPlaylistIndex !== 'function') return false;
+      const index = player.getPlaylistIndex(), method = direction < 0 ? 'previousVideo' : 'nextVideo';
+      // The native index identifies the actual occurrence in duplicate queues.
+      // A first-match search would disable valid later occurrences or guess.
+      if (!Number.isInteger(index) || index < 0 || index >= ids.length || ids[index] !== current) return false;
+      const available=index + direction >= 0 && index + direction < ids.length && typeof player[method] === 'function';
+      return available && request===generation && !disposed && !suspended && !navigating && !document.hidden;
+    } catch { return false; }
+  }
+  function create(player, direction) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'ytp-button';
+    button.setAttribute('data-ytms-mini-nav-button', direction < 0 ? 'previous' : 'next');
+    button.setAttribute('aria-label', direction < 0 ? 'Previous video' : 'Next video');
+    button.setAttribute('aria-keyshortcuts', direction < 0 ? 'Shift+P' : 'Shift+N');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
+    const path = document.createElementNS(svg.namespaceURI,'path');
+    path.setAttribute('d', direction < 0 ? 'M6 6h2v12H6zm3 6 9-6v12z' : 'M16 6h2v12h-2zM6 6l9 6-9 6z');
+    svg.append(path); button.append(svg);
+    button.addEventListener('click', event => {
+      if (!event.isTrusted) return;
+      event.preventDefault(); event.stopPropagation();
+      if (!eligibility(player, direction) || button.disabled) return;
+      // One native action per activation; never retry an ambiguous result.
+      try { player[direction < 0 ? 'previousVideo' : 'nextVideo'](); } catch { /* Native transition unavailable. */ }
+      schedule();
+    });
+    records.set(button, { player, direction });
+    button.addEventListener('mouseenter',()=>showTooltip(button));button.addEventListener('focus',()=>showTooltip(button));
+    button.addEventListener('mouseleave',()=>{
+      if(tooltipButton!==button)return;
+      const focused=document.activeElement;
+      if(records.has(focused))showTooltip(focused);else hideTooltip();
+    });
+    button.addEventListener('blur',()=>{if(tooltipButton===button && !button.matches(':hover'))hideTooltip();});
+    return button;
+  }
+  function sync() {
+    frame = 0;
+    const request=generation, active=()=>request===generation && !disposed && !suspended && !navigating && !document.hidden;
+    if (!active()) return;
+    // Native layout changes can move a focused control without pointer events.
+    // Keep the existing anchor current, including when navigation is disabled.
+    if(anchors.size)refreshPlayTooltip();
+    const activeHosts = new Set();
+    const players = navigation ? [...document.querySelectorAll('ytd-miniplayer #movie_player')] : [];
+    visibilityPaths.clear();
+    const playControls = new Map();
+    for (const player of players) {
+      const plays = [...player.querySelectorAll('.ytp-miniplayer-controls .ytp-play-button')];
+      playControls.set(player, plays);
+      // Retained players and arbitrary native wrappers can change visibility
+      // without changing the player or Play button itself. Track only their
+      // ancestor paths; unrelated page attributes still do not trigger work.
+      for (const leaf of [player, ...plays]) for (let node=leaf;node;node=node.parentElement) visibilityPaths.add(node);
+    }
+    if (navigation) for (const player of players) {
+      if(!active())return;
+      if (!visible(player) || player.matches('.ad-showing,.ad-interrupting')) continue;
+      const host = player.closest('ytd-miniplayer');
+      // Native transitions can retain the previous, hidden controls row.
+      // Bind via a single visible Play button, never its hidden template. The
+      // row itself need not have a box (for example, display:contents).
+      const plays = playControls.get(player).filter(visible);
+      const play = plays.length === 1 ? plays[0] : null;
+      const controls = play?.closest('.ytp-miniplayer-controls');
+      if (!controls || !play) continue;
+      activeHosts.add(host); hosts.add(host); if (!host.hasAttribute('data-ytms-mini-navigation')) host.setAttribute('data-ytms-mini-navigation','');
+      for (const direction of [-1, 1]) {
+        if(!active())return;
+        const nativeClass = direction < 0 ? '.ytp-prev-button' : '.ytp-next-button';
+        let button = [...records].find(([,record]) => record.player === player && record.direction === direction)?.[0];
+        const native = [...controls.querySelectorAll(nativeClass)].find(visible);
+        if (native) {
+          const focused=button && document.activeElement===button;
+          if(tooltipButton===button)hideTooltip();
+          button?.remove(); if (button) records.delete(button);
+          if(focused)(!native.disabled && native.getAttribute('aria-disabled')!=='true' ? native : play).focus({preventScroll:true});
+          continue;
+        }
+        if (!button) button = create(player, direction);
+        // Native versions use different wrapper names and can nest the button.
+        // insertBefore requires an immediate child of this exact controls row.
+        let anchor = play;
+        while (anchor.parentElement && anchor.parentElement !== controls) anchor = anchor.parentElement;
+        if (anchor.parentElement !== controls) continue;
+        const placed = direction < 0 ? button.nextSibling === anchor : anchor.nextSibling === button;
+        if (!placed) {
+          const focused=document.activeElement===button;
+          if(tooltipButton===button)hideTooltip();
+          controls.insertBefore(button, direction < 0 ? anchor : anchor.nextSibling);
+          if(focused){button.focus({preventScroll:true});if(!active())return;showTooltip(button);}
+        }
+        const disabled = !eligibility(player, direction);
+        if(!active())return;
+        if (button.disabled !== disabled) button.disabled = disabled;
+        if(!active())return;
+        if (button.getAttribute('aria-disabled') !== String(disabled)) button.setAttribute('aria-disabled', String(disabled));
+      }
+    }
+    if(!active())return;
+    for (const host of hosts) if (!activeHosts.has(host)) { host.removeAttribute('data-ytms-mini-navigation'); hosts.delete(host); }
+    for (const [button,record] of records) if (!activeHosts.has(record.player.closest('ytd-miniplayer')) || !button.isConnected) { button.remove(); records.delete(button); }
+    if(tooltipButton)positionTooltip();
+  }
+  function schedule() { if (!disposed && !suspended && !navigating && !frame) frame = window.requestAnimationFrame(sync); }
+  observer = new MutationObserver(changes => {
+    if(!navigation && !anchors.size)return;
+    if (changes.some(change => change.type === 'attributes' ? visibilityPaths.has(change.target) || change.target.closest?.('.ytp-miniplayer-controls') || change.target.matches?.('#movie_player,ytd-miniplayer,.ytp-miniplayer-ui,.ytp-miniplayer-controls,.ytp-miniplayer-button-container,.ytp-miniplayer-play-button-container,.ytp-play-button,.ytp-prev-button,.ytp-next-button') :
+      change.target.closest?.('.ytp-miniplayer-controls') || [...change.addedNodes,...change.removedNodes].some(node => node.nodeType === 1 && (node.matches(selector) || node.querySelector(selector))))) schedule();
+  });
+  if(navigation)observer.observe(document.documentElement,{ childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden','aria-hidden','inert'] });
+  const listeners = [];
+  const on = (target,type,callback) => { target.addEventListener(type,callback,true);listeners.push([target,type,callback]); };
+  for (const type of ['yt-playlist-data-updated','yt-page-data-updated','loadedmetadata']) on(window,type,schedule);
+  on(window,'visibilitychange',()=>{refreshPlayTooltip();schedule();});
+  for (const type of ['mouseenter','focusin']) on(window,type,event=>{ if(event.target?.closest?.('ytd-miniplayer')) schedule(); });
+  on(window,'blur',event=>{if(event.target===window)hideTooltip();});on(document,'scroll',hideTooltip);on(window,'resize',hideTooltip);
+  on(document,'keydown',event=>{if(event.key==='Escape')hideTooltip();});
+  on(window,'pagehide',()=>{ suspended=true;clear(); });
+  on(window,'pageshow',()=>{ const restoring=suspended;suspended=false;if(restoring)navigating=false;refreshPlayTooltip();schedule(); });
+  on(window,'yt-navigate-start',()=>{ navigating=true;clear(); });
+  on(window,'yt-navigate-finish',()=>{ navigating=false;refreshPlayTooltip();schedule(); });
+  positionPlayTooltip();schedule();
+  return () => { disposed=true;if(frame)window.cancelAnimationFrame(frame);observer.disconnect();clear();clearAnchors();style.remove();for(const [target,type,callback]of listeners)target.removeEventListener(type,callback,true); };
+}, function installMembershipOffers({ document, window, preferences = {}, MutationObserver = window.MutationObserver }) {
+  if (preferences.dismissMembershipOffers !== true) return () => {};
+
+  const containerSelector = 'ytd-popup-container';
+  const dialogSelector = 'tp-yt-paper-dialog';
+  const offerSelector = 'ytd-sponsorships-offer-renderer, ytd-sponsorships-offer-with-video-renderer';
+  let containers = [], states = new WeakMap(), disposed = false, suspended = false, scheduled = false, generation = 0;
+  let pageSuspended = false, navigating = false;
+  const topology = new MutationObserver(refreshRoots);
+  const popups = new MutationObserver(popupMutated);
+
+  function visible(element) {
+    if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0)) return false;
+    for (let node = element; node; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return true;
+  }
+
+  function nativeDismiss(dialog, offer) {
+    // Polymer's native close/cancel path owns the backdrop and scroll lock.
+    // Never call a purchase endpoint, remove the dialog, or click arbitrary text.
+    let owner;
+    try { owner = dialog.polymerController || dialog.getPolymerController?.(); } catch {
+      // A private controller can be inaccessible while a native method or
+      // explicit dismissal control on the dialog remains available.
+    }
+    for (const target of [dialog, owner]) {
+      if (!target) continue;
+      for (const method of ['close', 'cancel']) {
+        try {
+          const action = target[method];
+          if (typeof action === 'function') return () => action.call(target);
+        } catch { /* An unavailable native method is not permission to guess. */ }
+      }
+    }
+    const candidates = [...offer.querySelectorAll('#close-button, [dialog-dismiss]')].flatMap(node =>
+      node.matches('button, tp-yt-paper-icon-button, yt-icon-button') ? [node] :
+        [...node.querySelectorAll('button, tp-yt-paper-icon-button, yt-icon-button')]);
+    const controls = [...new Set(candidates)].filter(button =>
+      button.closest(dialogSelector) === dialog && !button.hasAttribute('dialog-confirm') &&
+      !button.closest('[dialog-confirm]') && !button.disabled && !button.hasAttribute('disabled') &&
+      button.getAttribute('aria-disabled') !== 'true' && visible(button));
+    return controls.length === 1 ? () => controls[0].click() : null;
+  }
+
+  function inspect(dialog) {
+    if (!dialog.closest(containerSelector) || !visible(dialog) || dialog.opened === false) {
+      states.delete(dialog); return;
+    }
+    // Native offer content is the dialog's own renderer. A nested/retained offer
+    // inside another flow is insufficient; payment frames remain untouched.
+    const offers = [...dialog.children].filter(node => node.matches(offerSelector) && visible(node));
+    if (offers.length !== 1 || dialog.querySelector('iframe, ytd-purchase-flow-renderer, yt-confirm-dialog-renderer, ytd-confirm-dialog-renderer, ytd-report-form-modal-renderer') || [...dialog.children].some(node =>
+      node !== offers[0] && /(?:^|-)renderer$/.test(node.localName) && visible(node))) {
+      return;
+    }
+    const offer = offers[0];
+    let state = states.get(dialog);
+    if (!state) { state = { attempted: false }; states.set(dialog, state); }
+    if (state.attempted) return;
+    const dismiss = nativeDismiss(dialog, offer);
+    if (!dismiss) return; // A later stamped native close control can be discovered.
+    state.attempted = true;
+    try { dismiss(); } catch { /* Leave an unsupported/refused native dialog usable; never retry in a loop. */ }
+  }
+
+  function scan() {
+    for (const container of containers) {
+      if (!container.isConnected) continue;
+      for (const dialog of container.querySelectorAll(dialogSelector)) {
+        try { inspect(dialog); } catch { /* A partially initialised native dialog cannot block other popups. */ }
+      }
+    }
+  }
+
+  function schedule() {
+    if (disposed || suspended || scheduled) return;
+    scheduled = true;
+    const request = generation;
+    window.queueMicrotask(() => {
+      if (request !== generation) return;
+      scheduled = false;
+      if (!disposed && !suspended) scan();
+    });
+  }
+
+  function popupMutated(mutations) {
+    // A refused dismissal is never retried during the same opening. Its
+    // internal video/text churn therefore needs no repeated layout checks.
+    // Keep observing the dialog itself and ancestors so a real close/reopen
+    // or another native popup still updates the bounded dismissal state.
+    if (mutations.some(mutation => {
+      const dialog = mutation.target?.closest?.(dialogSelector);
+      return !dialog || mutation.target === dialog || !states.get(dialog)?.attempted;
+    })) schedule();
+  }
+
+  function refreshRoots() {
+    if (disposed || suspended) return;
+    // Observe document/app topology only at their immediate children. Native
+    // popup events discover unusual nested containers without watching feeds.
+    topology.disconnect();
+    for (const root of new Set([document.documentElement, document.body, ...document.querySelectorAll('ytd-app')])) {
+      if (root) topology.observe(root, { childList: true });
+    }
+    const next = [...document.querySelectorAll(containerSelector)];
+    if (next.length !== containers.length || next.some((root, index) => root !== containers[index])) {
+      popups.disconnect(); containers = next;
+      for (const root of containers) popups.observe(root, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ['opened', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'disabled'] });
+    }
+    schedule();
+  }
+
+  function opened() { refreshRoots(); }
+  function closed(event) {
+    // A dropdown inside the offer can emit the same bubbling event without
+    // closing its parent dialog. Only that dialog's own close resets its guard.
+    const dialog = event.target;
+    if (dialog?.matches?.(dialogSelector)) states.delete(dialog);
+  }
+  function suspend() {
+    suspended = true; generation++; scheduled = false;
+    topology.disconnect(); popups.disconnect(); containers = []; states = new WeakMap();
+  }
+  function resume() {
+    if (disposed || pageSuspended || navigating) return;
+    suspended = false; refreshRoots();
+  }
+  function navigationStarted() { navigating = true; suspend(); }
+  function navigationFinished() { navigating = false; resume(); }
+  function pageHidden() { pageSuspended = true; suspend(); }
+  function pageShown() {
+    const restoring = pageSuspended;
+    pageSuspended = false;
+    // A restored page no longer owns the navigation interrupted by pagehide.
+    if (restoring) navigating = false;
+    resume();
+  }
+  const listeners = [
+    ['yt-popup-opened', opened], ['iron-overlay-opened', opened],
+    ['iron-overlay-closed', closed], ['yt-popup-closed', closed],
+    ['yt-navigate-start', navigationStarted], ['yt-navigate-finish', navigationFinished], ['yt-page-data-updated', opened],
+    ['pagehide', pageHidden], ['pageshow', pageShown], ['DOMContentLoaded', opened],
+  ];
+  for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
+  refreshRoots();
+  return function disposeMembershipOffers() {
+    if (disposed) return;
+    suspend(); disposed = true;
+    for (const [type, listener] of listeners) window.removeEventListener(type, listener, true);
+  };
+}, function installCurrentQueueMenu({ document, window, preferences = {}, MutationObserver = window.MutationObserver }) {
+  if (preferences.currentQueueMenu === false) return () => {};
+  const panels = 'ytd-playlist-panel-renderer, yt-playlist-panel-renderer';
+  const rows = 'ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer';
+  const marker = 'data-ytms-current-queue-menu', owned = 'data-ytms-current-queue-menu-owned';
+  const records = new Map();
+  let failed = new WeakMap();
+  let frame = 0, generation = 0, disposed = false, navigating = false, pageHidden = false, style = null, waitingForDefinition = false;
+  const topology = new MutationObserver(schedule), content = new MutationObserver(schedule), visibility = new MutationObserver(schedule);
+  const controller = node => node?.polymerController || node?.getPolymerController?.() || node;
+  const validId = value => typeof value === 'string' && /^[\w-]{11}$/.test(value);
+  function modelsOf(node) {
+    const current = typeof node?.componentProps?.data === 'function' ? node.componentProps.data() : null;
+    const legacy = controller(node)?.data;
+    return [...new Set([current, legacy].filter(value => value && typeof value === 'object'))];
+  }
+  function conflictingIdentity(left, right) {
+    return ['videoId', 'playlistSetVideoId', 'playlistId', 'currentIndex', 'selected'].some(key =>
+      key in left && key in right && left[key] !== right[key]);
+  }
+  function dataOf(node) {
+    const models = modelsOf(node), first = models[0];
+    for (const other of models.slice(1)) {
+      if (conflictingIdentity(first, other)) return null;
+      if (Array.isArray(first.contents) && Array.isArray(other.contents) &&
+          (first.contents.length > 1000 || first.contents.length !== other.contents.length || first.contents.some((item, index) => {
+            const left = item?.playlistPanelVideoRenderer, right = other.contents[index]?.playlistPanelVideoRenderer;
+            return !left || !right || conflictingIdentity(left, right);
+          }))) return null;
+      if (first.menu?.menuRenderer && other.menu?.menuRenderer &&
+          signature(first.menu.menuRenderer) !== signature(other.menu.menuRenderer)) return null;
+    }
+    return first;
+  }
+  function menuStampOf(node) {
+    const stamps = modelsOf(node).map(signature);
+    return stamps.length && stamps.every(stamp => stamp && stamp === stamps[0]) ? stamps[0] : null;
+  }
+  function visible(node) {
+    if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    const box = node.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0)) return false;
+    for (let current = node; current; current = current.parentElement) {
+      const css = window.getComputedStyle(current);
+      if (css.display === 'none' || css.visibility !== 'visible' || Number(css.opacity) === 0) return false;
+    }
+    return true;
+  }
+  function signature(model) {
+    if (!Array.isArray(model?.items) || !model.items.length || model.items.length > 60) return null;
+    let fields = 0;
+    try {
+      const value = JSON.stringify(model, (_key, entry) => {
+        if (++fields > 4000 || (typeof entry === 'string' && entry.length > 16384)) throw new Error('Bounded native menu');
+        return entry;
+      });
+      return value.length <= 131072 ? value : null;
+    } catch { return null; }
+  }
+  function fallbackModel(data, entries, rowList, current) {
+    const actions = new Map();
+    const make = (id, text, icon, endpoint, apiUrl) => {
+      if (actions.has(id)) return;
+      actions.set(id, { menuServiceItemRenderer: { text:{ simpleText:text }, icon:{ iconType:icon },
+        serviceEndpoint:{ commandMetadata:{ webCommandMetadata:{ sendPost:true, apiUrl } }, ...endpoint } } });
+    };
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i] === current) continue;
+      const row = dataOf(rowList[i]), model = row?.menu?.menuRenderer || entries[i].menu?.menuRenderer;
+      if (!signature(model) || (row?.menu?.menuRenderer && entries[i].menu?.menuRenderer &&
+          signature(row.menu.menuRenderer) !== signature(entries[i].menu.menuRenderer))) continue;
+      for (const item of model.items) {
+        const endpoint = item?.menuServiceItemRenderer?.serviceEndpoint;
+        const edit = endpoint?.playlistEditEndpoint, action = edit?.actions?.length === 1 ? edit.actions[0] : null;
+        // Inspect only known native action schemas. Rebuild every target field
+        // from the verified current entry; never copy tokens, commands or
+        // tracking data belonging to the other video.
+        if (edit?.playlistId === 'WL' && action?.action === 'ACTION_ADD_VIDEO' && action.addedVideoId === entries[i].videoId)
+          make('watchLater', 'Save to Watch Later', 'WATCH_LATER', { playlistEditEndpoint:{ playlistId:'WL', actions:[{ action:'ACTION_ADD_VIDEO', addedVideoId:current.videoId }] } }, '/youtubei/v1/browse/edit_playlist');
+        if (endpoint?.addToPlaylistServiceEndpoint?.videoId === entries[i].videoId)
+          make('savePlaylist', 'Save to playlist', 'PLAYLIST_ADD', { addToPlaylistServiceEndpoint:{ videoId:current.videoId } }, '/youtubei/v1/playlist/get_add_to_playlist');
+        if (edit?.playlistId === data.playlistId && action?.action === 'ACTION_REMOVE_VIDEO' && action.setVideoId === entries[i].playlistSetVideoId &&
+            entries.filter(item=>item.playlistSetVideoId===current.playlistSetVideoId).length===1)
+          make('remove', 'Remove from playlist', 'REMOVE', { playlistEditEndpoint:{ playlistId:data.playlistId, actions:[{ action:'ACTION_REMOVE_VIDEO', setVideoId:current.playlistSetVideoId }] } }, '/youtubei/v1/browse/edit_playlist');
+      }
+      if (actions.size === 3) break;
+    }
+    const items = ['watchLater','savePlaylist','remove'].flatMap(id => actions.has(id) ? [actions.get(id)] : []);
+    return items.length ? { items, accessibility:{ accessibilityData:{ label:'More actions' } } } : null;
+  }
+  function targetsCurrentEntry(model, data, entries, current) {
+    for (const item of model.items) {
+      const endpoint = item?.menuServiceItemRenderer?.serviceEndpoint;
+      const edit = endpoint?.playlistEditEndpoint;
+      if (Array.isArray(edit?.actions)) for (const action of edit.actions) {
+        if (action?.action === 'ACTION_ADD_VIDEO' && action.addedVideoId !== current.videoId) return false;
+        if (action?.action === 'ACTION_REMOVE_VIDEO_BY_VIDEO_ID' && action.removedVideoId !== current.videoId) return false;
+        if (['ACTION_REMOVE_VIDEO', 'ACTION_MOVE_VIDEO_AFTER'].includes(action?.action) &&
+            (edit.playlistId !== data.playlistId || action.setVideoId !== current.playlistSetVideoId ||
+             entries.filter(entry => entry.playlistSetVideoId === current.playlistSetVideoId).length !== 1)) return false;
+      }
+      const save = endpoint?.addToPlaylistServiceEndpoint;
+      if (save && (('videoId' in save && save.videoId !== current.videoId) ||
+          ('videoIds' in save && (!Array.isArray(save.videoIds) || save.videoIds.length !== 1 || save.videoIds[0] !== current.videoId)))) return false;
+    }
+    return true;
+  }
+  function ownsWatchPlayer(panel, player) {
+    const owner = panel.closest('ytd-watch-flexy');
+    if (!owner || owner.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    if (player.closest('ytd-watch-flexy') === owner) return true;
+    const placeholders = [...document.querySelectorAll('#ytsmp-player-placeholder')].filter(node => {
+      // Our spacer is intentionally visibility:hidden/aria-hidden. Its
+      // rendered parent ownership matters, not its accessibility visibility.
+      const box=node.getBoundingClientRect();
+      if (!node.isConnected || node.hidden || node.hasAttribute('inert') || !node.getClientRects().length ||
+          !(box.width>0 && box.height>0) || node.parentElement?.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      for(let parent=node.parentElement;parent;parent=parent.parentElement){const css=window.getComputedStyle(parent);if(css.display==='none'||css.visibility!=='visible'||Number(css.opacity)===0)return false;}
+      return true;
+    });
+    return player.parentElement === document.body && document.body.classList.contains('ytsmp-scroll-miniplayer-active') &&
+      placeholders.length === 1 && placeholders[0].closest('ytd-watch-flexy') === owner;
+  }
+  function proof(panel) {
+    try {
+      if (!visible(panel)) return null;
+      const data = dataOf(panel), entries = data?.contents?.map(item => item.playlistPanelVideoRenderer);
+      let index = data?.currentIndex;
+      if (Array.isArray(entries) && !('currentIndex' in data)) {
+        const selected = entries.filter(entry => entry?.selected === true);
+        if (selected.length === 1) index = entries.indexOf(selected[0]);
+      }
+      if (typeof data?.playlistId !== 'string' || !data.playlistId || data.playlistId.length>1024 || !Array.isArray(entries) || !entries.length || entries.length > 1000 ||
+          entries.some(entry => !validId(entry?.videoId) || typeof entry.playlistSetVideoId!=='string' || !entry.playlistSetVideoId || entry.playlistSetVideoId.length>1024) ||
+          !Number.isInteger(index) || index < 0 || index >= entries.length) return null;
+      const rowList = [...panel.querySelectorAll(rows)].filter(row => row.closest(panels) === panel);
+      if (rowList.length !== entries.length || rowList.some((row, i) => {
+        const value = dataOf(row);
+        return value?.videoId !== entries[i].videoId || value?.playlistSetVideoId !== entries[i].playlistSetVideoId;
+      })) return null;
+      const row = rowList[index], value = dataOf(row), entry = entries[index];
+      if (!visible(row) || !row.hasAttribute('selected') || !value.selected || !entry.selected ||
+          entries.some((item, i) => i !== index && item.selected)) return null;
+      const mini = panel.closest('ytd-miniplayer');
+      const players = [...document.querySelectorAll('#movie_player')].filter(player => {
+        if (!visible(player) || (mini && player.closest('ytd-miniplayer') !== mini) || (!mini && player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer'))) return false;
+        const ids = player.getPlaylist?.();
+        const listId = player.getPlaylistId?.(), playerIndex = player.getPlaylistIndex?.();
+        const uniquePlayingEntry = entries.filter(item => item.videoId === entry.videoId).length === 1;
+        // The native Home miniplayer can omit these API values while its own
+        // rendered panel still supplies an exact, independently checked order.
+        const matchesList = listId === data.playlistId || ((listId == null || listId === '') && uniquePlayingEntry &&
+          ((mini && typeof data.playlistId === 'string' && data.playlistId.startsWith('TLPQ')) || ownsWatchPlayer(panel, player)));
+        return player.getVideoData?.()?.video_id === entry.videoId && matchesList &&
+          Array.isArray(ids) && ids.length === entries.length && ids.every((id, i) => id === entries[i].videoId) &&
+          (playerIndex === undefined ? uniquePlayingEntry : playerIndex === index);
+      });
+      if (players.length !== 1) return null;
+      const rowModel = value.menu?.menuRenderer, panelModel = entry.menu?.menuRenderer;
+      const model = rowModel || panelModel || fallbackModel(data, entries, rowList, entry);
+      const stamp = signature(model);
+      if (rowModel && panelModel && signature(panelModel) !== stamp) return null;
+      // Recycled row and panel models can agree before their menu endpoints
+      // catch up. Matching model references alone cannot authorise an action
+      // still naming the previous video or playlist entry.
+      return stamp && targetsCurrentEntry(model, data, entries, entry) ?
+        { panel, row, player: players[0], model, stamp, videoId: entry.videoId, setId: entry.playlistSetVideoId } : null;
+    } catch { return null; }
+  }
+  function release(row) {
+    const record = records.get(row);
+    if (!record) return;
+    records.delete(row);
+    if (record.guard) {
+      record.menu.removeEventListener('click', record.guard, true);
+      record.menu.removeEventListener('keydown', record.guard, true);
+    }
+    if (record.stop) record.menu.removeEventListener('click', record.stop);
+    record.menu.removeAttribute(marker); row.removeAttribute(marker);
+    if (record.created && record.menu.getAttribute(owned) === '1') {
+      let adopted = false;
+      try {
+        const nextRow = record.menu.closest(rows), stamp = menuStampOf(record.menu);
+        adopted = nextRow && nextRow !== row && stamp && stamp !== record.stamp &&
+          signature(dataOf(nextRow)?.menu?.menuRenderer) === stamp;
+      } catch { /* An unverified move does not transfer the owned control. */ }
+      record.menu.removeAttribute(owned);
+      if (!adopted) record.menu.remove();
+    }
+  }
+  function same(left, right) {
+    return right && left.panel === right.panel && left.row === right.row && left.player === right.player && left.videoId === right.videoId && left.setId === right.setId && left.stamp === right.stamp;
+  }
+  function bound(record) {
+    try { return record.menu.closest(rows) === record.row && menuStampOf(record.menu) === record.stamp; }
+    catch { return false; }
+  }
+  function install(current) {
+    const request = generation;
+    const active = () => request === generation && !disposed && !navigating && !pageHidden;
+    if (!active()) return;
+    const existing = records.get(current.row);
+    if (existing && existing.menu.isConnected && same(existing, current) && bound(existing)) return;
+    release(current.row);
+    if (!active()) return;
+    const candidates = [...current.row.querySelectorAll('ytd-menu-renderer')].filter(menu => menu.closest(rows) === current.row);
+    if (candidates.length > 1) return;
+    let menu = candidates[0], created = false;
+    if (menu) {
+      try { if (menuStampOf(menu) !== current.stamp) return; } catch { return; }
+    } else {
+      // Let YouTube stamp its own icon, labels, handlers and popup from the
+      // current menu or a recognised schema rebuilt for the current entry.
+      // Unsupported native components remain untouched.
+      if (!window.customElements?.get('ytd-menu-renderer')) {
+        if (!waitingForDefinition && typeof window.customElements?.whenDefined === 'function') {
+          waitingForDefinition = true;
+          window.customElements.whenDefined('ytd-menu-renderer').then(schedule, () => {});
+        }
+        return;
+      }
+      if (same(failed.get(current.row) || {}, current)) return;
+      menu = document.createElement('ytd-menu-renderer'); created = true;
+      if (!active()) return;
+      menu.setAttribute(owned, '1');
+      menu.classList.add('style-scope', 'ytd-playlist-panel-video-renderer');
+      // Register ownership before native connected/data callbacks can interrupt
+      // installation. Lifecycle cleanup must see even a partly stamped menu.
+      const pending = { ...current, menu, created };
+      records.set(current.row, pending);
+      const retained = () => active() && records.get(current.row) === pending;
+      try {
+        current.row.append(menu);
+        if (!retained()) return;
+        const owner = controller(menu);
+        if (!retained()) return;
+        if (typeof owner.set === 'function') owner.set('data', current.model);
+        else owner.data = current.model;
+        if (!retained()) return;
+        if (menuStampOf(menu) !== current.stamp) {
+          if (retained()) { failed.set(current.row, current); release(current.row); }
+          return;
+        }
+        const fresh = proof(current.panel);
+        if (!retained()) return;
+        if (!same(current, fresh) || menu.closest(rows) !== current.row) { release(current.row); return; }
+      } catch {
+        if (retained()) { failed.set(current.row, current); release(current.row); }
+        return;
+      }
+    }
+    if (!active()) return;
+    if (!style) {
+      style = document.createElement('style');
+      style.textContent = `[${marker}] ytd-menu-renderer[${marker}] { display:flex !important; visibility:visible !important; opacity:1 !important; pointer-events:auto !important; }
+${rows.split(', ').map(row => `${row}[${marker}]`).join(',')} { position:relative; }
+ytd-menu-renderer[${owned}="1"] { position:absolute; inset-inline-end:0; top:50%; transform:translateY(-50%); z-index:1; }
+${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-inline-end:32px; }`;
+      (document.head || document.documentElement).append(style);
+    }
+    const record = created ? records.get(current.row) : { ...current, menu, created };
+    if (!active() || !record || record.menu !== menu) return;
+    record.guard = event => {
+      if (event.type === 'keydown' && !['Enter', ' ', 'ArrowDown'].includes(event.key)) return;
+      // Native icon buttons can synthesise their click from a trusted key.
+      // Opening remains native; revalidate identity for every activation path.
+      if (!active() || !same(record, proof(record.panel)) || !bound(record) || !active()) {
+        event.preventDefault(); event.stopImmediatePropagation(); release(record.row); schedule();
+      }
+    };
+    // Preserve native target handlers while stopping row-level navigation.
+    record.stop = event => event.stopPropagation();
+    menu.addEventListener('click', record.guard, true); menu.addEventListener('keydown', record.guard, true);
+    menu.addEventListener('click', record.stop);
+    records.set(current.row, record);
+    menu.setAttribute(marker, '1');
+    if (active()) current.row.setAttribute(marker, '1');
+  }
+  function refresh() {
+    frame = 0;
+    if (disposed || navigating || pageHidden) return;
+    const request = generation;
+    topology.disconnect(); content.disconnect(); visibility.disconnect();
+    const roots = new Set([document.documentElement, document.body,
+      ...document.querySelectorAll('ytd-app, ytd-page-manager, #page-manager, ytd-watch-flexy, ytd-miniplayer, #secondary, #secondary-inner, #panels, .ytdMiniplayerComponentContent')]);
+    for (const root of roots) if (root) topology.observe(root, { childList: true });
+    const currentRows = new Set();
+    for (const panel of document.querySelectorAll(panels)) {
+      if (request !== generation || disposed || navigating || pageHidden) return;
+      content.observe(panel, { childList: true, subtree: true, attributes: true, attributeFilter: ['selected', 'aria-selected', 'aria-current', 'hidden'] });
+      // Native queues can reappear through an ancestor attribute without any
+      // child insertion. Watch only their visibility path and row roots.
+      const path = new Set([...panel.querySelectorAll(rows)]);
+      for (let node = panel; node; node = node.parentElement) path.add(node);
+      for (const node of path) visibility.observe(node, { attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'inert', 'class', 'style', 'collapsed'] });
+      const current = proof(panel);
+      if (request !== generation || disposed || navigating || pageHidden) return;
+      if (current) { currentRows.add(current.row); install(current); }
+    }
+    if (request !== generation || disposed || navigating || pageHidden) return;
+    for (const row of [...records.keys()]) if (!currentRows.has(row)) release(row);
+  }
+  function schedule() {
+    if (!disposed && !navigating && !pageHidden && !frame) frame = window.requestAnimationFrame(refresh);
+  }
+  function clear() {
+    generation++;
+    if (frame) window.cancelAnimationFrame(frame);
+    frame = 0; topology.disconnect(); content.disconnect(); visibility.disconnect();
+    for (const row of [...records.keys()]) release(row);
+    failed = new WeakMap();
+  }
+  const start = () => { navigating = true; clear(); };
+  const finish = () => { navigating = false; schedule(); };
+  const hide = () => { pageHidden = true; clear(); };
+  const show = () => { if (pageHidden) navigating = false; pageHidden = false; schedule(); };
+  const listeners = [['yt-navigate-start', start], ['yt-navigate-finish', finish], ['yt-page-data-updated', schedule],
+    ['yt-playlist-data-updated', schedule], ['pagehide', hide], ['pageshow', show], ['DOMContentLoaded', schedule]];
+  for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
+  schedule();
+  return () => { disposed = true; clear(); style?.remove(); for (const [type, listener] of listeners) window.removeEventListener(type, listener, true); };
+}, function installNativeMenuVisibility({ document, window, preferences = {}, menuLayout, MutationObserver = window.MutationObserver }) {
+  const shown = { download:preferences.menuShowDownload === true, hype:preferences.menuShowHype !== false };
+  try { for (const node of menuLayout?.fromPreferences(preferences)?.nodes || []) if (Object.hasOwn(shown,node.id)) shown[node.id]=node.visible; } catch { /* Retain validated scalar defaults. */ }
+  if (shown.download && shown.hype) return () => {};
+  const popupSelector='ytd-menu-popup-renderer, yt-sheet-view-model';
+  const rowSelector='ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
+  const marker='data-ytms-native-menu-hidden';
+  const owned=new Map(); let roots=[], ancestors=new Set(), disposed=false, navigating=false, pageHidden=false, scheduled=false, generation=0;
+  const controller=node=>node?.polymerController || node?.getPolymerController?.() || node;
+  const model=node=>typeof node?.componentProps?.data==='function' ? node.componentProps.data() : controller(node)?.data;
+  function sheetBindingMatches(row,item) {
+    const bound=model(row), expected=item?.downloadListItemViewModel || item?.listItemViewModel;
+    // Current native sheets can expose no per-row model. Preserve that contract,
+    // but never override an explicit object binding that disagrees with its slot.
+    if(!bound || typeof bound!=='object' || bound===item || bound===expected)return true;
+    const candidate=bound.downloadListItemViewModel || bound.listItemViewModel || bound;
+    function signature(value) {
+      let fields=0;
+      const json=JSON.stringify(value,(_key,entry)=>{
+        if(++fields>4000 || typeof entry==='string'&&entry.length>16384)throw Error('Unsupported row model');
+        return entry;
+      });
+      return typeof json==='string'&&json.length<=131072?json:null;
+    }
+    const expectedSignature=signature(expected);
+    return expectedSignature!==null&&expectedSignature===signature(candidate);
+  }
+  const topology=new MutationObserver(refreshRoots), observer=new MutationObserver(menuMutated);
+  const style=document.createElement('style');style.textContent=`[${marker}] { display:none !important; }`;
+  (document.head || document.documentElement).append(style);
+  function visible(popup) {
+    if (!popup.isConnected || !popup.getClientRects().length) return false;
+    const box=popup.getBoundingClientRect();if (!(box.width>0) || (!(box.height>0) && popup.offsetHeight>0)) return false;
+    for(let node=popup;node;node=node.parentElement) {
+      if(node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden')==='true')return false;
+      const css=window.getComputedStyle(node);if(css.display==='none'||css.visibility!=='visible'||Number(css.opacity)===0)return false;
+    }
+    return true;
+  }
+  function action(item) {
+    if(item?.downloadListItemViewModel || item?.menuServiceItemDownloadRenderer)return 'download';
+    const value=item?.listItemViewModel || item?.menuServiceItemRenderer || item?.menuNavigationItemRenderer;
+    if(!value)return null;
+    const icon=String(value.icon?.iconType || value.leadingImage?.sources?.[0]?.clientResource?.imageName || '').toUpperCase();
+    if(['DOWNLOAD','OFFLINE_DOWNLOAD','FILE_DOWNLOAD'].includes(icon))return 'download';
+    const title=value.title?.content || value.text?.simpleText || value.text?.runs?.map(part=>part.text || '').join('');
+    return ['HYPE','HYPE_OUTLINE'].includes(icon)||title==='Hype' ? 'hype' : null;
+  }
+  function release(row) {
+    const value=owned.get(row);if(row.getAttribute(marker)===value)row.removeAttribute(marker);owned.delete(row);
+  }
+  function scan() {
+    const keep=new Set(), request=generation;
+    const current=()=>request===generation&&!disposed&&!navigating&&!pageHidden;
+    for(const popup of document.querySelectorAll(popupSelector)) {
+      if(!current())return;
+      try {
+        // The full editor owns recognised card menus. This filter covers the
+        // native overflow variants that lack a video/card binding and never
+        // moves rows, creates actions or calls an endpoint.
+        if(popup.hasAttribute('data-ytms-video-menu') || !visible(popup))continue;
+        const sheet=popup.matches('yt-sheet-view-model'), data=model(popup);
+        const items=sheet ? data?.content?.listViewModel?.listItems : data?.items;
+        if(!Array.isArray(items)||!items.length||items.length>60)continue;
+        const rows=[...popup.querySelectorAll(rowSelector)].filter(row=>row.closest(popupSelector)===popup &&
+          (!row.closest('yt-download-list-item-view-model')||row.matches('yt-download-list-item-view-model')));
+        if(rows.length!==items.length || rows.some((row,i)=>sheet ?
+          !sheetBindingMatches(row,items[i]) || (items[i]?.downloadListItemViewModel ? !row.matches('yt-download-list-item-view-model') : !items[i]?.listItemViewModel||!row.matches('yt-list-item-view-model')) :
+          model(row)!==(items[i]?.menuServiceItemRenderer||items[i]?.menuNavigationItemRenderer||items[i]?.menuServiceItemDownloadRenderer)))continue;
+        let changed=false;
+        for(let i=0;i<rows.length;i++) {
+          if(!current())return;
+          const id=action(items[i]);if(!id||shown[id])continue;
+          if(!current())return;
+          keep.add(rows[i]);owned.set(rows[i],id);
+          if(rows[i].getAttribute(marker)!==id){rows[i].setAttribute(marker,id);changed=true;}
+        }
+        if(!current())return;
+        if(changed)popup.closest('tp-yt-iron-dropdown')?.refit?.();
+      } catch { /* Leave unsupported native layouts usable. */ }
+    }
+    if(!current())return;
+    for(const row of [...owned.keys()])if(!keep.has(row))release(row);
+    // Native popup caches may clone or recycle marked rows. A copied marker
+    // is not authority to hide a newly bound, different action.
+    for(const row of document.querySelectorAll(`[${marker}]`))if(row.closest(popupSelector)&&!keep.has(row))row.removeAttribute(marker);
+  }
+  function schedule() {
+    if(disposed||navigating||pageHidden||scheduled)return;scheduled=true;const request=generation;
+    window.queueMicrotask(()=>{if(request!==generation)return;scheduled=false;if(!disposed&&!navigating&&!pageHidden)scan();});
+  }
+  function menuMutated(records) {
+    let changedTopology=false, relevant=false;
+    for(const record of records) {
+      if(ancestors.has(record.target)||record.target.closest?.(popupSelector))relevant=true;
+      if([...record.addedNodes,...record.removedNodes].some(node=>node.matches?.(popupSelector)||node.querySelector?.(popupSelector)))changedTopology=true;
+    }
+    if(changedTopology)refreshRoots();else if(relevant)schedule();
+  }
+  function refreshRoots() {
+    if(disposed||navigating||pageHidden)return;
+    topology.disconnect();
+    const discoveryRoots=new Set([document.documentElement,document.body,...document.querySelectorAll('ytd-app')].filter(Boolean));
+    const next=[...document.querySelectorAll('ytd-popup-container')];ancestors=new Set();
+    for(const popup of document.querySelectorAll(popupSelector)){
+      for(let node=popup;node;node=node.parentElement)ancestors.add(node);
+      if(!next.some(root=>root.contains(popup)))next.push(popup.closest('tp-yt-iron-dropdown')||popup);
+    }
+    // Observe only the exact outside ancestors whose visibility controls a menu.
+    // A body-wide subtree observer would include unrelated video/comment churn.
+    for(const node of new Set([...discoveryRoots,...ancestors])) {
+      const external=ancestors.has(node)&&!next.some(root=>root===node||root.contains(node));
+      if(discoveryRoots.has(node)||external)topology.observe(node,{childList:discoveryRoots.has(node),attributes:external,
+        ...(external?{attributeFilter:['hidden','aria-hidden','inert','class','style']}: {})});
+    }
+    if(next.length!==roots.length||next.some((node,i)=>node!==roots[i])){
+      observer.disconnect();roots=next;for(const node of roots)observer.observe(node,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','aria-hidden','inert','class','style','data-ytms-video-menu']});
+    }
+    schedule();
+  }
+  function clear(){generation++;scheduled=false;topology.disconnect();observer.disconnect();roots=[];ancestors.clear();for(const row of [...owned.keys()])release(row);}
+  const start=()=>{navigating=true;clear();},finish=()=>{navigating=false;refreshRoots();};
+  const hide=()=>{pageHidden=true;clear();},show=()=>{if(pageHidden)navigating=false;pageHidden=false;refreshRoots();};
+  const listeners=[['yt-popup-opened',refreshRoots],['iron-overlay-opened',refreshRoots],['yt-popup-closed',schedule],['iron-overlay-closed',schedule],['yt-navigate-start',start],['yt-navigate-finish',finish],['yt-page-data-updated',refreshRoots],['pagehide',hide],['pageshow',show],['DOMContentLoaded',refreshRoots]];
+  for(const [type,listener]of listeners)window.addEventListener(type,listener,true);
+  refreshRoots();
+  return()=>{disposed=true;clear();style.remove();for(const[type,listener]of listeners)window.removeEventListener(type,listener,true);};
 }]) {
       try { install(options); } catch { options.reportError(); }
     }
@@ -7885,7 +9505,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "commentCleaner",
-    "Comment Cleaner v1.30",
+    "Comment Cleaner v1.31",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -7996,6 +9616,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           "ytd-watch-metadata #owner",
           "ytd-watch-flexy ytd-video-owner-renderer",
           "ytd-watch-flexy #upload-info",
+          "ytd-pinned-comment-badge-renderer",
+          "#pinned-comment-badge",
         ].join(",");
         const UPLOADER_PATHS_FALLBACK_DELAY_MS = 3000;
 
@@ -8639,7 +10261,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const readUploaderPaths = () => {
           const paths = new Set();
 
-          document
+          // Retained watch trees must not donate creator identities to this video.
+          const root = getActiveWatchFlexy();
+          const visibleRoots = Array.from(document.querySelectorAll("ytd-watch-flexy")).filter(isRenderedWatchFlexy);
+          const player = getActivePlayer();
+          const playerOwnsRoot = player?.closest("ytd-watch-flexy") === root &&
+            readPlayerVideoId(player) === getCurrentVideoId();
+          const floatingOwnsRoot = document.getElementById(SCROLL_PLAYER_PLACEHOLDER_ID)?.closest("ytd-watch-flexy") === root &&
+            readPlayerVideoId(player) === getCurrentVideoId();
+          if (!root || !isRenderedWatchFlexy(root) ||
+              (visibleRoots.length !== 1 && !playerOwnsRoot && !floatingOwnsRoot)) return paths;
+
+          root
             .querySelectorAll(
               `
             ytd-watch-metadata #owner a[href^="/@"],
@@ -8652,7 +10285,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               if (path.startsWith("/@")) paths.add(path);
             });
 
-          document
+          root
             .querySelectorAll(
               `
             ytd-pinned-comment-badge-renderer,
@@ -8742,11 +10375,16 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           });
         };
 
+        const getActiveCommentApplyRoot = () => {
+          const watch = getActiveWatchFlexy();
+          return watch?.querySelector("ytd-comments") || watch || document.querySelector("ytd-comments") || document;
+        };
+
         const applyAll = (root = document) => {
           if (!isWatchPath()) return;
 
           const applyRoot =
-            root === document ? document.querySelector("ytd-comments") || root : root;
+            root === document ? getActiveCommentApplyRoot() : root;
           // Share discovery only for this synchronous pass; later passes must find
           // newly stamped comments and open shadow roots. Preserve the uploader wait.
           const queryScopes = (
@@ -8971,7 +10609,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             }
 
             markUploaderPathsReady();
-            scheduleApply(document.querySelector("ytd-comments") || document);
+            scheduleApply(getActiveCommentApplyRoot());
             scheduleDelayedApply();
           }, UPLOADER_PATHS_FALLBACK_DELAY_MS);
         };
@@ -9020,6 +10658,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
 
           for (const mutation of mutations) {
+            if (mutation.type === "characterData") {
+              if (containsUploaderSource(mutation.target)) {
+                invalidateCachedUploaderPaths();
+                scheduleApply(getActiveCommentApplyRoot());
+              }
+              continue;
+            }
             if (mutation.type === "attributes") {
               if (
                 mutation.attributeName === "video-id" &&
@@ -9038,7 +10683,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
               if (containsUploaderSource(mutation.target)) {
                 invalidateCachedUploaderPaths();
-                scheduleApply(document.querySelector("ytd-comments") || document);
+                scheduleApply(getActiveCommentApplyRoot());
               } else if (CONFIG.colourCommenters && mutation.attributeName === "href" &&
                   mutation.target.matches?.(COMMENT_AUTHOR_SELECTOR)) {
                 // Recycled authors can retain their text/children while changing
@@ -9049,6 +10694,11 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             }
 
             collectCommentsVideoGuardRoots(commentsVideoGuardRoots, mutation.target);
+            if (containsUploaderSource(mutation.target) ||
+                Array.from(mutation.removedNodes).some(containsUploaderSource)) {
+              invalidateCachedUploaderPaths();
+              scheduleApply(getActiveCommentApplyRoot());
+            }
             if (!mutation.addedNodes.length) continue;
 
             mutation.addedNodes.forEach((node) => {
@@ -9062,7 +10712,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
               if (containsUploaderSource(node)) {
                 invalidateCachedUploaderPaths();
-                scheduleApply(document.querySelector("ytd-comments") || document);
+                scheduleApply(getActiveCommentApplyRoot());
               }
             });
           }
@@ -9079,6 +10729,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             attributeFilter: ["href", "video-id"],
             attributes: true,
             childList: true,
+            characterData: true,
             subtree: true,
           });
           observing = true;
@@ -9142,7 +10793,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             bindCommentsVideoGuardDestination();
             syncCommentsVideoGuard();
             scheduleCommentsVideoGuardRecovery();
-            scheduleApply(document.querySelector("ytd-comments") || document);
+            scheduleApply(getActiveCommentApplyRoot());
             scheduleDelayedApply();
           },
           true,
@@ -9181,7 +10832,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.24",
+    "Feed UI Cleaner v2.34",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -9251,9 +10902,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           '.badge-shape-wiz',
         ].join(',');
 
+        const MEMBERS_ONLY_CREATOR_LINK_SELECTOR = ['/@', '/channel/', '/user/', '/c/']
+          .flatMap(path => [`a[href^="${path}"]`, `a[href*="youtube.com${path}"]`]).join(',');
         const MEMBERS_ONLY_SELECTOR = [
-          '#meta > ytd-badge-supported-renderer.video-badge.style-scope.ytd-rich-grid-media > div.badge.badge-style-type-members-only.style-scope.ytd-badge-supported-renderer.style-scope.ytd-badge-supported-renderer',
+          '.badge-style-type-members-only',
+          'ytd-badge-supported-renderer',
+          'yt-badge-view-model',
+          'badge-shape',
+          '.ytBadgeShapeBadgeText',
+          '.yt-badge-shape__text',
           'div.ytContentMetadataViewModelMetadataRow.ytContentMetadataViewModelMetadataRowMetadataRowWrap',
+          '.yt-content-metadata-view-model__metadata-row',
         ].join(',');
 
         const PODCAST_LINK_SELECTOR = [
@@ -9346,7 +11005,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function isMembersOnlyMatch(el) {
-          return /members only/i.test(getText(el));
+          // Match a native label, not a channel name or prose mentioning membership.
+          const memberLabel = value => /^members(?:\s+|-)only$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
+          const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
+          if (el.closest(creatorLink)) return false;
+          // Native semantic badges remain authoritative before their translated
+          // label arrives. Generic badge hosts still require a precise label below.
+          if (el.classList.contains('badge-style-type-members-only')) return true;
+          return (!el.querySelector(creatorLink) && memberLabel(getText(el))) || memberLabel(el.getAttribute('aria-label')) ||
+            memberLabel(el.getAttribute('title')) ||
+            [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
+              .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && memberLabel(getText(node)));
         }
 
         function getFilterProfileName() {
@@ -9658,19 +11327,29 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           edit.type = 'button';
           edit.textContent = 'Edit filter';
           Object.assign(record, { panel, savedRule: JSON.stringify(rule) });
-          undo.addEventListener('click', event => {
+          undo.addEventListener('click', async event => {
+            if (!event.isTrusted || undo.disabled) return;
             event.preventDefault(); event.stopPropagation();
             if (!confirmationMatches(record)) { removeConfirmation(card); scheduleCleanUp(card); return; }
-            const latest = channelAge.read();
-            const currentRule = latest.find(value => value.channelId === record.channelId);
+            undo.disabled = true;
             let result;
-            if (JSON.stringify(currentRule) !== record.savedRule) {
-              result = { error: 'This channel’s filter has changed. Use Edit filter to review it.' };
-            } else {
-              const next = previousRule ? latest.map(value => value.channelId === record.channelId ? previousRule : value) :
-                latest.filter(value => value.channelId !== record.channelId);
-              result = channelAge.save(next, latest);
-            }
+            try {
+              const write = typeof suite.writeChannelFilters === 'function' ? suite.writeChannelFilters : callback => callback();
+              result = await write(() => {
+                if (confirmations.get(card) !== record || !panel.isConnected || !confirmationMatches(record)) {
+                  return { ok: false, error: 'This channel card changed. Open its filter again to review it.' };
+                }
+                const latest = channelAge.read(), currentRule = latest.find(value => value.channelId === record.channelId);
+                if (JSON.stringify(currentRule) !== record.savedRule) {
+                  return { ok: false, error: 'This channel’s filter has changed. Use Edit filter to review it.' };
+                }
+                const next = previousRule ? latest.map(value => value.channelId === record.channelId ? previousRule : value) :
+                  latest.filter(value => value.channelId !== record.channelId);
+                return channelAge.save(next, latest);
+              });
+            } catch { result = { ok: false, error: 'Could not undo this filter. Review your saved filters before trying again.' }; }
+            finally { undo.disabled = false; }
+            if (confirmations.get(card) !== record || !panel.isConnected) return;
             if (!result?.ok) {
               status.textContent = result?.error || 'Could not undo this filter. Your saved filters are unchanged.';
               status.hidden = false;
@@ -9681,6 +11360,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           });
           edit.addEventListener('click', event => {
             event.preventDefault(); event.stopPropagation();
+            if (!event.isTrusted) return;
             if (!confirmationMatches(record)) { removeConfirmation(card); scheduleCleanUp(card); return; }
             suite.openChannelAgeSettings?.({ channelId: record.channelId, name: rule.name }, { card, videoId: record.videoId });
           });
@@ -9967,6 +11647,23 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           return null;
         }
 
+        function releaseRemovedFeedOwnership(node) {
+          if (node?.nodeType !== Node.ELEMENT_NODE) return;
+          const selector = `[${HIDDEN_FLAG}="1"], [${PERMANENT_HIDDEN_FLAG}="1"]`;
+          const containers = node.matches(selector) ? [node] : [];
+          containers.push(...node.querySelectorAll(selector));
+          for (const container of containers) {
+            // Native renderers can be adopted outside a feed before this batch is
+            // delivered. Keep current feed ownership, but never carry it into a
+            // queue, engagement panel or detached renderer awaiting reuse.
+            if (container.isConnected && container.closest(FEED_SURFACE_SELECTOR) &&
+                !isInsideExcludedSurface(container)) continue;
+            container.removeAttribute(HIDDEN_FLAG);
+            container.removeAttribute(PERMANENT_HIDDEN_FLAG);
+            container.removeAttribute(HIDDEN_REASON_ATTRIBUTE);
+          }
+        }
+
         function isPreviewPlaybackMutation(mutation) {
           const element = mutation.target?.nodeType === Node.ELEMENT_NODE
             ? mutation.target : mutation.target?.parentElement;
@@ -9990,6 +11687,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               ? mutation.target
               : mutation.target?.parentElement;
           if (!element) return false;
+          if (['class', 'title', 'aria-label'].includes(mutation.attributeName)) {
+            const { membersOnly, mixes } = getFilterProfile();
+            if (membersOnly && element.closest(MEMBERS_ONLY_SELECTOR) || mixes && element.closest(MIX_BADGE_SELECTOR)) return true;
+            // A recycled renderer may lose its badge class before delivery.
+            return mutation.attributeName === 'class' && (
+              membersOnly && /(?:^|\s)(?:badge-style-type-members-only|ytBadgeShapeBadgeText|yt-badge-shape__text|ytContentMetadataViewModelMetadataRow|ytContentMetadataViewModelMetadataRowMetadataRowWrap|yt-content-metadata-view-model__metadata-row)(?:\s|$)/.test(mutation.oldValue || '') ||
+              mixes && /(?:^|\s)(?:ytThumbnailOverlayBadgeViewModelHost|badge-shape-wiz)(?:\s|$)/.test(mutation.oldValue || '')
+            );
+          }
 
           if (
             mutation.type === 'attributes' &&
@@ -10037,8 +11743,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (mutationRoot) scheduleCleanUp(mutationRoot);
             if (mutationRoot && [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE)) toggleDirty = true;
             for (const node of mutation.removedNodes) {
-              if (node.nodeType === Node.ELEMENT_NODE &&
-                  (node.matches(FEED_SURFACE_SELECTOR) || node.querySelector(FEED_SURFACE_SELECTOR))) toggleDirty = true;
+              if (node.nodeType !== Node.ELEMENT_NODE) continue;
+              // Detached feed roots lose their contextual ancestor selectors. Match
+              // their native root identity, reusing this check for summary refresh.
+              const feedRoots = 'ytd-rich-grid-renderer,ytd-two-column-search-results-renderer';
+              const removedFeed = node.matches(feedRoots) || node.querySelector(feedRoots) ||
+                (mutation.target.closest?.('ytd-two-column-search-results-renderer') &&
+                  (node.id === 'contents' || node.querySelector('[id="contents"]')));
+              if (mutationRoot || removedFeed) releaseRemovedFeedOwnership(node);
+              if (removedFeed) toggleDirty = true;
             }
             if (!mutation.addedNodes || !mutation.addedNodes.length) continue;
 
@@ -10058,6 +11771,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const OBSERVER_OPTIONS = {
           attributeFilter: [
             'href',
+            'class',
+            'aria-label',
+            'title',
             'datetime',
             'overlay-style',
             'data-ytppl-live-hidden',
@@ -10068,6 +11784,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             'data-ytms-discovery-reason',
           ],
           attributes: true,
+          attributeOldValue: true,
           characterData: true,
           childList: true,
           subtree: true,
@@ -10102,10 +11819,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           pendingCleanUpRoots.clear();
         }
 
-        function reconcileRoute() {
+        const routeKey = () => location.pathname + (location.search || '');
+        let currentRoute = routeKey();
+        function reconcileRoute(event) {
           reconcileConfirmations(document);
-          resetTemporaryReveal();
-          if (syncMutationObservation()) cleanUp(document);
+          const nextRoute = routeKey();
+          const fullRefresh = event?.type !== 'yt-page-data-updated' || !observerActive || currentRoute !== nextRoute;
+          if (event?.type === 'yt-navigate-finish' || currentRoute !== nextRoute) resetTemporaryReveal();
+          currentRoute = nextRoute;
+          if (syncMutationObservation() && fullRefresh) scheduleCleanUp(document);
           reconcileHistoryActions();
         }
 
@@ -10143,7 +11865,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "miniplayerButtonRestorer",
-    "Miniplayer Button Restorer v1.18",
+    "Miniplayer Button Restorer v1.20",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -10161,6 +11883,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           pollMaxMs: 20000,
           navRetryDelays: [300, 900, 1800, 3500],
         };
+        Object.assign(CONFIG, suite.settings.overrides("miniplayerButtonRestorer", CONFIG));
         if (!CONFIG.enabled) return;
 
         const PLAYER_SELECTORS = ["#movie_player", ".html5-video-player"];
@@ -10169,6 +11892,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const FULLSCREEN_BUTTON_SELECTOR = ".ytp-fullscreen-button";
         const CONTROL_STATE_ATTRIBUTES = [
           "aria-disabled", "aria-hidden", "class", "disabled", "hidden", "style",
+          "inert",
         ];
         const WATCH_STATE_ATTRIBUTES = [...CONTROL_STATE_ATTRIBUTES, "video-id"];
         const PLAYER_CONTROL_SELECTOR = [...PLAYER_SELECTORS, RIGHT_CONTROLS_SELECTOR].join(",");
@@ -10281,7 +12005,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
         function queryFirst(selectors, root = document) {
           for (const selector of selectors) {
-            const el = root.querySelector(selector);
+            const el = [...root.querySelectorAll(selector)].find(player =>
+              !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') && isRenderedWatchFlexy(player));
             if (el) return el;
           }
           return null;
@@ -10290,20 +12015,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         function isRenderedWatchFlexy(flexy) {
           if (
             !flexy?.isConnected ||
-            flexy.hidden ||
-            flexy.getAttribute("aria-hidden") === "true"
+            flexy.closest('[hidden], [inert], [aria-hidden="true"]')
           ) {
             return false;
           }
 
           try {
-            const style = getComputedStyle(flexy);
-            if (
-              style.display === "none" ||
-              style.visibility === "hidden" ||
-              style.visibility === "collapse"
-            ) {
-              return false;
+            const box = flexy.getBoundingClientRect();
+            if (!(box.width > 0 && box.height > 0)) return false;
+            for (let node = flexy; node; node = node.parentElement) {
+              const style = getComputedStyle(node);
+              if (style.display === "none" || style.visibility === "hidden" ||
+                  style.visibility === "collapse" || Number(style.opacity) === 0) return false;
             }
           } catch {
             return false;
@@ -10339,7 +12062,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             "ytsmp-scroll-miniplayer-active",
           )
             ? Array.from(document.body.children).find((child) =>
-                PLAYER_SELECTORS.some((selector) => child.matches?.(selector)),
+                PLAYER_SELECTORS.some((selector) => child.matches?.(selector)) && isRenderedWatchFlexy(child),
               )
             : null;
           if (floatedPlayer) return floatedPlayer;
@@ -10352,9 +12075,23 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function getRightControls() {
-          const roots = [getPlayerEl(), document.querySelector("ytd-player"), document].filter(Boolean);
+          // Insertion and activation must resolve the same current watch player.
+          // Do not borrow a toolbar from a preview or a retained native miniplayer.
+          const roots = [getPlayerEl()].filter(Boolean);
           for (const r of roots) {
-            const c = r.querySelector(RIGHT_CONTROLS_SELECTOR);
+            const candidates = [...r.querySelectorAll(RIGHT_CONTROLS_SELECTOR)].filter(controls =>
+              !controls.closest('[hidden], [inert], [aria-hidden="true"]') && controls.getClientRects().length);
+            // A retained hidden toolbar is not the current insertion target. Keep a
+            // sole structural toolbar through YouTube's ordinary controls auto-hide.
+            const c = candidates.find(controls => {
+              const box = controls.getBoundingClientRect();
+              if (!(box.width > 0 && box.height > 0)) return false;
+              for (let node = controls; node && node !== r; node = node.parentElement) {
+                const css = getComputedStyle(node);
+                if (css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+              }
+              return true;
+            }) || (candidates.length === 1 ? candidates[0] : null);
             if (c) return c;
           }
           return null;
@@ -10792,13 +12529,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (isEligiblePath()) debounceInstall(150);
         });
 
-        function isCommentContentMutation(mutation) {
+        function isUnrelatedContentMutation(mutation) {
           const target = mutation.target?.closest
             ? mutation.target
             : mutation.target?.parentElement;
           if (
-            mutation.type !== "childList" || !target?.closest?.("ytd-comments") ||
-            target.closest(PLAYER_CONTROL_SELECTOR)
+            mutation.type !== "childList" || !target?.closest?.("ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container") ||
+            target.closest(RIGHT_CONTROLS_SELECTOR)
           ) return false;
 
           return [...mutation.addedNodes, ...mutation.removedNodes].every((node) =>
@@ -10829,12 +12566,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           // These native dialogues contain only Suite controls, not the watch player.
           // Their mounting/removal and any mixed/native topology batch still fall through.
           if (muts.length && muts.every(isSuiteDialogContentMutation)) return;
-          // Ordinary comment updates cannot replace the installed toolbar. Keep the
+          // Ordinary comment/caption/progress updates cannot replace the toolbar. Keep
           // existing discovery path for unknown/structural batches and detached owners.
-          if (observedControls?.isConnected && muts.length && muts.every(isCommentContentMutation)) return;
+          if (observedControls?.isConnected && muts.length && muts.every(isUnrelatedContentMutation)) return;
           // The narrow observer owns changes inside the current toolbar. This broad
           // child-list observer only discovers its initial creation or replacement.
-          if (observedControls?.isConnected && getPlayerEl()?.contains(observedControls)) return;
+          if (observedControls?.isConnected && getPlayerEl()?.contains(observedControls) &&
+              !muts.some(mutation => [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+                node.matches?.(RIGHT_CONTROLS_SELECTOR) || node.querySelector?.(RIGHT_CONTROLS_SELECTOR)))) return;
 
           for (const m of muts) {
             if (
@@ -10906,7 +12645,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "pageCoherence",
-    "Page Coherence Guard v1.16",
+    "Page Coherence Guard v1.17",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -10924,6 +12663,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         const STALE_ATTRIBUTE = "data-yt-master-page-stale";
         const STATE_ATTRIBUTE = "data-yt-master-state";
         const EVENTS_ATTRIBUTE = "data-yt-master-events";
+        const INCLUDE_DETAILED_DIAGNOSTICS = false;
         const LEGACY_NOTICE_ID = "yt-master-page-coherence-notice";
         const COMMENTS_STALE_ATTRIBUTE = "data-iow-stale-video";
         const COMMENT_PERMALINK_LINK_SELECTOR =
@@ -11321,12 +13061,23 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           };
         };
 
+        const diagnosticSnapshot = snapshot => {
+          if (INCLUDE_DETAILED_DIAGNOSTICS) return snapshot;
+          const { identityStatus, nativeLoading, confirmedMismatch, confirmedCoherent,
+            commentsPresent, commentsHiddenAsStale, confirmedStaleComments, mismatchChecks, loadingRecoveryStatus } = snapshot;
+          return { identityStatus, nativeLoading, confirmedMismatch, confirmedCoherent,
+            commentsPresent, commentsHiddenAsStale, confirmedStaleComments, mismatchChecks, loadingRecoveryStatus };
+        };
+        const diagnosticEvents = () => navigationEvents.map(entry => INCLUDE_DETAILED_DIAGNOSTICS
+          ? { ...entry } : { type: entry.type, identityStatus: entry.identityStatus });
         const publishState = (snapshot = buildSnapshot()) => {
           const root = document.documentElement;
           if (!root) return snapshot;
 
-          root.setAttribute(STATE_ATTRIBUTE, JSON.stringify(snapshot));
-          root.setAttribute(EVENTS_ATTRIBUTE, JSON.stringify(navigationEvents));
+          const state = JSON.stringify(diagnosticSnapshot(snapshot));
+          if (root.getAttribute(STATE_ATTRIBUTE) !== state) root.setAttribute(STATE_ATTRIBUTE, state);
+          const events = JSON.stringify(diagnosticEvents());
+          if (root.getAttribute(EVENTS_ATTRIBUTE) !== events) root.setAttribute(EVENTS_ATTRIBUTE, events);
           return snapshot;
         };
 
@@ -11624,9 +13375,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         };
 
         globalThis.__YT_MASTER_STATE__ = Object.freeze({
-          check: runCoherenceCheck,
-          events: () => navigationEvents.map((entry) => ({ ...entry })),
-          snapshot: () => publishState(buildSnapshot()),
+          check: () => diagnosticSnapshot(runCoherenceCheck()),
+          events: diagnosticEvents,
+          snapshot: () => diagnosticSnapshot(publishState(buildSnapshot())),
         });
 
         suite.addWindowListener("yt-navigate-start", handleNavigateStart, true);
@@ -11698,7 +13449,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "playerPreferencesLite",
-    "Player Preferences Lite v1.128",
+    "Player Preferences Lite v1.141",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -12152,6 +13903,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         let preferredQualityNavigationPending = false;
         const preferredQualityRetryTimers = new Set();
         let theaterModeAttemptKey = "";
+        const theaterModeAttemptTimers = new Set();
         let playerLayoutRefreshFrame = 0;
         const playerLayoutRefreshAttemptTimers = new Map();
         let liveChatCollapseAttemptTimers = [];
@@ -12172,6 +13924,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         let videoMirrorPlayer = null;
         let videoMirrorControls = null;
         let videoMirrorPageSuspended = false;
+        let videoControlsRecoveryObserver = null;
+        let videoControlsRecoveryTargets = [];
         let liveChatSyncFrame = 0;
         let liveChatVideoId = "";
         let liveChatOverride = null;
@@ -13628,8 +15382,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           });
 
           while (walker.nextNode()) {
-            const text = walker.currentNode.textContent
-              .replace(HASHTAG_TEXT_PATTERN, "$1")
+            const originalText = walker.currentNode.textContent;
+            const text = (CONFIG.hideHashtags ? originalText.replace(HASHTAG_TEXT_PATTERN, "$1") : originalText)
               .replace(/\bShow\s+(?:less|more)\b/gi, "")
               .replace(/\s+/g, " ")
               .trim();
@@ -13661,39 +15415,33 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           ).some((el) => !closestElement(el, DESCRIPTION_CONTROL_SELECTOR));
         }
 
+        const collapsedDescriptionStyles = new WeakMap();
+        const collapsedDescriptionValues = { display: 'none', height: '0px', 'line-height': '0px',
+          'max-height': '0px', 'min-height': '0px', margin: '0px', overflow: 'hidden', padding: '0px' };
         function setExpandedDescriptionCollapsed(expanded, collapsed) {
+          const previous = collapsedDescriptionStyles.get(expanded);
           if (collapsed) {
-            if (
-              expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] !== "1"
-            ) {
-              expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] = "1";
+            if (previous) return;
+            expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] = '1';
+            const owned = [];
+            for (const [property, value] of Object.entries(collapsedDescriptionValues)) {
+              const original = expanded.style.getPropertyValue(property);
+              const priority = expanded.style.getPropertyPriority(property);
+              if (original === value && priority === 'important') continue;
+              setImportantStyleProperty(expanded, property, value);
+              owned.push([property, original, priority, expanded.style.getPropertyValue(property)]);
             }
-            setImportantStyleProperty(expanded, "display", "none");
-            setImportantStyleProperty(expanded, "height", "0px");
-            setImportantStyleProperty(expanded, "line-height", "0px");
-            setImportantStyleProperty(expanded, "max-height", "0px");
-            setImportantStyleProperty(expanded, "min-height", "0px");
-            setImportantStyleProperty(expanded, "margin", "0px");
-            setImportantStyleProperty(expanded, "overflow", "hidden");
-            setImportantStyleProperty(expanded, "padding", "0px");
+            collapsedDescriptionStyles.set(expanded, owned);
             return;
           }
-
-          if (expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] !== "1") {
-            return;
-          }
-
+          if (!previous) return;
+          collapsedDescriptionStyles.delete(expanded);
           delete expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY];
-          [
-            "display",
-            "height",
-            "line-height",
-            "max-height",
-            "min-height",
-            "margin",
-            "overflow",
-            "padding",
-          ].forEach((property) => expanded.style.removeProperty(property));
+          for (const [property, original, priority, applied] of previous) {
+            if (expanded.style.getPropertyValue(property) !== applied || expanded.style.getPropertyPriority(property) !== 'important') continue;
+            if (original) expanded.style.setProperty(property, original, priority);
+            else expanded.style.removeProperty(property);
+          }
         }
 
         function setImportantStyleProperty(el, property, value) {
@@ -13739,7 +15487,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           getExpandedDescriptionHeightResetElements(expanded).forEach((el) => {
             setImportantStyleProperty(el, "height", "auto");
-            setImportantStyleProperty(el, "min-height", "0px");
+            // Preserve the native automatic minimum size. A flex description with
+            // a zero basis otherwise collapses and paints over the comments below.
           });
           setImportantStyleProperty(expanded, "max-height", "none");
         }
@@ -14621,23 +16370,41 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             : location.pathname.split("/")[2] || "";
         }
 
+        function isAvailableVideoMirrorOwner(element) {
+          if (!isRenderedWatchFlexy(element) || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+          // Floating can leave a zero-height owner; a zero-width transformed retained
+          // owner is still ineligible even though it has a client rect.
+          if (!(element.getBoundingClientRect().width > 0)) return false;
+          for (let current = element; current; current = current.parentElement) {
+            const style = getComputedStyle(current);
+            if (style.display === "none" || style.visibility === "hidden" ||
+                style.visibility === "collapse" || Number(style.opacity) === 0) return false;
+          }
+          return true;
+        }
+
+        function isVisibleVideoMirrorSurface(element) {
+          if (!isAvailableVideoMirrorOwner(element)) return false;
+          const bounds = element.getBoundingClientRect();
+          return bounds.width > 0 && bounds.height > 0;
+        }
+
         function getVideoMirrorTarget(videoId = getVideoMirrorRouteId()) {
           if (!videoId) return null;
           const placeholderOwner = document
             .querySelector("#ytsmp-player-placeholder")
             ?.closest("ytd-watch-flexy");
-          const watchOwner = getWatchFlexy();
-          const floatingOwner = isRenderedWatchFlexy(placeholderOwner)
+          const floatingOwner = () => isAvailableVideoMirrorOwner(placeholderOwner)
             ? placeholderOwner
-            : watchOwner;
+            : [...document.querySelectorAll("ytd-watch-flexy")].find(isAvailableVideoMirrorOwner);
           for (const player of document.querySelectorAll("#movie_player")) {
             if (
-              !isRenderedWatchFlexy(player) ||
+              !isVisibleVideoMirrorSurface(player) ||
               player.closest("ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer")
             ) continue;
 
             const owner = player.closest("ytd-watch-flexy") || (
-              player.parentElement === document.body ? floatingOwner : null
+              player.parentElement === document.body ? floatingOwner() : null
             );
             if (!isRenderedWatchFlexy(owner)) continue;
             let playerVideoId = "";
@@ -14649,8 +16416,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             // Never carry the previous video's mirror into a pending SPA handoff.
             if (playerVideoId !== videoId) continue;
             const video = Array.from(player.querySelectorAll("video.html5-main-video"))
-              .find(isRenderedWatchFlexy);
-            if (video) return { player, video };
+              .find(isVisibleVideoMirrorSurface);
+            if (video) return { player, video, owner };
           }
           return null;
         }
@@ -14909,6 +16676,51 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           return button;
         }
 
+        function clearVideoControlsRecovery() {
+          videoControlsRecoveryObserver?.disconnect();
+          videoControlsRecoveryObserver = null;
+          videoControlsRecoveryTargets = [];
+        }
+
+        function watchUnavailableVideoControls(player, controls) {
+          const targets = new Set();
+          for (const row of controls) {
+            for (let node = row; node; node = node.parentElement) {
+              targets.add(node);
+              if (node === player) break;
+            }
+          }
+          const next = [...targets];
+          if (next.length === videoControlsRecoveryTargets.length &&
+              next.every((target, index) => target === videoControlsRecoveryTargets[index])) return;
+          clearVideoControlsRecovery();
+          if (!next.length) return; // Child-list discovery handles controls not yet stamped.
+          videoControlsRecoveryTargets = next;
+          videoControlsRecoveryObserver = new MutationObserver(() => {
+            if (dynamicNavigationPending || videoMirrorPageSuspended) return;
+            scheduleVideoMirrorSync();
+            scheduleLiveChatSync();
+          });
+          for (const target of next) videoControlsRecoveryObserver.observe(target, {
+            attributes: true, attributeFilter: ["hidden", "inert", "aria-hidden", "style", "class"],
+          });
+        }
+
+        function getVideoPlayerControls(player) {
+          const rows = [...player.querySelectorAll(".ytp-right-controls")];
+          const candidates = rows.filter(controls =>
+            controls.getClientRects().length > 0 && !controls.closest('[hidden], [inert], [aria-hidden="true"]'),
+          );
+          const visible = candidates.find(isVisibleVideoMirrorSurface);
+          // Ordinary native autohide fades the sole toolbar without removing it.
+          const selected = visible || (candidates.length === 1 ? candidates[0] : null);
+          // Native transitions can reveal an existing row with attributes alone.
+          // Watch only its ancestry while missing, never the player's busy subtree.
+          if (selected) clearVideoControlsRecovery();
+          else watchUnavailableVideoControls(player, rows);
+          return selected;
+        }
+
         function placeVideoMirrorButton(controls) {
           const settingsButton = controls.querySelector(".ytp-settings-button");
           const defaultViewButton = controls.querySelector(".ytp-size-button");
@@ -14947,7 +16759,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (videoMirrorFrame) cancelAnimationFrame(videoMirrorFrame);
           videoMirrorFrame = 0;
           const videoId = getVideoMirrorRouteId();
-          if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || !videoId) {
+          if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || dynamicNavigationPending || !videoId) {
             resetVideoMirror();
             return;
           }
@@ -14958,6 +16770,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
           const target = getVideoMirrorTarget(videoId);
           if (!target) {
+            clearVideoControlsRecovery();
             clearVideoMirrorElements();
             return;
           }
@@ -14976,7 +16789,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             videoMirrorVideo.removeAttribute(VIDEO_MIRROR_ATTRIBUTE);
           }
 
-          const controls = target.player.querySelector(".ytp-right-controls");
+          const controls = getVideoPlayerControls(target.player);
           if (videoMirrorControls !== controls) hideVideoMirrorTooltip();
           videoMirrorControls = controls;
           if (!controls) {
@@ -14994,7 +16807,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function scheduleVideoMirrorSync() {
-          if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || videoMirrorFrame) return;
+          if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || dynamicNavigationPending || videoMirrorFrame) return;
           videoMirrorFrame = requestAnimationFrame(syncVideoMirror);
         }
 
@@ -15003,6 +16816,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             !CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended ||
             !isWatchPath() || mutation.type !== "childList"
           ) return false;
+          const ignoredSurface = "ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container";
+          if (mutation.target?.closest?.(ignoredSurface)) return false;
           if (
             videoMirrorVideo?.isConnected && videoMirrorButton?.isConnected &&
             videoMirrorControls?.isConnected && videoMirrorPlayer?.isConnected &&
@@ -15011,15 +16826,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             videoMirrorPlayer.contains(videoMirrorVideo)
           ) {
             // Reconcile late/replaced placement anchors, not unrelated page traffic.
-            if (!videoMirrorControls.contains(mutation.target)) return false;
+            if (!videoMirrorControls.contains(mutation.target)) {
+              return videoMirrorPlayer.contains(mutation.target) &&
+                [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+                  node.nodeType === Node.ELEMENT_NODE && (node.matches(".ytp-right-controls") ||
+                    (node.children.length > 0 && Boolean(node.querySelector(".ytp-right-controls")))));
+            }
             return [...mutation.addedNodes, ...mutation.removedNodes].some((node) =>
               node.nodeType === Node.ELEMENT_NODE &&
               (node.matches(VIDEO_MIRROR_ANCHOR_SELECTOR) ||
                 Boolean(node.querySelector(VIDEO_MIRROR_ANCHOR_SELECTOR))),
             );
           }
-          const ignoredSurface = "ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container";
-          if (mutation.target?.closest?.(ignoredSurface)) return false;
           return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
             if (node.nodeType !== Node.ELEMENT_NODE) return false;
             if (node.matches(ignoredSurface)) return false;
@@ -15118,33 +16936,41 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
         function getLiveChatTarget(videoId) {
           const target = getVideoMirrorTarget(videoId);
-          if (!target) return null;
-          const owner = target.player.closest("ytd-watch-flexy") ||
-            document.querySelector("#ytsmp-player-placeholder")?.closest("ytd-watch-flexy");
+          if (!target) { clearVideoControlsRecovery(); return null; }
+          const owner = target.owner;
           if (!isRenderedWatchFlexy(owner) || owner.closest('[inert], [aria-hidden="true"]')) return null;
           const frames = [...owner.querySelectorAll("ytd-live-chat-frame#chat")].filter(frame =>
             frame.closest("ytd-watch-flexy") === owner &&
             (frame.querySelector("iframe#chatframe") || frame.querySelector(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR)),
           );
-          if (frames.length !== 1) return null;
-          const frame = frames[0];
+          const candidates = frames.map(frame => {
+            const iframe = frame.querySelector("iframe#chatframe");
+            const source = iframe?.getAttribute("src");
+            let valid = true;
+            if (source && source !== "about:blank") {
+              try {
+                const url = new URL(source, location.href);
+                if (url.origin !== location.origin || !/^\/live_chat(?:_replay)?$/.test(url.pathname) ||
+                    (url.searchParams.has("v") && url.searchParams.get("v") !== videoId)) valid = false;
+              } catch { valid = false; }
+            }
+            return { frame, iframe, valid };
+          });
+          const matching = candidates.filter(candidate => candidate.valid);
+          // Retained frames for previous videos must not hide the current control.
+          // Keep one rejected frame under observation so its native src can recover.
+          const selected = matching.length === 1 ? matching[0] :
+            candidates.length === 1 ? candidates[0] : null;
+          if (!selected) return null;
+          const { frame, iframe, valid } = selected;
           if (frame.hasAttribute("popover") && frame.getAttribute(LIVE_CHAT_PANEL_ATTRIBUTE) !== "1") return null;
-          const source = frame.querySelector("iframe#chatframe")?.getAttribute("src");
-          let valid = true;
-          if (source && source !== "about:blank") {
-            try {
-              const url = new URL(source, location.href);
-              if (url.origin !== location.origin || !/^\/live_chat(?:_replay)?$/.test(url.pathname) ||
-                  (url.searchParams.has("v") && url.searchParams.get("v") !== videoId)) valid = false;
-            } catch { valid = false; }
-          }
-          const controls = target.player.querySelector(".ytp-right-controls");
+          const controls = getVideoPlayerControls(target.player);
           const branch = [];
           for (let ancestor = frame.parentElement; ancestor; ancestor = ancestor.parentElement) {
             branch.push(ancestor);
             if (ancestor === owner) break;
           }
-          return controls ? { frame, owner, player: target.player, controls, branch, iframe: frame.querySelector("iframe#chatframe"), valid } : null;
+          return controls ? { frame, owner, player: target.player, controls, branch, iframe, valid } : null;
         }
 
         function canPresentLiveChat() {
@@ -15235,7 +17061,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           liveChatGeometryViewport = null;
           if (liveChatGeometryListening) {
             document.removeEventListener("scroll", scheduleLiveChatGeometry, true);
-            window.removeEventListener("resize", scheduleLiveChatGeometry, true);
+            suite.removeWindowListener("resize", scheduleLiveChatGeometry, true);
             liveChatGeometryListening = false;
           }
           for (const property of ["--ytppl-live-chat-top", "--ytppl-live-chat-height"]) {
@@ -15507,10 +17333,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               !isWatchPath() || mutation.type !== "childList") return false;
           if (mutation.target?.closest?.("ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container")) return false;
           const selector = `ytd-live-chat-frame#chat, iframe#chatframe, #movie_player, .ytp-right-controls, #ytsmp-player-placeholder, #${VIDEO_MIRROR_BUTTON_ID}, #ytms-player-settings-button, ${VIDEO_MIRROR_ANCHOR_SELECTOR}`;
+          const insideChat = Boolean(mutation.target?.closest?.("ytd-live-chat-frame#chat"));
           return [...mutation.addedNodes, ...mutation.removedNodes].some(node => {
             if (node.nodeType !== Node.ELEMENT_NODE) return false;
             if (node.id === LIVE_CHAT_BUTTON_ID) return node === liveChatButton && !node.isConnected;
-            return node.matches(selector) || Boolean(node.querySelector(selector));
+            return node.matches(selector) || Boolean(node.querySelector(selector)) ||
+              (insideChat && (node.matches(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR) ||
+                Boolean(node.querySelector(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR))));
           });
         }
 
@@ -15730,8 +17559,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           );
         }
 
-        function isTheaterModeEnabled() {
-          const flexy = getWatchFlexy();
+        function isTheaterModeEnabled(player = null) {
+          const flexy = player?.closest("ytd-watch-flexy") || getWatchFlexy();
           if (!flexy) {
             return false;
           }
@@ -15743,12 +17572,34 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           );
         }
 
+        function getTheaterModePlayer() {
+          const videoId = getVideoMirrorRouteId();
+          if (!videoId) return null;
+          const visible = element => {
+            if (!element?.isConnected || !element.getClientRects().length ||
+                element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+            for (let node = element; node; node = node.parentElement) {
+              const style = getComputedStyle(node);
+              if (style.display === "none" || ["hidden", "collapse"].includes(style.visibility) || Number(style.opacity) === 0) return false;
+            }
+            return true;
+          };
+          const players = [...document.querySelectorAll("#movie_player")].filter(player => {
+            if (!visible(player) || player.closest("ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer")) return false;
+            const owner = player.closest("ytd-watch-flexy") || (player.parentElement === document.body ? getWatchFlexy() : null);
+            if (!visible(owner) || !player.querySelector("video.html5-main-video")) return false;
+            try { return player.getVideoData?.()?.video_id === videoId; }
+            catch { return false; }
+          });
+          return players.length === 1 ? players[0] : null;
+        }
+
         function enableTheaterMode() {
           if (
             !CONFIG.enableTheaterMode ||
             theaterModeUserDisabled ||
-            !isWatchPath() ||
-            isTheaterModeEnabled()
+            dynamicNavigationPending || videoMirrorPageSuspended || document.hidden ||
+            !isWatchPath()
           ) {
             return;
           }
@@ -15756,7 +17607,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             return;
           }
 
-          const player = document.querySelector("#movie_player, .html5-video-player");
+          const player = getTheaterModePlayer();
+          if (!player || isTheaterModeEnabled(player)) return;
           const sizeButton = player && player.querySelector(".ytp-size-button");
           if (
             !sizeButton ||
@@ -15770,10 +17622,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           schedulePlayerLayoutRefreshAttempts();
         }
 
+        function clearTheaterModeAttempts() {
+          theaterModeAttemptTimers.forEach(timer => clearTimeout(timer));
+          theaterModeAttemptTimers.clear();
+          theaterModeAttemptKey = "";
+        }
+
         function scheduleTheaterModeAttempts() {
           if (
             !CONFIG.enableTheaterMode ||
             theaterModeUserDisabled ||
+            dynamicNavigationPending || videoMirrorPageSuspended || document.hidden ||
             !isWatchPath()
           ) {
             return;
@@ -15786,23 +17645,57 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           theaterModeAttemptKey = videoKey;
           [300, 1200, 2500].forEach((delay) => {
-            setTimeout(() => {
+            const timer = setTimeout(() => {
+              theaterModeAttemptTimers.delete(timer);
               if (theaterModeAttemptKey === videoKey) {
                 enableTheaterMode();
               }
             }, delay);
+            theaterModeAttemptTimers.add(timer);
           });
         }
 
         function handleTheaterModeToggle(event) {
-          if (!CONFIG.enableTheaterMode || !isWatchPath()) {
+          if (!CONFIG.enableTheaterMode || !event.isTrusted || !isWatchPath()) {
             return;
           }
-          if (!closestElement(event.target, ".ytp-size-button")) {
+          const button = closestElement(event.target, ".ytp-size-button");
+          if (!button) return;
+          const player = getTheaterModePlayer();
+          if (!player || button.closest("#movie_player") !== player) {
             return;
           }
 
-          theaterModeUserDisabled = isTheaterModeEnabled();
+          theaterModeUserDisabled = isTheaterModeEnabled(player);
+          if (theaterModeUserDisabled) clearTheaterModeAttempts();
+        }
+
+        function handleTheaterModeKeyDown(event) {
+          if (!CONFIG.enableTheaterMode || !event.isTrusted || event.defaultPrevented ||
+              event.repeat || event.isComposing || event.keyCode === 229 ||
+              event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+              event.key?.toLowerCase() !== "t" || dynamicNavigationPending ||
+              videoMirrorPageSuspended || !isWatchPath()) return;
+          const excluded = 'input, textarea, select, dialog, [contenteditable], [role="textbox"], [role="searchbox"], ' +
+            '[role="combobox"], [role="slider"], [role="menu"], [role="listbox"], [role="dialog"], ' +
+            '[role="alertdialog"], [aria-modal="true"], .ytp-settings-menu, .ytp-popup, .ytp-panel, .ytp-contextmenu';
+          if (event.target?.isContentEditable || document.activeElement?.isContentEditable ||
+              closestElement(event.target, excluded) || closestElement(document.activeElement, excluded)) return;
+          const player = getTheaterModePlayer(), videoKey = getVideoKey();
+          if (!player) return;
+          const before = isTheaterModeEnabled(player);
+          // A microtask can run between native event listeners in Chromium. Defer to
+          // the next task so native propagation finishes, without replaying the key.
+          const timer = setTimeout(() => {
+            theaterModeAttemptTimers.delete(timer);
+            if (dynamicNavigationPending || videoMirrorPageSuspended ||
+                videoKey !== getVideoKey() || getTheaterModePlayer() !== player) return;
+            const after = isTheaterModeEnabled(player);
+            if (after === before) return;
+            theaterModeUserDisabled = !after;
+            if (theaterModeUserDisabled) clearTheaterModeAttempts();
+          }, 0);
+          theaterModeAttemptTimers.add(timer);
         }
 
         function getVideoKey() {
@@ -16014,7 +17907,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function handleWheelVolume(event) {
-          if (!CONFIG.enablePlayerWheelVolume || event.deltaY === 0) {
+          if (!CONFIG.enablePlayerWheelVolume || event.defaultPrevented || !event.cancelable ||
+              event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+              !Number.isFinite(event.deltaY) || Math.abs(event.deltaY) <= Math.abs(event.deltaX || 0)) {
             return;
           }
 
@@ -16027,7 +17922,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
 
           const player = getPlayerFromTarget(event.target);
-          if (!player) {
+          if (!player || hasNestedFullscreenWheelSurface(event.target, player)) {
             return;
           }
 
@@ -16299,6 +18194,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function handleNavigateFinish() {
+          if (videoMirrorPageSuspended) return;
           dynamicNavigationPending = false;
           liveChatNavigationPending = false;
           preferredQualityNavigationPending = false;
@@ -16314,6 +18210,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           liveChatNavigationPending = true;
           resetLiveChat();
           preferredQualityNavigationPending = true;
+          clearTheaterModeAttempts();
           clearPreferredQualityAttempts();
           resetVideoMirror();
           document.documentElement?.removeAttribute(FULLSCREEN_COMMENTS_ATTRIBUTE);
@@ -16433,6 +18330,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function cancelScheduledAnimationWork() {
+          clearVideoControlsRecovery();
           if (applyFrame) cancelAnimationFrame(applyFrame);
           if (playerLayoutRefreshFrame) cancelAnimationFrame(playerLayoutRefreshFrame);
           if (videoMirrorFrame) cancelAnimationFrame(videoMirrorFrame);
@@ -16669,7 +18567,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (frame) cancelAnimationFrame(frame);
             if (player) for (const name of previewMotionEndEvents) player.removeEventListener(name, onPreviewMotionEnd, true);
             frame = 0; restore(); player = null; track = null; sponsorMotion = null;
-            window.removeEventListener('resize', schedule);
+            suite.removeWindowListener('resize', schedule);
           }
           function onPreviewMotionEnd(event) {
             const preview = event.target?.closest?.(previewSelector);
@@ -17248,15 +19146,20 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           document.addEventListener("loadedmetadata", handlePreferredQualityMetadata, true);
         }
         document.addEventListener("click", handleTheaterModeToggle, true);
+        if (CONFIG.enableTheaterMode) document.addEventListener("keydown", handleTheaterModeKeyDown, true);
+        if (CONFIG.enableTheaterMode) document.addEventListener("visibilitychange", () => {
+          if (document.hidden) clearTheaterModeAttempts();
+          else scheduleTheaterModeAttempts();
+        }, true);
         document.addEventListener("click", handleDescriptionClick, true);
         document.addEventListener("click", handleCleanVideoUrlSelection, true);
         document.addEventListener("keydown", handleCleanVideoUrlSelection, true);
         document.addEventListener("copy", handleCleanVideoUrlCopy, true);
-        document.addEventListener("wheel", handleWheelVolume, {
+        document.addEventListener("wheel", handleFullscreenCommentsWheel, {
           capture: true,
           passive: false,
         });
-        document.addEventListener("wheel", handleFullscreenCommentsWheel, {
+        document.addEventListener("wheel", handleWheelVolume, {
           capture: true,
           passive: false,
         });
@@ -17295,6 +19198,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           () => {
             dynamicNavigationPending = true;
             videoMirrorPageSuspended = true;
+            clearTheaterModeAttempts();
             resetLiveChat();
             clearPreferredQualityAttempts();
             resetVideoMirror();
@@ -17310,10 +19214,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         suite.addWindowListener(
           "pageshow",
           () => {
-            if (videoMirrorPageSuspended) dynamicNavigationPending = false;
+            if (videoMirrorPageSuspended) {
+              dynamicNavigationPending = false;
+              preferredQualityNavigationPending = false;
+              liveChatNavigationPending = false;
+            }
             videoMirrorPageSuspended = false;
-            liveChatNavigationPending = false;
+            // An initial pageshow can arrive after SPA navigation has begun. Only
+            // an actual pagehide restoration can clear that unfinished handoff.
+            if (dynamicNavigationPending) return;
             schedulePreferredQualityAttempts();
+            scheduleTheaterModeAttempts();
             scheduleVideoMirrorSync();
             scheduleLiveChatSync();
             ensureStyles();
@@ -17330,7 +19241,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "scrollMiniplayer",
-    "Scroll Miniplayer v5.33",
+    "Scroll Miniplayer v5.42",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -17469,6 +19380,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         let navigationStartPlayerVideoId = "";
         let suppressedUntilVisible = false;
         let navigationInProgress = false;
+        let pageWasHidden = false;
         let navigationFinishPending = false;
         let mutationObserverActive = false;
         let playerAdoptionObserverActive = false;
@@ -17482,6 +19394,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         let restoreParent = null;
         let restoreNextSibling = null;
         let currentCorner = readStoredCorner();
+        let cornerWritePending = false;
+        let cornerWriteGeneration = 0;
 
         function isValidCorner(value) {
           return VALID_CORNERS.includes(value);
@@ -17506,8 +19420,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           try {
             const storage = typeof suite === "undefined" ? localStorage : suite.storage;
+            const previous = storage.getItem(CORNER_STORAGE_KEY);
+            if (previous !== null && !isValidCorner(previous)) return false;
             storage.setItem(CORNER_STORAGE_KEY, corner);
-            return true;
+            return storage.getItem(CORNER_STORAGE_KEY) === corner;
           } catch {
             return false;
           }
@@ -17539,30 +19455,27 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           );
         }
 
-        function isRenderedWatchRoot(root) {
-          if (
-            !root?.isConnected ||
-            root.hidden ||
-            root.getAttribute("aria-hidden") === "true"
-          ) {
-            return false;
-          }
+        function isRenderedWatchRoot(root, requireBox = true) {
+          if (!root?.isConnected) return false;
 
           try {
-            const style = getComputedStyle(root);
-            if (
-              style.display === "none" ||
-              style.visibility === "hidden" ||
-              style.visibility === "collapse"
-            ) {
-              return false;
+            for (let element = root; element; element = element.parentElement) {
+              if (element.hidden || element.hasAttribute("inert") ||
+                  element.getAttribute("aria-hidden") === "true") return false;
+              const style = getComputedStyle(element);
+              if (style.display === "none" || style.visibility === "hidden" ||
+                  style.visibility === "collapse" || Number(style.opacity) === 0) return false;
             }
           } catch {
             return false;
           }
 
+          // A transform-collapsed retained watch still has client rects. It cannot
+          // donate a player; a legitimate floating owner's height may remain zero.
+          if (requireBox !== false && typeof root.getBoundingClientRect === "function" &&
+              !(root.getBoundingClientRect().width > 0)) return false;
           return (
-            typeof root.getClientRects !== "function" ||
+            requireBox === false || typeof root.getClientRects !== "function" ||
             root.getClientRects().length > 0
           );
         }
@@ -17823,8 +19736,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
         function canFloatPlayer() {
           if (!CONFIG.enabled || !isEligiblePath() || isFullscreen() || isNativeMiniplayerVisible()) return false;
+          // Connected retained roots remain available to restoration bookkeeping,
+          // but cannot donate their hidden player to the visible document body.
+          const floatingOwner = floatedPlayer && (playerPlaceholder?.closest(WATCH_ROOT_SELECTOR) ||
+            restoreParent?.closest?.(WATCH_ROOT_SELECTOR));
+          if (!isRenderedWatchRoot(floatedPlayer ? floatingOwner : getWatchRoot())) return false;
 
           const player = getPlayer();
+          // The native host can be hidden independently of its watch root. Inspect
+          // its ancestry without requiring a box: floating may leave an empty host.
+          const origin = floatedPlayer ? (playerPlaceholder?.parentElement || restoreParent) : player?.parentElement;
+          if (!isRenderedWatchRoot(origin, false)) return false;
           // Native ownership survives hidden/zero-size activation transitions.
           // Taking its player during that interval causes competing resize loops.
           if (!player || player.closest(NATIVE_MINIPLAYER_SELECTOR)) return false;
@@ -18261,6 +20183,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }
 
         function finishPlayerRestore() {
+          stopFloatedWatchObservation();
           clearPlayerRestoreRetries();
           clearPlayerOrphanFinaliseTimer();
           removePlayerPlaceholder();
@@ -18609,6 +20532,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           );
           button.setAttribute("aria-label", label);
           button.title = label;
+          button.removeAttribute("aria-description");
         }
 
         function renderCornerOptions(control) {
@@ -18633,6 +20557,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               icon.style.transform = `rotate(${CORNER_ICON_ROTATIONS[corner]}deg)`;
               option.appendChild(icon);
               option.addEventListener("click", (event) => {
+                if (!event.isTrusted) return;
                 event.preventDefault();
                 event.stopPropagation();
                 applyCornerSelection(corner, control);
@@ -18644,11 +20569,30 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           menu.dataset.currentCorner = currentCorner;
         }
 
-        function applyCornerSelection(corner, control) {
-          if (!isValidCorner(corner) || corner === currentCorner) return;
-
+        async function applyCornerSelection(corner, control) {
+          if (!isValidCorner(corner) || corner === currentCorner || cornerWritePending || navigationInProgress) return;
+          const previous = currentCorner, storedBefore = readStoredCorner(), generation = cornerWriteGeneration;
+          const button = control?.querySelector(`#${CORNER_BUTTON_ID}`);
+          const write = () => {
+            if (generation !== cornerWriteGeneration || !control?.isConnected || navigationInProgress ||
+                currentCorner !== previous || readStoredCorner() !== storedBefore) {
+              return { ok: false, error: "Miniplayer position changed. Please try again." };
+            }
+            return persistCorner(corner) ? { ok: true } : { ok: false, error: "Miniplayer position could not be saved. Please try again." };
+          };
+          cornerWritePending = true;
+          button?.setAttribute("aria-busy", "true");
+          let result;
+          try { result = typeof suite === "undefined" ? write() : await suite.writeCorner(write); }
+          catch { result = { ok: false, error: "Miniplayer position could not be saved. Please try again." }; }
+          finally { cornerWritePending = false; button?.removeAttribute("aria-busy"); }
+          if (generation !== cornerWriteGeneration || !control?.isConnected) return;
+          if (!result.ok) {
+            if (button) { button.title = result.error; button.setAttribute("aria-description", result.error); }
+            return;
+          }
+          button?.removeAttribute("aria-description");
           currentCorner = corner;
-          persistCorner(currentCorner);
           updateCornerButton();
           renderCornerOptions(control);
           control?.querySelector(`#${CORNER_BUTTON_ID}`)?.focus({ preventScroll: true });
@@ -18975,6 +20919,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         function setActive(active) {
           const body = document.body;
           if (!body) return;
+          if (!active) stopFloatedWatchObservation();
 
           const wasActive = body.classList.contains(ACTIVE_CLASS);
           const wasExiting = body.classList.contains(EXITING_CLASS);
@@ -18995,6 +20940,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             setBodyBoxVars();
             body.classList.remove(EXITING_CLASS);
             body.classList.add(ACTIVE_CLASS);
+            syncFloatedWatchObservation();
             scheduleCompactQueueInfoSync();
 
             if (!wasActive) {
@@ -19043,6 +20989,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         function deactivateImmediately() {
           const body = document.body;
           if (!body) return;
+          stopFloatedWatchObservation();
 
           const wasFloating = isBodyFloating();
           clearTimeout(fadeOutTimer);
@@ -19121,6 +21068,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           syncQueuePanelObservation();
           ensureStyles();
           if (isBodyActive()) {
+            syncFloatedWatchObservation();
             scheduleCompactQueueInfoSync();
           }
           scheduleScrollSync();
@@ -19217,6 +21165,35 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           queuePanelObservers.clear();
         }
 
+        // The floated player no longer inherits its watch root's visibility. Observe
+        // only that root and its current ancestors so a native hide restores ownership.
+        // Use a separate native observer: merging these registrations with global
+        // child discovery would subscribe to unrelated subtree attribute churn.
+        const floatedWatchObserver = new window.MutationObserver(scheduleScrollSync);
+        let floatedWatchTargets = [];
+        function stopFloatedWatchObservation() {
+          floatedWatchObserver.disconnect();
+          floatedWatchTargets = [];
+        }
+
+        function syncFloatedWatchObservation() {
+          const targets = [];
+          if (floatedPlayer && isBodyFloating()) {
+            const owner = playerPlaceholder?.parentElement || restoreParent;
+            for (let element = owner; element; element = element.parentElement) targets.push(element);
+          }
+          if (targets.length === floatedWatchTargets.length &&
+              targets.every((target, index) => target === floatedWatchTargets[index])) return;
+          stopFloatedWatchObservation();
+          floatedWatchTargets = targets;
+          for (const target of targets) floatedWatchObserver.observe(target, {
+            attributes: true, attributeFilter: ["hidden", "inert", "aria-hidden", "class", "style"],
+          });
+          // Reparenting beneath an already-hidden ancestor has no later attribute
+          // mutation to deliver. Reconcile once when the ownership chain changes.
+          if (targets.length) scheduleScrollSync();
+        }
+
         function replaceObserverRegistrations(targetObserver, registrations) {
           if (typeof targetObserver.replaceRegistrations === "function") {
             targetObserver.replaceRegistrations(registrations);
@@ -19298,6 +21275,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (reconcileTrackedPlayer()) {
             scheduleRouteSync();
           }
+          if (floatedPlayer) syncFloatedWatchObservation();
           if (navigationInProgress || !isEligiblePath()) return;
 
           const queuePanelTopologyChanged = mutations.some(
@@ -19415,6 +21393,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         }, true);
 
         suite.addWindowListener("yt-navigate-start", () => {
+          cornerWriteGeneration++;
           beginNavigationLock();
           deactivateImmediately();
         }, true);
@@ -19430,9 +21409,16 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           scheduleRouteSync();
         }, true);
         suite.addWindowListener("pagehide", cancelScheduledAnimationFrames, true);
+        suite.addWindowListener("pagehide", stopFloatedWatchObservation, true);
+        suite.addWindowListener("pagehide", () => { pageWasHidden = true; cornerWriteGeneration++; }, true);
         suite.addWindowListener("pageshow", () => {
           // A BFCache restore may not emit a matching YouTube navigation finish.
-          finishNavigationLock();
+          // Initial pageshow can arrive during a newer SPA handoff, which it must
+          // not unlock or adopt back into the scroll player.
+          if (pageWasHidden) {
+            pageWasHidden = false;
+            finishNavigationLock();
+          } else if (!navigationInProgress) scheduleRouteSync();
         }, true);
 
         syncRouteState();
@@ -19450,7 +21436,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.80",
+    "Watch Layout Cleaner v1.94",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -20319,7 +22305,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             frame = 0;
             if (navigating) return;
             const players = [...document.querySelectorAll('#movie_player')].filter(player =>
-              player.isConnected && player.getClientRects().length);
+              player.isConnected && !player.closest('ytd-video-preview, ytd-reel-video-renderer') && player.getClientRects().length);
             if (players.length !== 1 || players[0].classList.contains('ad-showing') ||
                 players[0].classList.contains('ad-interrupting')) return;
             const player = players[0];
@@ -20423,10 +22409,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           let pending = null;
           let operationGeneration = 0;
           let confirmedMiniOrders = new WeakMap();
+          let hasConfirmedMiniOrders = false;
           let menuActivation = 0;
           let toast = null;
           let toastTimer = 0;
           let menuFrame = 0;
+          let navigating = false, pageSuspended = false;
 
           const controller = (element) => element?.polymerController || element?.getPolymerController?.() || element;
           const validId = (value) => typeof value === "string" && /^[\w-]{11}$/.test(value);
@@ -20455,6 +22443,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           function isVisibleQueuePlayer(player) {
             if (!player.isConnected || !player.getClientRects().length ||
                 player.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+            const box = player.getBoundingClientRect();
+            if (!(box.width > 0 && box.height > 0)) return false;
             for (let node = player; node; node = node.parentElement) {
               const css = getComputedStyle(node);
               if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
@@ -20465,7 +22455,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           function activeVideoId() {
             const ids = new Set();
             let visible = 0;
-            const players = [...document.querySelectorAll('#movie_player')].filter(player => player.isConnected);
+            const players = [...document.querySelectorAll('#movie_player')].filter(player => player.isConnected &&
+              !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
             for (const player of players) {
               if (!isVisibleQueuePlayer(player)) continue;
               visible++;
@@ -20482,20 +22473,30 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           function activePlayer(anchor) {
             return [...document.querySelectorAll('#movie_player')].find(player =>
+              !player.closest('ytd-video-preview, ytd-reel-video-renderer') &&
               isVisibleQueuePlayer(player) &&
               player.getVideoData?.()?.video_id === anchor);
           }
 
           const sameIds = (left, right) => left.length === right.length && left.every((id, i) => id === right[i]);
 
+          function confirmedAnchor(proof, anchor) {
+            if (!proof || proof.expectedEntries.filter(entry => entry.videoId === proof.anchor).length !== 1) return false;
+            const previous = proof.expectedEntries.findIndex(entry => entry.videoId === proof.anchor);
+            return anchor === proof.anchor || !pending && proof.expectedEntries[previous + 1]?.videoId === anchor;
+          }
+
           function miniplayerQueue(player, anchor) {
             const mini = player?.closest("ytd-miniplayer");
             if (!mini) return null;
             const ids = player.getPlaylist?.();
             if (Array.isArray(ids) && !ids.length) return null; // A standalone video has no existing queue.
-            if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id)) ||
-                ids.filter(id => id === anchor).length !== 1) return { unavailable: true };
-            return { mini, ids: [...ids] };
+            if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id))) return { unavailable: true };
+            const requiresConfirmed = ids.filter(id => id === anchor).length !== 1;
+            const proof = confirmedMiniOrders.get(player);
+            if (requiresConfirmed && (!proof || proof.mini !== mini || !Array.isArray(proof.playerPlaylist) ||
+                !sameIds(ids, proof.playerPlaylist) || !confirmedAnchor(proof, anchor))) return { unavailable: true };
+            return { mini, ids: [...ids], requiresConfirmed };
           }
 
           const queueEntries = videos => videos.map(video => ({ videoId: video.videoId, playlistSetVideoId: video.playlistSetVideoId }));
@@ -20518,13 +22519,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
 
           function rememberMiniOrder(queue, player, proof, expectedEntries, operation) {
-            if (!proof || !queue.mini || proof.player !== player || proof.anchor !== operation.anchor ||
+            if (!proof || proof.player !== player || proof.anchor !== operation.anchor ||
                 proof.panel !== queue.panel || proof.owner !== queue.owner || proof.mini !== queue.mini ||
                 proof.listId !== queue.listId || proof.playerListId !== queue.playerListId ||
                 !sameEntries(queueEntries(queue.videos), expectedEntries) || !reorderRows(queue) || pending !== operation) return;
             confirmedMiniOrders.set(player, { player, anchor: proof.anchor, panel: proof.panel, owner: proof.owner,
               mini: proof.mini, listId: proof.listId, playerListId: proof.playerListId,
               playerPlaylist: proof.playerPlaylist, expectedEntries });
+            hasConfirmedMiniOrders = true;
           }
 
           function allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery) {
@@ -20533,7 +22535,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             // an unrelated order, entry, owner or playback change still fails closed.
             const entries = queueEntries(queue.videos);
             const matchesContext = proof => proof && proof.player === player && proof.anchor === anchor && proof.mini === queue.mini &&
-              queue.mini && player.closest('ytd-miniplayer') === proof.mini && proof.panel === queue.panel &&
+              player.closest('ytd-miniplayer') === proof.mini && proof.panel === queue.panel &&
               proof.owner === queue.owner && proof.listId === queue.listId &&
               proof.playerListId === queue.playerListId &&
               Array.isArray(proof.playerPlaylist) && sameIds(nativePlaylist, proof.playerPlaylist);
@@ -20544,6 +22546,42 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             const activeMove = pending?.committed && pending.anchor === anchor ? pending.move : null;
             for (const proof of [activeMove, confirmedMiniOrders.get(player)]) {
               if (matchesContext(proof) && sameEntries(entries, proof.expectedEntries) && reorderRows(queue)) return true;
+            }
+            // A confirmed queue may advance while the player's playlist API still
+            // reports its pre-reorder snapshot. Carry proof across exactly the next
+            // bound entry, never an unexplained jump or an in-flight operation.
+            const confirmed = confirmedMiniOrders.get(player);
+            // Native minimisation/maximisation can adopt the exact completed queue without
+            // refreshing the player's order API. Rebind only that intact shared
+            // ownership transition; never carry an in-flight move or changed model.
+            const ownershipChanged = confirmed && confirmed.mini !== queue.mini &&
+              (confirmed.mini === null && queue.mini?.isConnected && confirmed.panel.closest('ytd-miniplayer') === queue.mini ||
+                confirmed.mini && queue.mini === null && !confirmed.panel.closest('ytd-miniplayer'));
+            if (!pending && ownershipChanged) {
+              const adopted = { ...confirmed, mini: queue.mini, anchor };
+              // The same native queue ID can disappear again when a watch queue is
+              // minimised. Carry only its proven panel ID across this exact handoff.
+              if (confirmed.mini === null && queue.mini && confirmed.playerListId === confirmed.listId &&
+                  (queue.playerListId == null || queue.playerListId === '')) adopted.playerListId = queue.playerListId;
+              // Home can omit the native queue ID until maximisation. Accept only
+              // the same panel's already-proven ID becoming readable on its player.
+              if (confirmed.mini && queue.mini === null &&
+                  (confirmed.playerListId == null || confirmed.playerListId === '') &&
+                  queue.playerListId === confirmed.listId) adopted.playerListId = queue.playerListId;
+              if (confirmedAnchor(confirmed, anchor) && matchesContext(adopted) &&
+                  sameEntries(entries, confirmed.expectedEntries) && reorderRows(queue)) {
+                confirmedMiniOrders.set(player, adopted);
+                return true;
+              }
+            }
+            if (!pending && confirmed && anchor !== confirmed.anchor && confirmedAnchor(confirmed, anchor)) {
+              const previous = confirmed.expectedEntries.findIndex(entry => entry.videoId === confirmed.anchor);
+              const advanced = { ...confirmed, anchor };
+              if (queue.currentIndex === previous + 1 && matchesContext(advanced) &&
+                  sameEntries(entries, confirmed.expectedEntries) && reorderRows(queue)) {
+                confirmedMiniOrders.set(player, advanced);
+                return true;
+              }
             }
             const append = pending && !pending.committed && pending.anchor === anchor ? pending.appendProof : null;
             return matchesContext(append) && isAppendOrder(entries, append, pending.videoId) && Boolean(reorderRows(queue));
@@ -20558,12 +22596,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             const mini = player?.closest("ytd-miniplayer");
             const miniQueue = miniplayerQueue(player, anchor);
             if (missingListId && miniQueue?.unavailable) return { unavailable: true };
+            const nativePlaylist = missingListId ? miniQueue?.ids : player?.getPlaylist?.();
             for (const panel of document.querySelectorAll(panelSelector)) {
               if (!panel.isConnected) continue;
               const owner = controller(panel);
               const data = owner?.data;
               if (typeof data?.playlistId !== "string" || !data.playlistId.startsWith("TLPQ")) continue;
               const ownedMini = mini && panel.closest("ytd-miniplayer") === mini;
+              // YouTube retains the watch panel after adopting its queue into the
+              // miniplayer. A hidden copy outside that player is not a second queue,
+              // even when its stale model still has the same playlist ID.
+              if (mini && !ownedMini && !isVisibleQueuePlayer(panel)) continue;
               if (missingListId && ownedMini && !miniQueue?.mini) return { unavailable: true };
               if (!panel.getClientRects().length && data.playlistId !== activeListId && !ownedMini) continue;
               // Visible panels can also belong to a previous queue during navigation.
@@ -20591,10 +22634,18 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               const queue = { panel, owner, data, videos, currentIndex, listId: data.playlistId, playerListId: activeListId, mini: ownedMini ? mini : null };
               if (missingListId && !sameIds(videos.map(video => video.videoId), miniQueue.ids) &&
                   !allowsLaggingPlayerOrder(queue, player, anchor, miniQueue.ids, recovery)) return { unavailable: true };
+              // A known queue ID does not prove that a retained panel has the current
+              // order. Honour an independently readable native order, allowing only
+              // this operation's exact captured append/reorder when that API lags.
+              if (!missingListId && Array.isArray(nativePlaylist) && nativePlaylist.length > 0 &&
+                  nativePlaylist.length <= 1000 && nativePlaylist.every(validId) &&
+                  !sameIds(videos.map(video => video.videoId), nativePlaylist) &&
+                  !allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery)) return { unavailable: true };
               queues.push(queue);
             }
             // A collapsed Home queue may not have stamped a panel yet. Never mistake
             // its existing playlist for no queue and send an append-only command.
+            if (!queues.length && miniQueue?.requiresConfirmed) return { unavailable: true };
             if (!queues.length && miniQueue?.mini && (missingListId || activeListId?.startsWith("TLPQ"))) {
               return { awaitingPanel: true, ...miniQueue };
             }
@@ -20714,11 +22765,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               if (pending !== operation) return;
               if (operation.preparing) {
                 const current = miniplayerQueue(player, operation.anchor);
-                if (!current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
+                if (player !== operation.player || !current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
                   finish("The queue changed; no video was added.");
                   return;
                 }
                 if (!queue || queue.unavailable || queue.awaitingPanel || !reorderRows(queue)) return;
+                if (operation.listId && queue.listId !== operation.listId) {
+                  finish("The queue changed; no video was added.");
+                  return;
+                }
                 const { entry, popup, activation } = operation;
                 finish();
                 begin(entry, popup, activation);
@@ -20849,6 +22904,20 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             });
           }
 
+          function nativeQueueChanged() {
+            if (pending) { scheduleMove(); return; }
+            if (!hasConfirmedMiniOrders) return;
+            // Record each independently verified native advance, even when the user
+            // does not choose Play next between videos. Coalescing these signals can
+            // lose the intermediate entry and strand an otherwise coherent queue.
+            try {
+              const anchor = activeVideoId();
+              if (!anchor) return;
+              const player = activePlayer(anchor), proof = confirmedMiniOrders.get(player);
+              if (proof && anchor !== proof.anchor && confirmedAnchor(proof, anchor)) queueState(anchor);
+            } catch { /* A changing native binding must not manufacture order proof. */ }
+          }
+
           function queueDispatcher(popup) {
             const app = document.querySelector("ytd-app");
             // Some older clients expose this method on the host, others only on its
@@ -20885,7 +22954,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           function queueExpansionControl(queue) {
             const toggles = queue?.mini ? [...queue.mini.querySelectorAll("ytd-miniplayer-info-bar button[aria-expanded]")]
-              .filter(button => button.closest("ytd-miniplayer") === queue.mini && button.getClientRects().length) : [];
+              .filter(button => button.closest("ytd-miniplayer") === queue.mini && isVisibleQueuePlayer(button)) : [];
             return toggles.length === 1 && ['true', 'false'].includes(toggles[0].getAttribute('aria-expanded')) ? toggles[0] : null;
           }
 
@@ -20899,16 +22968,23 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             return { player, mini: queue.mini, listId, ids: [...queue.ids], currentIndex: queue.ids.indexOf(anchor) };
           }
 
-          function prepareMiniplayer(entry, popup, anchor, activation) {
-            const queue = miniplayerQueue(activePlayer(anchor), anchor);
+          function prepareMiniplayer(entry, popup, anchor, activation, startingGeneration) {
+            const player = activePlayer(anchor);
+            const queue = miniplayerQueue(player, anchor);
             const toggle = queueExpansionControl(queue);
             if (!toggle) {
               notify("Could not prepare Play next. Expand the video player once, then try again. Nothing was added.");
               return;
             }
-            pending = { anchor, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
+            // Expansion can stamp asynchronously. The same ordered video IDs do not
+            // identify a replacement player or another queue created meanwhile.
+            const listId = player.getPlaylistId?.();
+            if (operationGeneration !== startingGeneration) return;
+            const operation = pending = { anchor, player, listId, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
               mini: queue.mini, ids: queue.ids, observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-            pending.timer = setTimeout(() => finish("Could not prepare Play next. Nothing was added; please try again."), 2000);
+            operation.timer = setTimeout(() => {
+              if (pending === operation) finish("Could not prepare Play next. Nothing was added; please try again.");
+            }, 2000);
             // The native queue header is outside the player's unrelated expand controls.
             if (toggle.getAttribute("aria-expanded") === "false") toggle.click();
             scheduleMove();
@@ -20916,6 +22992,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           function begin(entry, popup, activation = menuActivation) {
             if (entry.used === activation) return;
+            if (navigating || pageSuspended) {
+              notify("YouTube is changing pages. Reopen the menu once it finishes.");
+              return;
+            }
             const startingGeneration = operationGeneration;
             // Native menu objects can be recycled in place while a menu or queue
             // preparation is open. Never dispatch a changed command under an older
@@ -20940,7 +23020,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               // exact old queue plus this one addition before attempting any move.
               if (!queueExpansionControl(queue)) restore = queueRestorationProof(queue, entry, anchor);
               if (!restore) {
-                prepareMiniplayer(entry, popup, anchor, activation);
+                prepareMiniplayer(entry, popup, anchor, activation, startingGeneration);
                 return;
               }
             }
@@ -20959,7 +23039,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (anchor) {
               const operation = pending = { anchor, videoId: entry.videoId, listId: restore?.listId || queue?.listId, mini: queue?.mini, generation, restore,
                 observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-              if (!existing && queue?.mini && !restore) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
+              if (!existing && queue && !restore) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
               if (pending !== operation) return;
               operation.timer = setTimeout(() => {
                 if (pending !== operation) return;
@@ -21013,6 +23093,20 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             catch { return null; }
           }
 
+          function ownedRowMatches(row, record) {
+            try {
+              const model = typeof row?.componentProps?.data === 'function'
+                ? row.componentProps.data() : controller(row)?.data;
+              // Native sheet rows can expose an opaque/write-only model. An explicit
+              // object binding is stronger evidence than a retained data-target-id.
+              if (!model || typeof model !== 'object') return true;
+              const bound = model.listItemViewModel || model.menuServiceItemRenderer || model;
+              if (bound === record) return true;
+              const expected = boundedMenuSignature(record);
+              return expected !== null && boundedMenuSignature(bound) === expected;
+            } catch { return false; } // Disposal must not cancel another accepted request.
+          }
+
           function clearPendingIcons(popup = null) {
             for (const item of pendingIcons) if (!popup || item.popup === popup || popup.contains?.(item.svg)) {
               item.svg.remove(); pendingIcons.delete(item);
@@ -21039,10 +23133,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           function showPendingPlayNextIcon(popup) {
             const binding = menuBindings.get(popup);
             if (!binding || !popup.isConnected) return;
-            const row = binding.sheet
-              ? popup.querySelector('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
-              : [...popup.querySelectorAll('ytd-menu-service-item-renderer')].find(node => controller(node)?.data === binding.record);
-            if (!row || (binding.sheet ? sheetData(popup) !== binding.data : controller(popup)?.data !== binding.data)) return;
+            let row;
+            try {
+              row = binding.sheet
+                ? popup.querySelector('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
+                : [...popup.querySelectorAll('ytd-menu-service-item-renderer')].find(node => controller(node)?.data === binding.record);
+              if (!row || (binding.sheet ? sheetData(popup) !== binding.data : controller(popup)?.data !== binding.data)) return;
+            } catch { clearPendingIcons(popup); return; } // Native row getters can dispose before the queued icon pass.
             binding.row = row;
             // YouTube's known icon-shape renderer leaves this host empty while its
             // SVG promise is pending, then replaces its children when the icon loads.
@@ -21165,9 +23262,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             const row = event.target?.closest?.("ytd-menu-service-item-renderer, yt-list-item-view-model");
             const popup = row?.closest("ytd-menu-popup-renderer, yt-sheet-view-model");
             const sheet = sheets.get(popup);
-            const entry = row?.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
-              ? sheet?.entry
-              : row && entries.get(controller(row)?.data);
+            let entry;
+            try {
+              entry = row?.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
+                ? sheet?.entry
+                : row && entries.get(controller(row)?.data);
+            } catch { return; } // No verified owned action: leave native activation alone.
             if (!entry) return;
             event.preventDefault();
             event.stopImmediatePropagation();
@@ -21175,7 +23275,16 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               const binding = menuBindings.get(popup);
               const data = row.matches('yt-list-item-view-model') ? sheetData(popup) : controller(popup)?.data;
               const items = row.matches('yt-list-item-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
-              if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem)) {
+              // The native renderer may reuse a record in place without reopening
+              // its popup. A stale weak entry binding must not activate a row that
+              // has since become a different action, even if Add to queue is intact.
+              const ownedRecord = binding?.record;
+              if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem) ||
+                  !items.some(item => (item?.menuServiceItemRenderer || item?.listItemViewModel) === ownedRecord) ||
+                  ownedRecord?.[marker] !== true || binding.ownedSignature === null ||
+                  boundedMenuSignature(ownedRecord) !== binding.ownedSignature ||
+                  !ownedRowMatches(row, ownedRecord) ||
+                  (!row.matches('yt-list-item-view-model') && controller(row)?.data !== ownedRecord)) {
                 notify("This menu changed. Reopen it and choose Play next again.");
                 return;
               }
@@ -21190,10 +23299,19 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             }
           }
 
-          function reset() {
+          function reset(event) {
+            if (event?.type === 'yt-navigate-start') navigating = true;
+            if (event?.type === 'pagehide') pageSuspended = true;
             ++operationGeneration;
             finish();
-            confirmedMiniOrders = new WeakMap();
+            // A completed queue may be adopted by the same player during SPA
+            // navigation. Keep its weak proof, which still requires exact native
+            // ownership, entry and row binding checks; cancel every pending move.
+            // Page suspension and explicit disposal must discard that proof.
+            if (event?.type !== 'yt-navigate-start') {
+              confirmedMiniOrders = new WeakMap();
+              hasConfirmedMiniOrders = false;
+            }
             // YouTube may keep this native menu model and reopen its owned row
             // without another popup-open event after SPA navigation or BFCache.
             // Retain its weak bindings: the placeholder has no native command of its
@@ -21213,8 +23331,15 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }, true));
           ['click', 'keydown', 'contextmenu'].forEach(type => document.addEventListener(type, renewMenuActivation, true));
           ["click", "tap", "keydown"].forEach(type => document.addEventListener(type, activate, true));
-          ["yt-playlist-data-updated", "yt-page-data-updated"].forEach(type => suite.addWindowListener(type, scheduleMove, true));
+          ["yt-playlist-data-updated", "yt-page-data-updated"].forEach(type => suite.addWindowListener(type, nativeQueueChanged, true));
           ["yt-navigate-start", "pagehide"].forEach(type => suite.addWindowListener(type, reset, true));
+          suite.addWindowListener('yt-navigate-finish', () => { navigating = false; }, true);
+          suite.addWindowListener('pageshow', event => {
+            // A late initial pageshow is not a completed SPA navigation. Only an
+            // actual page suspension/restoration may release that interrupted lock.
+            if (pageSuspended || event.persisted === true) navigating = false;
+            pageSuspended = false;
+          }, true);
           return reset;
         }
 
@@ -21229,6 +23354,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           const validId = value => typeof value === "string" && /^[\w-]{11}$/.test(value);
           const same = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
           let frame = 0, pending = null, focusRequest = null, navigating = false, disposed = false;
+          let navigationPending = false, pageSuspended = false;
           let toast = null, toastTimer = 0;
           const stepCss = `
             [data-ywlc-queue-step-controls] { position: relative !important; overflow: visible !important; }
@@ -21325,9 +23451,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
                   controller(current.row)?.data?.playlistSetVideoId !== current.key || dragging(current.record.owner) ||
                   current.row.parentElement !== current.record.items || !current.record.titles.has(current.title)) return false;
               for (let node = current.title; node; node = node.parentElement) {
-                if (node.hidden || node.getAttribute('aria-hidden') === 'true') return false;
+                if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true') return false;
                 const css = getComputedStyle(node);
-                if (css.display === 'none' || css.visibility === 'hidden' || css.visibility === 'collapse' || css.opacity === '0') return false;
+                if (css.display === 'none' || (node === current.title && ['hidden','collapse'].includes(css.visibility)) || css.opacity === '0') return false;
               }
               const box = current.title.getBoundingClientRect();
               return box.width > 0 && box.height > 0 && box.bottom > 0 && box.right > 0 && box.top < innerHeight && box.left < innerWidth;
@@ -21508,10 +23634,19 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             target.addEventListener(type, callback, true); listeners.push([target, type, callback]);
           }
           function visible(node) {
-            return Boolean(node?.isConnected && !node.closest('[hidden], [aria-hidden="true"]') && node.getClientRects().length);
+            if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
+            for (let current = node; current; current = current.parentElement) {
+              const css = getComputedStyle(current);
+              if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
+            }
+            return true;
           }
           function activePlayer() {
-            const players = [...document.querySelectorAll('#movie_player')].filter(visible);
+            const players = [...document.querySelectorAll('#movie_player')].filter(player => {
+              if (!visible(player)) return false;
+              const box = player.getBoundingClientRect();
+              return box.width > 0 && box.height > 0;
+            });
             if (players.length !== 1 || players[0].classList.contains('ad-showing') || players[0].classList.contains('ad-interrupting')) return null;
             return players[0];
           }
@@ -21632,8 +23767,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               }
               const current = snapshot(operation.panel);
               if (current && current.owner === operation.owner && current.listId === operation.listId && same(current.keys, operation.expected)) {
-                if (document.activeElement === document.body || operation.panel.contains(document.activeElement)) {
-                  focusRequest = { panel: current.panel, key: operation.keys[operation.from], direction: operation.direction };
+                if (!operation.focusMoved && (document.activeElement === document.body || document.activeElement === operation.button)) {
+                  focusRequest = { panel: current.panel, key: operation.keys[operation.from], direction: operation.direction,
+                    focused: document.activeElement };
                 }
                 finish();
               }
@@ -21719,7 +23855,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               const fallback = request.direction === 'up' ? entry?.down : entry?.up;
               const target = preferred && !preferred.disabled ? preferred : fallback;
               if (target && !target.disabled) queueMicrotask(() => {
-                if (target.isConnected && !target.disabled && (document.activeElement === document.body || state.panel.contains(document.activeElement))) target.focus({ preventScroll: true });
+                if (target.isConnected && !target.disabled &&
+                    (document.activeElement === document.body || document.activeElement === request.focused)) target.focus({ preventScroll: true });
               });
             }
           }
@@ -21737,7 +23874,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             const to = from + (direction === 'up' ? -1 : 1);
             if (from < 0 || to < 0 || to >= state.rows.length) { schedule(); return; }
             const expected = [...state.keys]; expected.splice(to, 0, expected.splice(from, 1)[0]);
-            const operation = pending = { ...state, row, from, direction, expected, timer: 0 };
+            const operation = pending = { ...state, row, button, from, direction, expected, timer: 0 };
             disableAll();
             operation.timer = setTimeout(() => {
               if (pending !== operation) return;
@@ -21776,6 +23913,12 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             clearTimeout(toastTimer); toast?.remove(); toast = null; toastTimer = 0;
           }
           listen(document, 'pointerdown', guardPointer); listen(document, 'mousedown', guardPointer);
+          listen(document, 'focusin', event => {
+            // A later focus choice remains the user's even if that control is then
+            // restamped and the browser falls back to the body before confirmation.
+            if (pending && event.target !== pending.button) pending.focusMoved = true;
+            if (focusRequest && event.target !== focusRequest.focused) focusRequest = null;
+          });
           listen(document, 'click', activate);
           listen(document, 'keydown', event => {
             if (event.key === 'Escape') titlePresentation.cancel();
@@ -21795,8 +23938,11 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           });
           for (const type of ['yt-playlist-data-updated', 'yt-page-data-updated']) listen(window, type, schedule);
           listen(window, 'yt-rendererstamper-finished', event => { if (event.target?.closest?.(panelSelector)) schedule(); });
-          listen(window, 'yt-navigate-start', suspend); listen(window, 'pagehide', suspend);
-          for (const type of ['yt-navigate-finish', 'pageshow']) listen(window, type, () => { navigating = false; schedule(); });
+          listen(window, 'yt-navigate-start', () => { navigationPending = true; suspend(); });
+          listen(window, 'pagehide', () => { pageSuspended = true; suspend(); });
+          const resume = () => { navigating = navigationPending || pageSuspended; schedule(); };
+          listen(window, 'yt-navigate-finish', () => { navigationPending = false; resume(); });
+          listen(window, 'pageshow', () => { pageSuspended = false; resume(); });
           schedule();
           return () => {
             suspend(); disposed = true;
@@ -22350,7 +24496,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
   suite.registerModule(
     "suiteSettings",
-    "Suite Settings v1.64",
+    "Suite Settings v1.81",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -22375,6 +24521,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
         let playerTooltip = null;
         let playerTarget = null;
         let watchedPlayerBranch = [];
+        let watchedMissingControls = false;
         let watchedThemeRoot = null;
         let watchedDocumentRoot = null;
         let watchedBody = null;
@@ -22384,7 +24531,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (suspended) return;
           hidePlayerTooltip();
           try {
-            openSettings();
+            openSettings(null, true);
             panel?.openChannels(channel, context);
           } catch (error) {
             suite.reportModuleError('suiteSettings', 'open channel upload filters', error);
@@ -22395,9 +24542,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           const dialog = suite.createSettingsDialog(document);
           document.body.append(dialog);
           const panelFooter = dialog.querySelector('footer');
+          let panelSession = false;
 
           const $ = id => dialog.querySelector(`[id="ytms-${id}"]`);
-          let reloadWarnedChannelDraft = false;
+          let reloadWarnedDrafts = new Set();
           const DEFAULTS = settings.defaults;
           const GROUPS = {
             feed: [
@@ -22415,7 +24563,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
                 value => ({ native: 'YouTube default', elapsed: 'Elapsed / total', remaining: 'Remaining / total' })[value]],
               ['timelinePreviewSize', 'Timeline preview size', ['auto', 'small', 'medium', 'large', 'native'],
                 value => ({ auto: 'Automatic (fit player)', small: 'Small', medium: 'Medium', large: 'Large', native: 'YouTube default' })[value]],
-              ['theatreMode', 'Automatic theatre mode'], ['wheelVolume', 'Right-button wheel volume'],
+              ['theatreMode', 'Automatic theatre mode'], ['wheelVolume', 'Mouse wheel volume'],
               ['wheelStep', 'Volume step', ['1', '2', '5', '10'], value => `${value}%`],
               ['preferredVideoQuality', 'Preferred video quality', ['off', 'highest', 'tiny', 'small', 'medium', 'large', 'hd720', 'hd1080', 'hd1440', 'hd2160'],
                 value => ({ off: 'YouTube default', highest: 'Highest available', tiny: '144p', small: '240p', medium: '360p', large: '480p',
@@ -22449,7 +24597,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             hidePodcasts: 'Remove podcast cards and shelves from supported feeds.',
             hideMembersOnly: 'Remove cards for videos restricted to channel members.',
             watchedThreshold: 'Choose how much watched progress is required before a video card is hidden.',
-            keepHoverPreviews: 'Allow native hover previews on Home while the miniplayer is open. Honours YouTube’s Inline playback preference. Experimental: unsupported layouts retain YouTube’s behaviour. Off by default; applies after reload.',
+            keepHoverPreviews: 'Allow native hover previews on Home while the miniplayer is open. Honours YouTube’s Inline playback preference. Enabling this turns off Disable video previews. Experimental: unsupported layouts retain YouTube’s behaviour.',
             yellowCaptions: 'Use readable yellow subtitles with a black shadow in the player and inline previews.',
             mirrorButton: 'Show the horizontal flip control. Only the video image is mirrored, not captions or controls.',
             liveChatButton: 'Show a playback-bar button for native live chat when available, including supported fullscreen views. Chat visibility is temporary for the current video. This button preference applies after reload.',
@@ -22457,14 +24605,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             timeDisplayMode: 'Choose elapsed or remaining time beside the total duration using YouTube’s native timer toggle. Live streams, adverts and unsupported timers are unchanged. Applies after reload.',
             timelinePreviewSize: 'Size of the thumbnail shown when hovering over the timeline. Automatic adapts to the visible player, including fullscreen and browser zoom. Larger sizes enlarge YouTube’s existing image, not its detail. The preview may briefly flicker or resize near SponsorBlock segments or chapter boundaries. Applies after reload.',
             theatreMode: 'Start watch videos in YouTube’s theatre view.',
-            wheelVolume: 'Hold the right mouse button and scroll over the player to adjust volume.',
+            wheelVolume: 'Scroll over the player to adjust volume. The right mouse button is required by default. Plain vertical scrolling takes you to comments when scrollable fullscreen comments are active.',
             wheelStep: 'Choose the volume change for each wheel step during the right-button gesture.',
             preferredVideoQuality: 'Request this quality on each new video, or the nearest lower available resolution. Opening native player settings stops pending attempts. Higher quality uses more bandwidth. Applies after reload.',
-            hideRelated: 'Hide suggested videos beside the watch page without hiding the active queue.',
+            hideRelated: 'Hide suggested videos beside the watch page without hiding the active queue. Enabling this turns off Related videos below the player.',
             hideChat: 'Start each video with live chat hidden, without removing other engagement panels. The player’s live chat button can show it temporarily without changing this saved default.',
             hideInfoCards: 'Hide in-video information cards and their buttons.',
             hideEndScreens: 'Hide end-screen recommendation tiles without taking over native autoplay.',
-            fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Player-only fullscreen is unchanged.',
+            fullscreenComments: 'Scroll to existing comments while page fullscreen remains active. Enabling this turns off Hide all comments. Player-only fullscreen is unchanged.',
             disableTitleHashtagLinks: 'Keep hashtag text as ordinary title text without opening hashtag pages. Preserves YouTube’s title nodes and DeArrow replacements. Applies after reload.',
             miniplayerEnabled: 'Float the watch player into a corner when it scrolls out of view.',
             miniplayerSizeMode: 'Automatic keeps the existing adaptive size. Custom uses your chosen width, reduced only when needed to fit the window. Preview changes immediately; Save keeps them.',
@@ -22476,6 +24624,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             showDeArrowTitleButton: 'Show DeArrow’s title-button controls beside the watch-page title. Hidden by default; title and thumbnail replacements remain active. Applies after reload.',
             showDeArrowQueueButton: 'Show DeArrow’s original/custom toggle logo in queue titles. Hiding it does not disable DeArrow title or thumbnail replacements.',
             menuShowDownload: 'Show YouTube’s Download action when available. Hidden by default; this does not enable downloads or change your account permissions.',
+            menuShowHype: 'Show YouTube’s Hype action when available. Hiding it does not send a Hype action.',
             menuGroupChannelTools: 'On: place Filter channel uploads, Don’t recommend channel and Report in a Channel tools submenu. Off: keep enabled actions separate in the main menu. Not interested always stays in the main menu. Save and reload to apply.',
             menuShowAgeLimit: 'Add Filter channel uploads to set how old a selected channel’s uploads can be. It appears first in Channel tools by default.',
             menuShowNotInterested: 'Keep YouTube’s Not interested action visible when the video menu provides it.',
@@ -22489,6 +24638,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             DESCRIPTIONS[feature.key] = feature.description;
           }
           let saved = settings.read();
+          let savingPreferences = false;
           let draft = { ...saved };
           let menuEditor = null;
           let lastValidMiniplayerWidth = draft.miniplayerWidth;
@@ -22500,8 +24650,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           let channelManager = null;
           let channelFooterHost = null;
 
-          let supportPanel = null, extraControls = null;
-          const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'support', 'credits'];
+          let supportPanel = null, extraControls = null, javascriptPanel = null;
+          const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'javascript', 'support', 'credits'];
           const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
           const searchInput = document.createElement('input');
           searchInput.id = 'ytms-settings-search'; searchInput.type = 'search'; searchInput.maxLength = 200;
@@ -22519,9 +24669,11 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           const searchStatus = document.createElement('p'); searchStatus.id = 'ytms-settings-search-status';
           searchStatus.setAttribute('role', 'status'); searchStatus.setAttribute('aria-live', 'polite');
           const searchList = document.createElement('div'); searchList.className = 'settings-search-list';
+          const searchActions = new WeakMap();
           searchResults.append(searchStatus, searchList); dialog.querySelector('.content').append(searchResults);
-          let searchIndex = [];
+          let searchIndex = [], searchActive = false;
           function resetSearch() {
+            searchActive = false;
             searchInput.value = ''; searchClear.hidden = true; searchResults.hidden = true;
             searchList.replaceChildren(); searchStatus.textContent = '';
             dialog.querySelector('nav').hidden = false;
@@ -22530,7 +24682,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             closePicker(false);
             resetSearch();
             currentTab = id;
-            $('restore-section-defaults').disabled = ['channels', 'extensions', 'support', 'credits'].includes(id);
+            $('restore-section-defaults').disabled = ['channels', 'extensions', 'javascript', 'support', 'credits'].includes(id);
             for (const tab of tabIds) {
               const selected = tab === id;
               const section = $(`section-${tab}`), button = $(`tab-${tab}`);
@@ -22544,14 +24696,16 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (id === 'channels') renderChannelRules();
             if (id === 'support') supportPanel?.refresh();
             extraControls?.selectTab(id);
+            javascriptPanel?.selectTab(id);
             if (focus) $(`tab-${id}`).focus();
           }
           for (const id of tabIds) {
             const tab = document.createElement('button');
-            tab.id = `ytms-tab-${id}`; tab.textContent = id === 'miniplayer' ? 'Miniplayer' : id[0].toUpperCase() + id.slice(1);
+            tab.id = `ytms-tab-${id}`; tab.textContent = id === 'javascript' ? 'Custom JS' : id[0].toUpperCase() + id.slice(1);
             tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', `ytms-section-${id}`);
-            tab.addEventListener('click', () => selectTab(id));
+            tab.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) selectTab(id); });
             tab.addEventListener('keydown', event => {
+              if (!event.isTrusted || !panelSession || !dialog.open) return;
               const index = tabIds.indexOf(id);
               const next = event.key === 'ArrowRight' ? (index + 1) % tabIds.length :
                 event.key === 'ArrowLeft' ? (index + tabIds.length - 1) % tabIds.length :
@@ -22636,12 +24790,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           channelManager = suite.createChannelAgeDialog(document, suite.channelAge,
             change => suite.showChannelFilterConfirmation?.(change), {
               host: $('section-channels'), footerHost: channelFooterHost,
+              isActive: () => panelSession && dialog.open && !searchActive && currentTab === 'channels',
+              write: suite.writeChannelFilters,
               channelBackup: suite.backup, openFullBackup: () => selectTab('support', true),
               onImported: () => { channelEntry = 'settings'; channelNotice.hidden = true; channelManager.refresh(); },
               onComplete: () => finishChannelEdit(true), onCancel: previous => finishChannelEdit(false, previous),
             });
           function renderChannelRules() {
-            if (dialog.open && currentTab === 'channels') channelManager?.refresh();
+            if (panelSession && dialog.open && !searchActive && currentTab === 'channels') channelManager?.refresh();
           }
           function openChannels(channel, context) {
             channelEntry = context?.card && context?.videoId ? 'context' : 'settings';
@@ -22652,6 +24808,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           menuEditor = suite.createMenuEditor(document, suite.menuLayout, {
             getPreferences: () => draft,
+            getAppliedPreferences: () => settings.initial,
             setLayout: layout => {
               if (JSON.stringify(layout) === JSON.stringify(suite.menuLayout.fromPreferences(saved))) {
                 for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
@@ -22737,6 +24894,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
           credits.append(logo, heading, author, version); $('section-credits').append(credits);
           extraControls = suite.createSettingsExtraControls(document, window, suite, dialog);
+          javascriptPanel = suite.createCustomJavascriptPanel(document, suite.customJavascript);
+          $('section-javascript').append(javascriptPanel.element);
           const normaliseHex = settings.normaliseHex;
           function theme() { return document.documentElement.hasAttribute('dark') ? 'dark' : 'light'; }
           function colours() { return settings.colours(draft, theme() === 'dark'); }
@@ -22746,14 +24905,17 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             return rgb(colour).map(value => { const channel = value / 255; return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; })
               .reduce((sum, channel, index) => sum + channel * [.2126, .7152, .0722][index], 0);
           }
+          const preferenceKeys = Object.keys(DEFAULTS);
+          const preferenceControlIds = { colourMode: 'colour-mode', viewerColour: 'viewer-hex', ownerColour: 'owner-hex' };
+          const preferenceBadges = new Map();
+          function samePreference(key, value, other) {
+            if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
+            return Array.isArray(value) && Array.isArray(other)
+              ? value.length === other.length && value.every((item, index) => item === other[index])
+              : value === other;
+          }
           function samePreferences(left, right) {
-            return Object.keys(DEFAULTS).every(key => {
-              const value = left[key], other = right[key];
-              if (key === 'menuLayout') return JSON.stringify(value) === JSON.stringify(other);
-              return Array.isArray(value) && Array.isArray(other)
-                ? value.length === other.length && value.every((item, index) => item === other[index])
-                : value === other;
-            });
+            return preferenceKeys.every(key => samePreference(key, left[key], right[key]));
           }
           function primaryActionState() {
             const invalid = (menuEditor && !menuEditor.isValid()) || (draft.colourMode === 'custom' && ['viewer', 'owner'].some(name => !normaliseHex($(`${name}-hex`).value))) ||
@@ -22771,13 +24933,55 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               const size = suite.getAppliedScrollMiniplayerSize?.();
               if (size && ['auto', 'custom'].includes(size.mode) && validSizeWidth(size.width)) {
                 appliedSize = { miniplayerSizeMode: size.mode, miniplayerWidth: size.width };
+                // The panel previews a valid draft size live and restores the saved
+                // size on Cancel. This preview does not create a reload requirement.
+                if (size.mode === draft.miniplayerSizeMode && size.width === lastValidMiniplayerWidth) {
+                  appliedSize = { miniplayerSizeMode: saved.miniplayerSizeMode, miniplayerWidth: saved.miniplayerWidth };
+                }
               }
             } catch { /* A failed module must not break settings. */ }
-            return {
-              invalid, inaccessible,
-              dirty: invalid || inaccessible || !samePreferences(settings.validate(draft), saved),
-              pendingReload: !samePreferences(saved, { ...settings.initial, corner: appliedCorner, ...appliedSize }),
-            };
+            const checked = invalid || inaccessible ? draft : settings.validate(draft);
+            const applied = { ...settings.initial, corner: appliedCorner, ...appliedSize };
+            return { invalid, inaccessible, checked, applied,
+              dirty: invalid || inaccessible || !samePreferences(checked, saved), pendingReload: !samePreferences(saved, applied) };
+          }
+          function updatePreferenceStatus({ dirty, pendingReload, checked, applied }) {
+            const summary = externalConflict ? 'Settings changed in another window.'
+              : [dirty && 'Unsaved changes.', pendingReload && 'Saved changes need a reload.'].filter(Boolean).join(' ') || 'Saved settings are active on this page.';
+            const status = $('preference-status');
+            if (status.textContent !== summary) status.textContent = summary;
+            if (!dirty && !pendingReload && !preferenceBadges.size) return;
+            const changes = new Map();
+            if (dirty || pendingReload) for (const key of preferenceKeys) {
+              const unsaved = dirty && !samePreference(key, checked[key], saved[key]);
+              const needsReload = pendingReload && !samePreference(key, saved[key], applied[key]);
+              if (!unsaved && !needsReload) continue;
+              const id = key.startsWith('menu') ? 'menu-editor-heading' : preferenceControlIds[key] || key;
+              const flags = changes.get(id) || 0;
+              changes.set(id, flags | (unsaved ? 1 : 0) | (needsReload ? 2 : 0));
+            }
+            for (const [id, badge] of preferenceBadges) {
+              if (changes.has(id)) continue;
+              const control = $(id);
+              const references = (control?.getAttribute('aria-describedby') || '').split(/\s+/).filter(ref => ref && ref !== badge.id);
+              if (references.length) control.setAttribute('aria-describedby', references.join(' '));
+              else control?.removeAttribute('aria-describedby');
+              badge.remove(); preferenceBadges.delete(id);
+            }
+            for (const [id, flags] of changes) {
+              let badge = preferenceBadges.get(id);
+              if (!badge) {
+                const control = $(id), label = control?.labels?.[0];
+                if (!label && control !== menuOrderHeading) continue;
+                badge = document.createElement('span'); badge.className = 'preference-badge';
+                badge.id = `ytms-${id}-state`;
+                badge.setAttribute('aria-hidden', 'true');
+                (label || menuOrderHeading).append(badge); preferenceBadges.set(id, badge);
+                control.setAttribute('aria-describedby', [control.getAttribute('aria-describedby'), badge.id].filter(Boolean).join(' '));
+              }
+              const text = flags === 3 ? 'Unsaved · saved version needs reload' : flags === 1 ? 'Unsaved' : 'Reload needed';
+              if (badge.textContent !== text) badge.textContent = text;
+            }
           }
           function updatePrimaryAction() {
             const state = primaryActionState();
@@ -22788,6 +24992,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (button.textContent !== label) button.textContent = label;
             if (button.dataset.action !== action) button.dataset.action = action;
             if (button.disabled !== disabled) button.disabled = disabled;
+            updatePreferenceStatus(state);
             supportPanel?.updateDraftState();
             return state;
           }
@@ -22797,7 +25002,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             $('settings-status').hidden = false;
           }
           function reconcileStoredPreferences() {
-            if (!dialog.open) return true;
+            if (!panelSession || !dialog.open) return true;
             const current = settings.read();
             if (samePreferences(current, saved)) {
               // The corner storage event can arrive after a settings event already
@@ -22933,11 +25138,13 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
           function openPanel() {
             if (dialog.open) return;
+            panelSession = true;
             clearReloadConfirmation();
             saved = settings.read(); draft = { ...saved };
             externalConflict = false;
             supportPanel?.reset();
             extraControls.open();
+            javascriptPanel.open();
             menuDetails.open = false;
             channelEntry = 'settings'; channelNotice.hidden = true; channelManager.reset({ defer: true });
             $('settings-status').hidden = true;
@@ -22951,6 +25158,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
 
           for (const id of ['close-panel', 'cancel-panel']) $(id).addEventListener('click', () => dialog.close());
           dialog.addEventListener('close', () => {
+            panelSession = false;
+            javascriptPanel.close();
             clearReloadConfirmation();
             applyMiniplayerSize(settings.read());
             extraControls.close();
@@ -23009,28 +25218,41 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             const group = $('reload-confirmation');
             const focused = group.contains(document.activeElement);
             setHidden(group, true);
-            reloadWarnedChannelDraft = false;
+            reloadWarnedDrafts.clear();
             if ((restoreFocus || focused) && dialog.open) $('save-preview').focus();
           }
+          function independentDraftCategories() {
+            return [channelManager.hasDraft() && 'channel-filter edits',
+              javascriptPanel.hasDraft() && 'Custom JavaScript edits', ...extraControls.draftCategories()].filter(Boolean);
+          }
+          function independentSavingCategories() {
+            return [channelManager.isSaving() && 'channel filters', supportPanel?.isSaving() && 'backup restore',
+              javascriptPanel.isSaving() && 'Custom JavaScript', ...extraControls.savingCategories()].filter(Boolean);
+          }
           function showReloadConfirmation() {
-            reloadWarnedChannelDraft = channelManager.hasDraft();
-            $('reload-message').textContent = reloadWarnedChannelDraft
-              ? 'Reload YouTube now? This will restart the current page and video. Unsaved channel-filter edits will be lost.'
-              : 'Reload YouTube now? This will restart the current page and video.';
+            const drafts = independentDraftCategories(), pending = independentSavingCategories();
+            reloadWarnedDrafts = new Set(pending.length ? [] : drafts);
+            $('reload-message').textContent = pending.length
+              ? `Wait for ${pending.join(', ')} saves to finish before reloading.`
+              : 'Reload YouTube now? This will restart the current page and video.' +
+                (drafts.length ? ` Unsaved ${drafts.join(', ')} will be lost.` : '');
             setHidden($('reload-confirmation'), false);
             $('cancel-reload').focus();
           }
           $('cancel-reload').addEventListener('click', () => clearReloadConfirmation(true));
-          $('confirm-reload').addEventListener('click', () => {
-            if (!dialog.open || $('reload-confirmation').hidden) return;
+          $('confirm-reload').addEventListener('click', event => {
+            if (!event.isTrusted || !panelSession || !dialog.open || $('reload-confirmation').hidden) return;
             if (!reconcileStoredPreferences() || $('reload-confirmation').hidden) return;
             const state = updatePrimaryAction();
             if (externalConflict || state.dirty || !state.pendingReload) return;
-            if (channelManager.hasDraft() && !reloadWarnedChannelDraft) { showReloadConfirmation(); return; }
+            if (independentSavingCategories().length || independentDraftCategories().some(category => !reloadWarnedDrafts.has(category))) {
+              showReloadConfirmation(); return;
+            }
             clearReloadConfirmation();
             location.reload();
           });
-          $('save-preview').addEventListener('click', () => {
+          $('save-preview').addEventListener('click', async event => {
+            if (!event.isTrusted || !panelSession || !dialog.open || savingPreferences) return;
             if (!reconcileStoredPreferences()) return;
             const state = updatePrimaryAction();
             if ($('save-preview').disabled) return;
@@ -23038,7 +25260,22 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               if (state.pendingReload) showReloadConfirmation();
               return;
             }
-            const result = settings.save(draft);
+            const confirmed = { ...draft }, baseline = saved;
+            savingPreferences = true;
+            $('save-preview').setAttribute('aria-busy', 'true');
+            let result;
+            try {
+              result = await suite.writeSettings(() => {
+                if (!dialog.open || !reconcileStoredPreferences() || baseline !== saved || !samePreferences(confirmed, draft)) {
+                  return { ok: false, error: 'Settings changed while waiting to save. Review your draft and try again.' };
+                }
+                return settings.save(confirmed);
+              });
+            } finally {
+              savingPreferences = false;
+              $('save-preview').removeAttribute('aria-busy');
+            }
+            if (!dialog.open || baseline !== saved) return;
             if (result.ok) { saved = result.values; draft = { ...saved }; }
             const next = updatePrimaryAction();
             $('settings-status').hidden = false;
@@ -23047,6 +25284,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
               : 'Saved. No reload needed.';
           });
           supportPanel = suite.createSettingsSupportPanel(document, suite, {
+            isActive: () => panelSession && dialog.open && !searchActive && currentTab === 'support',
             hasDraft: () => externalConflict || primaryActionState().dirty || channelManager.hasDraft(),
             onRestored: result => {
               clearReloadConfirmation();
@@ -23080,8 +25318,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
           addSearchEntry('interface', 'menu-order', 'Video context menu editor', menuOrderNote.textContent,
             Object.values(menuLabels).join(' '));
-          const menuSearchActions = { menuShowDownload:'download', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
-          const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
+          const menuSearchActions = { menuShowDownload:'download', menuShowHype:'hype', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
+          const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowHype:'Show Hype in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
           for (const key of Object.keys(menuSearchActions)) addSearchEntry('interface', key, menuSearchLabels[key], DESCRIPTIONS[key]);
 
           addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,
@@ -23097,10 +25335,26 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           addSearchEntry('miniplayer', 'miniplayerSizeMode', 'Custom miniplayer width', sizeHelp.textContent, 'size resize automatic');
           addSearchEntry('player', 'playhead-marker-heading', 'Playback marker image', 'Choose a local image to replace the red playback dot.', 'playhead picture scrubber');
           addSearchEntry('credits', 'updates-heading', 'Check for script updates', 'Check a release source and open Tampermonkey to install an update.', 'latest version install');
+          addSearchEntry('javascript', 'custom-js-heading', 'Custom JavaScript',
+            'Run trusted saved code once on each full page load. Review the security warning and save separately.', 'script code startup automation');
+          function highlightSearchText(element, text, pattern) {
+            // Match literal terms only. User input and setting text never become HTML.
+            let end = 0;
+            for (const match of text.matchAll(pattern)) {
+              element.append(document.createTextNode(text.slice(end, match.index)));
+              const mark = document.createElement('mark'); mark.className = 'settings-search-match';
+              mark.textContent = match[0]; element.append(mark);
+              end = match.index + match[0].length;
+            }
+            element.append(document.createTextNode(text.slice(end)));
+          }
           function showSearch() {
             const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
             searchClear.hidden = !searchInput.value;
             if (!terms.length) { selectTab(currentTab); return; }
+            searchActive = true;
+            javascriptPanel?.selectTab(null);
+            extraControls?.selectTab(null);
             closePicker(false);
             // A selected tab must not point to a hidden panel while results are open.
             // Tabs return when the query is cleared or a result is chosen.
@@ -23110,6 +25364,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             if (channelFooterHost) channelFooterHost.hidden = true;
             panelFooter.classList.remove('ytms-channels-active');
             const matches = searchIndex.filter(entry => terms.every(term => entry.text.includes(term)));
+            const highlightPattern = new RegExp([...new Set(terms)].sort((a, b) => b.length - a.length)
+              .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'giu');
             searchStatus.textContent = matches.length === 0 ? 'No settings found' :
               matches.length === 1 ? '1 setting found' : `${matches.length} settings found`;
             searchList.replaceChildren();
@@ -23120,13 +25376,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             for (const entry of matches) {
               const result = document.createElement('button'); result.type = 'button'; result.className = 'settings-search-result';
               result.dataset.tab = entry.tab; result.dataset.target = entry.target;
-              const title = document.createElement('span'); title.className = 'settings-search-title'; title.textContent = entry.title;
+              const title = document.createElement('span'); title.className = 'settings-search-title';
+              highlightSearchText(title, entry.title, highlightPattern);
               const section = document.createElement('span'); section.className = 'settings-search-section';
-              section.textContent = $(`tab-${entry.tab}`).textContent;
+              highlightSearchText(section, $(`tab-${entry.tab}`).textContent, highlightPattern);
               const description = document.createElement('span'); description.className = 'settings-search-description';
-              description.textContent = entry.description;
+              highlightSearchText(description, entry.description, highlightPattern);
               result.append(title, section, description);
-              result.addEventListener('click', () => {
+              const activateResult = () => {
                 selectTab(entry.tab);
                 let target = entry.target === 'channel-age' ? $('channel-search') || ageRow : $(entry.target);
                 if (entry.tab === 'interface' && (entry.target.startsWith('menu') || entry.target === 'menu-order')) menuDetails.open = true;
@@ -23144,7 +25401,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
                 for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
                 if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
                 target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
-              });
+              };
+              searchActions.set(result, activateResult);
+              result.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) activateResult(); });
               searchList.append(result);
             }
             searchResults.hidden = false; dialog.querySelector('.content').scrollTop = 0;
@@ -23152,13 +25411,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           searchInput.addEventListener('input', event => { event.stopPropagation(); showSearch(); });
           searchInput.addEventListener('change', event => event.stopPropagation());
           searchInput.addEventListener('keydown', event => {
+            if (!event.isTrusted || !panelSession || !dialog.open) return;
             if (event.key === 'Escape' && searchInput.value) {
               event.preventDefault(); event.stopPropagation(); selectTab(currentTab); searchInput.focus();
             } else if (event.key === 'Enter') {
-              event.preventDefault(); searchList.querySelector('button')?.click();
+              event.preventDefault(); searchActions.get(searchList.querySelector('button'))?.();
             }
           });
-          searchClear.addEventListener('click', () => { selectTab(currentTab); searchInput.focus(); });
+          searchClear.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) { selectTab(currentTab); searchInput.focus(); } });
           dialog.addEventListener('close', () => supportPanel.close());
           populate(); selectTab('comments');
           return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
@@ -23174,8 +25434,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           if (document.getElementById(DIALOG_ID)?.open) panel?.updateTheme();
         }
 
-        function openSettings() {
-          if (suspended) return;
+        function openSettings(event, internal = false) {
+          if (suspended || !internal && !event?.isTrusted) return;
           hidePlayerTooltip();
           try {
             if (panel && !panel.dialog.isConnected) panel = null;
@@ -23188,23 +25448,46 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           }
         }
 
-        function isRendered(element) {
-          return Boolean(element?.isConnected && !element.closest('[hidden], [aria-hidden="true"]') && element.getClientRects().length);
+        function isRendered(element, requireBox = true) {
+          if (!element?.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+          if (requireBox) {
+            const box = element.getBoundingClientRect();
+            if (!(box.width > 0 && box.height > 0)) return false;
+          } else if (!element.getClientRects().length || !(element.getBoundingClientRect().width > 0)) return false;
+          for (let node = element; node; node = node.parentElement) {
+            const css = getComputedStyle(node);
+            if (css.display === 'none' || css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+          }
+          return true;
         }
 
         function getPlayerTarget() {
           if (location.pathname !== '/watch' && !location.pathname.startsWith('/live/')) return null;
-          const floatingOwner = document.querySelector('#ytsmp-player-placeholder')?.closest('ytd-watch-flexy');
+          const floatingOwner = [...document.querySelectorAll('#ytsmp-player-placeholder')]
+            .map(node => node.closest('ytd-watch-flexy')).find(owner => isRendered(owner, false));
           const mirrorPlayer = document.getElementById('ytppl-video-mirror-button')?.closest('#movie_player');
           const players = new Set([mirrorPlayer, ...document.querySelectorAll('#movie_player')]);
           for (const player of players) {
             if (!isRendered(player) || player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer')) continue;
             const root = player.closest('ytd-watch-flexy') || (player.parentElement === document.body ? floatingOwner : null);
-            if (isRendered(root) && player.querySelector('video.html5-main-video')) {
-              return { player, controls: player.querySelector('.ytp-right-controls'), root };
+            if (isRendered(root, false) && player.querySelector('video.html5-main-video')) {
+              const candidates = [...player.querySelectorAll('.ytp-right-controls')].filter(controls =>
+                !controls.closest('[hidden], [inert], [aria-hidden="true"]') && controls.getClientRects().length);
+              // Prefer the current controls over retained rows, but keep a sole row
+              // through normal auto-hide so revealing playback controls needs no repair.
+              const controls = candidates.find(candidate => {
+                const box = candidate.getBoundingClientRect();
+                if (!(box.width > 0 && box.height > 0)) return false;
+                for (let node = candidate; node && node !== player; node = node.parentElement) {
+                  const css = getComputedStyle(node);
+                  if (css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+                }
+                return true;
+              }) || (candidates.length === 1 ? candidates[0] : null);
+              return { player, controls, root };
             }
           }
-          const root = Array.from(document.querySelectorAll('ytd-watch-flexy')).find(isRendered);
+          const root = Array.from(document.querySelectorAll('ytd-watch-flexy')).find(owner => isRendered(owner, false));
           return root ? { root, player: null, controls: null } : null;
         }
 
@@ -23319,7 +25602,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
             image.src = settings.initial.playerSettingsIcon === 'colour' ? suite.settingsAssets.logo : suite.settingsAssets.playerLogo;
             image.alt = ''; image.width = 36; image.height = 36;
             image.setAttribute('aria-hidden', 'true'); playerButton.append(image);
-            playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(); });
+            playerButton.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSettings(event); });
             playerButton.addEventListener('mouseenter', showPlayerTooltip);
             playerButton.addEventListener('focus', showPlayerTooltip);
             playerButton.addEventListener('mouseleave', hidePlayerTooltipOnMouseLeave);
@@ -23351,25 +25634,32 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           for (let node = target?.controls || target?.player || target?.root; node && node !== document.body; node = node.parentElement) playerBranch.add(node);
           if (target && !target.controls) {
             const scope = target.player || target.root;
-            for (const node of scope.querySelectorAll('#player, #player-container, #player-container-inner, #single-column-container, #full-bleed-container, #player-full-bleed-container, .ytp-chrome-bottom, .ytp-chrome-controls')) playerBranch.add(node);
+            for (const node of scope.querySelectorAll('#player, #player-container, #player-container-inner, #single-column-container, #full-bleed-container, #player-full-bleed-container, .ytp-chrome-bottom, .ytp-chrome-controls, .ytp-right-controls')) playerBranch.add(node);
           }
           const pageManager = app?.querySelector('ytd-page-manager, #page-manager');
           if (pageManager) playerBranch.add(pageManager);
           const branch = Array.from(playerBranch);
           if (!discoveryActive || root !== watchedDocumentRoot || document.body !== watchedBody ||
             app !== watchedApp || masthead !== watchedMasthead || mastheadContainer !== watchedMastheadContainer ||
+            watchedMissingControls !== Boolean(target && !target.controls) ||
             branch.length !== watchedPlayerBranch.length || branch.some((node, index) => node !== watchedPlayerBranch[index])) {
             const registrations = [[root || document, { childList: true }]];
             if (document.body) registrations.push([document.body, { childList: true }]);
             if (app) registrations.push([app, { childList: true }]);
             if (mastheadContainer) registrations.push([mastheadContainer, { childList: true }]);
             if (masthead) registrations.push([masthead, { childList: true, subtree: true }]);
-            for (const node of branch) registrations.push([node, { childList: true, ...(node === target?.controls ? { subtree: true } : {}) }]);
+            for (const node of branch) registrations.push([node, { childList: true,
+              ...(node === target?.controls ? { subtree: true } : {}),
+              // A retained toolbar can be revealed with an attribute only. Observe
+              // its small ownership branch until insertion recovers, then release.
+              ...(target && !target.controls ? { attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'inert', 'class', 'style'] } : {}),
+            }]);
             discovery.replaceRegistrations(registrations);
             watchedApp = app; watchedMasthead = masthead;
             watchedDocumentRoot = root; watchedBody = document.body;
             watchedMastheadContainer = mastheadContainer; discoveryActive = true;
             watchedPlayerBranch = branch;
+            watchedMissingControls = Boolean(target && !target.controls);
           }
           installPlayerButton(target);
           if (!masthead) { button?.remove(); return; }
@@ -23403,6 +25693,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           // Text and comment updates cannot replace a player, control or header
           // anchor. Keep discovery for structural changes, not native label churn.
           for (const record of records) {
+            if (record.type === 'attributes') { scheduleInstall(); return; }
             for (const nodes of [record.addedNodes, record.removedNodes]) {
               for (const node of nodes) {
                 if (node.nodeType === 1) { scheduleInstall(); return; }
@@ -23477,4 +25768,5 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     });
   }
   startIdleModules();
+  suite.customJavascript.start();
 })();

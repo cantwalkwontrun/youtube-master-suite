@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Miniplayer Button Restorer
 // @namespace    Citizen.youtube.miniplayer-button-restorer
-// @version      1.18
+// @version      1.20
 // @description  Restores a Miniplayer button to YouTube watch and live player controls, falling back to the native miniplayer shortcut when needed.
 // @author       Citizen
 // @updateURL    none
@@ -33,6 +33,7 @@
   const FULLSCREEN_BUTTON_SELECTOR = ".ytp-fullscreen-button";
   const CONTROL_STATE_ATTRIBUTES = [
     "aria-disabled", "aria-hidden", "class", "disabled", "hidden", "style",
+    "inert",
   ];
   const WATCH_STATE_ATTRIBUTES = [...CONTROL_STATE_ATTRIBUTES, "video-id"];
   const PLAYER_CONTROL_SELECTOR = [...PLAYER_SELECTORS, RIGHT_CONTROLS_SELECTOR].join(",");
@@ -150,7 +151,8 @@
 
   function queryFirst(selectors, root = document) {
     for (const selector of selectors) {
-      const el = root.querySelector(selector);
+      const el = [...root.querySelectorAll(selector)].find(player =>
+        !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer') && isRenderedWatchFlexy(player));
       if (el) return el;
     }
     return null;
@@ -159,20 +161,18 @@
   function isRenderedWatchFlexy(flexy) {
     if (
       !flexy?.isConnected ||
-      flexy.hidden ||
-      flexy.getAttribute("aria-hidden") === "true"
+      flexy.closest('[hidden], [inert], [aria-hidden="true"]')
     ) {
       return false;
     }
 
     try {
-      const style = getComputedStyle(flexy);
-      if (
-        style.display === "none" ||
-        style.visibility === "hidden" ||
-        style.visibility === "collapse"
-      ) {
-        return false;
+      const box = flexy.getBoundingClientRect();
+      if (!(box.width > 0 && box.height > 0)) return false;
+      for (let node = flexy; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden" ||
+            style.visibility === "collapse" || Number(style.opacity) === 0) return false;
       }
     } catch {
       return false;
@@ -208,7 +208,7 @@
       "ytsmp-scroll-miniplayer-active",
     )
       ? Array.from(document.body.children).find((child) =>
-          PLAYER_SELECTORS.some((selector) => child.matches?.(selector)),
+          PLAYER_SELECTORS.some((selector) => child.matches?.(selector)) && isRenderedWatchFlexy(child),
         )
       : null;
     if (floatedPlayer) return floatedPlayer;
@@ -221,9 +221,23 @@
   }
 
   function getRightControls() {
-    const roots = [getPlayerEl(), document.querySelector("ytd-player"), document].filter(Boolean);
+    // Insertion and activation must resolve the same current watch player.
+    // Do not borrow a toolbar from a preview or a retained native miniplayer.
+    const roots = [getPlayerEl()].filter(Boolean);
     for (const r of roots) {
-      const c = r.querySelector(RIGHT_CONTROLS_SELECTOR);
+      const candidates = [...r.querySelectorAll(RIGHT_CONTROLS_SELECTOR)].filter(controls =>
+        !controls.closest('[hidden], [inert], [aria-hidden="true"]') && controls.getClientRects().length);
+      // A retained hidden toolbar is not the current insertion target. Keep a
+      // sole structural toolbar through YouTube's ordinary controls auto-hide.
+      const c = candidates.find(controls => {
+        const box = controls.getBoundingClientRect();
+        if (!(box.width > 0 && box.height > 0)) return false;
+        for (let node = controls; node && node !== r; node = node.parentElement) {
+          const css = getComputedStyle(node);
+          if (css.visibility === 'hidden' || css.visibility === 'collapse' || Number(css.opacity) === 0) return false;
+        }
+        return true;
+      }) || (candidates.length === 1 ? candidates[0] : null);
       if (c) return c;
     }
     return null;
@@ -661,13 +675,13 @@
     if (isEligiblePath()) debounceInstall(150);
   });
 
-  function isCommentContentMutation(mutation) {
+  function isUnrelatedContentMutation(mutation) {
     const target = mutation.target?.closest
       ? mutation.target
       : mutation.target?.parentElement;
     if (
-      mutation.type !== "childList" || !target?.closest?.("ytd-comments") ||
-      target.closest(PLAYER_CONTROL_SELECTOR)
+      mutation.type !== "childList" || !target?.closest?.("ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container") ||
+      target.closest(RIGHT_CONTROLS_SELECTOR)
     ) return false;
 
     return [...mutation.addedNodes, ...mutation.removedNodes].every((node) =>
@@ -698,12 +712,14 @@
     // These native dialogues contain only Suite controls, not the watch player.
     // Their mounting/removal and any mixed/native topology batch still fall through.
     if (muts.length && muts.every(isSuiteDialogContentMutation)) return;
-    // Ordinary comment updates cannot replace the installed toolbar. Keep the
+    // Ordinary comment/caption/progress updates cannot replace the toolbar. Keep
     // existing discovery path for unknown/structural batches and detached owners.
-    if (observedControls?.isConnected && muts.length && muts.every(isCommentContentMutation)) return;
+    if (observedControls?.isConnected && muts.length && muts.every(isUnrelatedContentMutation)) return;
     // The narrow observer owns changes inside the current toolbar. This broad
     // child-list observer only discovers its initial creation or replacement.
-    if (observedControls?.isConnected && getPlayerEl()?.contains(observedControls)) return;
+    if (observedControls?.isConnected && getPlayerEl()?.contains(observedControls) &&
+        !muts.some(mutation => [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+          node.matches?.(RIGHT_CONTROLS_SELECTOR) || node.querySelector?.(RIGHT_CONTROLS_SELECTOR)))) return;
 
     for (const m of muts) {
       if (

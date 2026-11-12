@@ -158,6 +158,81 @@ const state = page => page.evaluate(() => {
     anchors:[f.host.style.top, f.host.style.bottom, f.host.style.left, f.host.style.right] };
 });
 
+for (const suite of [false, true]) test(`an opacity-hidden retained host cannot displace the visible compact queue (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  assert.equal((await state(page)).compact, true);
+  await page.evaluate(() => {
+    const wrapper = document.createElement('div'); wrapper.style.opacity = '0';
+    const retained = compactFixture.host.cloneNode(true);
+    retained.removeAttribute('data-ytms-compact-native-queue');
+    retained.querySelector('[data-ytms-compact-native-queue-panel]')?.removeAttribute('data-ytms-compact-native-queue-panel');
+    wrapper.append(retained); document.body.append(wrapper); compactFixture.retainedWrapper = wrapper;
+  });
+  await settle(page);
+  assert.equal((await state(page)).compact, true, 'an invisible retained host must not make the visible owner ambiguous');
+  assert.equal((await state(page)).panel, 190);
+  await page.evaluate(() => compactFixture.retainedWrapper.style.opacity = '1'); await settle(page);
+  assert.equal((await state(page)).compact, false, 'two genuinely visible hosts must release custom geometry');
+  await page.evaluate(() => compactFixture.retainedWrapper.style.opacity = '0'); await settle(page);
+  assert.equal((await state(page)).compact, true, 'hiding the retained host restores the sole visible owner');
+  await page.evaluate(() => {
+    const wrapper = document.createElement('div'); compactFixture.host.before(wrapper); wrapper.append(compactFixture.host);
+    compactFixture.activeWrapper = wrapper;
+  }); await settle(page);
+  await page.evaluate(() => compactFixture.activeWrapper.style.opacity = '0'); await settle(page);
+  assert.equal((await state(page)).compact, false, 'ancestor-only hiding releases the current owner');
+  await page.evaluate(() => compactFixture.activeWrapper.style.opacity = '1'); await settle(page);
+  assert.equal((await state(page)).compact, true);
+});
+
+for (const suite of [false, true]) test(`ancestor selectors and inherited variables reconcile native queue visibility (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => {
+    const wrapper = document.createElement('div'); compactFixture.host.before(wrapper); wrapper.append(compactFixture.host);
+    compactFixture.cssWrapper = wrapper;
+    const style = document.createElement('style'); style.textContent = '.fixture-hide-native > ytd-miniplayer { opacity:0 !important; }'; document.head.append(style);
+    compactFixture.host.style.opacity = 'var(--fixture-native-opacity, 1)';
+  }); await settle(page);
+  await page.evaluate(() => compactFixture.cssWrapper.classList.add('fixture-hide-native')); await settle(page);
+  assert.equal((await state(page)).compact, false, 'ancestor selector can hide the host without changing ancestor opacity');
+  await page.evaluate(() => compactFixture.cssWrapper.classList.remove('fixture-hide-native')); await settle(page);
+  assert.equal((await state(page)).compact, true);
+  await page.evaluate(() => compactFixture.cssWrapper.style.setProperty('--fixture-native-opacity', '0')); await settle(page);
+  assert.equal((await state(page)).compact, false, 'inherited custom property can hide only the descendant host');
+  await page.evaluate(() => compactFixture.cssWrapper.style.setProperty('--fixture-native-opacity', '1')); await settle(page);
+  assert.equal((await state(page)).compact, true);
+});
+
+for (const suite of [false, true]) test(`zero-width retained hosts become ambiguous only while measurable (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => {
+    const retained = compactFixture.host.cloneNode(true);
+    retained.removeAttribute('data-ytms-compact-native-queue');
+    retained.style.width = '0px'; document.body.append(retained); compactFixture.zeroHost = retained;
+  }); await settle(page);
+  assert.equal((await state(page)).compact, true);
+  await page.evaluate(() => compactFixture.zeroHost.style.width = '400px'); await settle(page);
+  assert.equal((await state(page)).compact, false, 'a previously zero-size host must join visible-owner selection');
+  await page.evaluate(() => compactFixture.zeroHost.style.width = '0px'); await settle(page);
+  assert.equal((await state(page)).compact, true);
+});
+
+for (const suite of [false, true]) test(`transformed retained hosts reconcile visible queue ownership (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => {
+    const wrapper = document.createElement('div'); wrapper.style.transform = 'scale(0)';
+    const retained = compactFixture.host.cloneNode(true);
+    retained.removeAttribute('data-ytms-compact-native-queue');
+    retained.querySelector('[data-ytms-compact-native-queue-panel]')?.removeAttribute('data-ytms-compact-native-queue-panel');
+    wrapper.append(retained); document.body.append(wrapper); compactFixture.transformedWrapper = wrapper;
+  }); await settle(page);
+  assert.equal((await state(page)).compact, true);
+  await page.evaluate(() => compactFixture.transformedWrapper.style.transform = 'none'); await settle(page);
+  assert.equal((await state(page)).compact, false, 'revealing a transformed retained host must withdraw ambiguous compact geometry');
+  await page.evaluate(() => compactFixture.transformedWrapper.style.transform = 'scale(0)'); await settle(page);
+  assert.equal((await state(page)).compact, true, 'hiding the retained host restores the actual visible owner');
+});
+
 for (const [rows, expected] of [[0,285], [1,126], [2,190], [8,285]]) test(`native queue measures ${rows} rows without reserving an extra row`, async t => {
   const page = await open(t, { rows });
   const actual = await state(page);
@@ -224,7 +299,7 @@ for (const reveal of ['late stylesheet','hidden ancestor','ancestor visibility']
   assert.equal(actual.playerSame,true); assert.equal(actual.time,42);
 });
 
-test('hidden ancestor observation follows reparenting and stops when visible or disposed', async t => {
+test('ancestor visibility observation follows reparenting, ignores unrelated styles and stops on disposal', async t => {
   const page = await open(t,{ enabled:false });
   await page.evaluate(() => {
     const f = compactFixture;
@@ -253,7 +328,7 @@ test('hidden ancestor observation follows reparenting and stops when visible or 
     compactFixture.fitFrames = 0; compactFixture.nextWrapper.style.setProperty('--fixture-unrelated','1');
   });
   await flush();
-  assert.equal(await page.evaluate(() => compactFixture.fitFrames),0,'visible hosts must release ancestor observation');
+  assert.equal(await page.evaluate(() => compactFixture.fitFrames),0,'unrelated ancestor styles must not schedule geometry work');
   await page.evaluate(() => {
     compactFixture.nextWrapper.style.visibility = 'hidden';
     window.dispatchEvent(new Event('yt-page-data-updated'));
@@ -392,6 +467,63 @@ test('pagehide releases active geometry and pageshow recomputes without a stale 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
   assert.equal((await state(page)).compact,false);
   await page.mouse.up();
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow')));
+  await page.waitForFunction(() => compactFixture.host.hasAttribute('data-ytms-compact-native-queue'));
+});
+
+for(const suite of [false,true])for(const attribute of ['aria-hidden','inert'])test(`queue visibility semantics release and restore compact ownership (${suite?'Suite':'source'}, ${attribute})`,async t=>{
+  const page=await open(t,{suite});
+  assert.equal((await state(page)).compact,true);
+  for(const target of ['panel','list','row','container','content']){
+    await page.evaluate(({attribute,target})=>{
+      const f=compactFixture,node={panel:f.panel,list:f.list,row:f.items.firstElementChild,container:f.panel.querySelector('#container'),content:f.host.querySelector('.ytdMiniplayerComponentContent')}[target];
+      node.setAttribute(attribute,attribute==='aria-hidden'?'true':'');
+    },{attribute,target});
+    await settle(page);
+    assert.equal((await state(page)).compact,false,`a semantically hidden ${target} cannot retain compact ownership`);
+    await page.evaluate(({attribute,target})=>{
+      const f=compactFixture,node={panel:f.panel,list:f.list,row:f.items.firstElementChild,container:f.panel.querySelector('#container'),content:f.host.querySelector('.ytdMiniplayerComponentContent')}[target];
+      node.removeAttribute(attribute);
+    },{attribute,target});
+    await settle(page);
+    assert.equal((await state(page)).compact,true,`${target} visibility alone restores compact sizing`);
+  }
+  assert.equal((await state(page)).time,42,'visibility changes do not touch playback');
+});
+
+for(const suite of [false,true])for(const [rows,expected,north]of [[1,126,false],[2,190,false],[3,254,false],[2,190,true]])test(`replacing a compact queue panel never writes a transient clipped height (${suite?'Suite':'source'}, ${rows} rows, north ${north})`,async t=>{
+  const page=await open(t,{suite});
+  assert.equal((await state(page)).panel,190);
+  if(north){await page.evaluate(()=>{compactFixture.host.style.top='16px';compactFixture.host.style.bottom='auto';});await settle(page);}
+  await page.evaluate(rows=>{
+    const f=compactFixture,style=f.host.style,set=style.setProperty.bind(style);
+    f.panelFits=[];
+    style.setProperty=(name,value,priority)=>{if(name==='--ytms-native-queue-panel-height')f.panelFits.push(value);return set(name,value,priority);};
+    const next=f.panel.cloneNode(true);next.removeAttribute('data-ytms-compact-native-queue-panel');
+    const items=next.querySelector('#items');
+    while(items.children.length>rows)items.lastElementChild.remove();
+    while(items.children.length<rows)items.append(items.lastElementChild.cloneNode(true));
+    f.panel.replaceWith(next);f.panel=next;f.list=next.querySelector('.playlist-items');f.items=next.querySelector('#items');
+  },rows);
+  await page.evaluate(async()=>{for(let i=0;i<6;i++)await new Promise(requestAnimationFrame);});
+  const fits=await page.evaluate(()=>compactFixture.panelFits);
+  assert.ok(fits.length>0,'the replacement panel has been fitted');
+  assert.deepEqual([...new Set(fits)],[`${expected}px`],'every committed panel height fits the rows, including the first frame after adoption');
+  assert.equal((await state(page)).panel,expected);
+  assert.equal((await state(page)).time,42);
+});
+
+for (const suite of [false, true]) test(`pagehide suspension survives a late visible signal (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+  assert.equal((await state(page)).compact, false);
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event('yt-playlist-data-updated'));
+  });
+  await settle(page);
+  assert.equal((await state(page)).compact, false, 'pagehide remains authoritative until pageshow');
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow')));
   await page.waitForFunction(() => compactFixture.host.hasAttribute('data-ytms-compact-native-queue'));
 });

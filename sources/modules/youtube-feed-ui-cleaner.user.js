@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.24
+// @version      2.34
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -76,9 +76,17 @@
     '.badge-shape-wiz',
   ].join(',');
 
+  const MEMBERS_ONLY_CREATOR_LINK_SELECTOR = ['/@', '/channel/', '/user/', '/c/']
+    .flatMap(path => [`a[href^="${path}"]`, `a[href*="youtube.com${path}"]`]).join(',');
   const MEMBERS_ONLY_SELECTOR = [
-    '#meta > ytd-badge-supported-renderer.video-badge.style-scope.ytd-rich-grid-media > div.badge.badge-style-type-members-only.style-scope.ytd-badge-supported-renderer.style-scope.ytd-badge-supported-renderer',
+    '.badge-style-type-members-only',
+    'ytd-badge-supported-renderer',
+    'yt-badge-view-model',
+    'badge-shape',
+    '.ytBadgeShapeBadgeText',
+    '.yt-badge-shape__text',
     'div.ytContentMetadataViewModelMetadataRow.ytContentMetadataViewModelMetadataRowMetadataRowWrap',
+    '.yt-content-metadata-view-model__metadata-row',
   ].join(',');
 
   const PODCAST_LINK_SELECTOR = [
@@ -171,7 +179,17 @@
   }
 
   function isMembersOnlyMatch(el) {
-    return /members only/i.test(getText(el));
+    // Match a native label, not a channel name or prose mentioning membership.
+    const memberLabel = value => /^members(?:\s+|-)only$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
+    const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
+    if (el.closest(creatorLink)) return false;
+    // Native semantic badges remain authoritative before their translated
+    // label arrives. Generic badge hosts still require a precise label below.
+    if (el.classList.contains('badge-style-type-members-only')) return true;
+    return (!el.querySelector(creatorLink) && memberLabel(getText(el))) || memberLabel(el.getAttribute('aria-label')) ||
+      memberLabel(el.getAttribute('title')) ||
+      [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
+        .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && memberLabel(getText(node)));
   }
 
   function getFilterProfileName() {
@@ -483,19 +501,29 @@
     edit.type = 'button';
     edit.textContent = 'Edit filter';
     Object.assign(record, { panel, savedRule: JSON.stringify(rule) });
-    undo.addEventListener('click', event => {
+    undo.addEventListener('click', async event => {
+      if (!event.isTrusted || undo.disabled) return;
       event.preventDefault(); event.stopPropagation();
       if (!confirmationMatches(record)) { removeConfirmation(card); scheduleCleanUp(card); return; }
-      const latest = channelAge.read();
-      const currentRule = latest.find(value => value.channelId === record.channelId);
+      undo.disabled = true;
       let result;
-      if (JSON.stringify(currentRule) !== record.savedRule) {
-        result = { error: 'This channel’s filter has changed. Use Edit filter to review it.' };
-      } else {
-        const next = previousRule ? latest.map(value => value.channelId === record.channelId ? previousRule : value) :
-          latest.filter(value => value.channelId !== record.channelId);
-        result = channelAge.save(next, latest);
-      }
+      try {
+        const write = typeof suite.writeChannelFilters === 'function' ? suite.writeChannelFilters : callback => callback();
+        result = await write(() => {
+          if (confirmations.get(card) !== record || !panel.isConnected || !confirmationMatches(record)) {
+            return { ok: false, error: 'This channel card changed. Open its filter again to review it.' };
+          }
+          const latest = channelAge.read(), currentRule = latest.find(value => value.channelId === record.channelId);
+          if (JSON.stringify(currentRule) !== record.savedRule) {
+            return { ok: false, error: 'This channel’s filter has changed. Use Edit filter to review it.' };
+          }
+          const next = previousRule ? latest.map(value => value.channelId === record.channelId ? previousRule : value) :
+            latest.filter(value => value.channelId !== record.channelId);
+          return channelAge.save(next, latest);
+        });
+      } catch { result = { ok: false, error: 'Could not undo this filter. Review your saved filters before trying again.' }; }
+      finally { undo.disabled = false; }
+      if (confirmations.get(card) !== record || !panel.isConnected) return;
       if (!result?.ok) {
         status.textContent = result?.error || 'Could not undo this filter. Your saved filters are unchanged.';
         status.hidden = false;
@@ -506,6 +534,7 @@
     });
     edit.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation();
+      if (!event.isTrusted) return;
       if (!confirmationMatches(record)) { removeConfirmation(card); scheduleCleanUp(card); return; }
       suite.openChannelAgeSettings?.({ channelId: record.channelId, name: rule.name }, { card, videoId: record.videoId });
     });
@@ -792,6 +821,23 @@
     return null;
   }
 
+  function releaseRemovedFeedOwnership(node) {
+    if (node?.nodeType !== Node.ELEMENT_NODE) return;
+    const selector = `[${HIDDEN_FLAG}="1"], [${PERMANENT_HIDDEN_FLAG}="1"]`;
+    const containers = node.matches(selector) ? [node] : [];
+    containers.push(...node.querySelectorAll(selector));
+    for (const container of containers) {
+      // Native renderers can be adopted outside a feed before this batch is
+      // delivered. Keep current feed ownership, but never carry it into a
+      // queue, engagement panel or detached renderer awaiting reuse.
+      if (container.isConnected && container.closest(FEED_SURFACE_SELECTOR) &&
+          !isInsideExcludedSurface(container)) continue;
+      container.removeAttribute(HIDDEN_FLAG);
+      container.removeAttribute(PERMANENT_HIDDEN_FLAG);
+      container.removeAttribute(HIDDEN_REASON_ATTRIBUTE);
+    }
+  }
+
   function isPreviewPlaybackMutation(mutation) {
     const element = mutation.target?.nodeType === Node.ELEMENT_NODE
       ? mutation.target : mutation.target?.parentElement;
@@ -815,6 +861,15 @@
         ? mutation.target
         : mutation.target?.parentElement;
     if (!element) return false;
+    if (['class', 'title', 'aria-label'].includes(mutation.attributeName)) {
+      const { membersOnly, mixes } = getFilterProfile();
+      if (membersOnly && element.closest(MEMBERS_ONLY_SELECTOR) || mixes && element.closest(MIX_BADGE_SELECTOR)) return true;
+      // A recycled renderer may lose its badge class before delivery.
+      return mutation.attributeName === 'class' && (
+        membersOnly && /(?:^|\s)(?:badge-style-type-members-only|ytBadgeShapeBadgeText|yt-badge-shape__text|ytContentMetadataViewModelMetadataRow|ytContentMetadataViewModelMetadataRowMetadataRowWrap|yt-content-metadata-view-model__metadata-row)(?:\s|$)/.test(mutation.oldValue || '') ||
+        mixes && /(?:^|\s)(?:ytThumbnailOverlayBadgeViewModelHost|badge-shape-wiz)(?:\s|$)/.test(mutation.oldValue || '')
+      );
+    }
 
     if (
       mutation.type === 'attributes' &&
@@ -862,8 +917,15 @@
       if (mutationRoot) scheduleCleanUp(mutationRoot);
       if (mutationRoot && [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE)) toggleDirty = true;
       for (const node of mutation.removedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE &&
-            (node.matches(FEED_SURFACE_SELECTOR) || node.querySelector(FEED_SURFACE_SELECTOR))) toggleDirty = true;
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        // Detached feed roots lose their contextual ancestor selectors. Match
+        // their native root identity, reusing this check for summary refresh.
+        const feedRoots = 'ytd-rich-grid-renderer,ytd-two-column-search-results-renderer';
+        const removedFeed = node.matches(feedRoots) || node.querySelector(feedRoots) ||
+          (mutation.target.closest?.('ytd-two-column-search-results-renderer') &&
+            (node.id === 'contents' || node.querySelector('[id="contents"]')));
+        if (mutationRoot || removedFeed) releaseRemovedFeedOwnership(node);
+        if (removedFeed) toggleDirty = true;
       }
       if (!mutation.addedNodes || !mutation.addedNodes.length) continue;
 
@@ -883,6 +945,9 @@
   const OBSERVER_OPTIONS = {
     attributeFilter: [
       'href',
+      'class',
+      'aria-label',
+      'title',
       'datetime',
       'overlay-style',
       'data-ytppl-live-hidden',
@@ -893,6 +958,7 @@
       'data-ytms-discovery-reason',
     ],
     attributes: true,
+    attributeOldValue: true,
     characterData: true,
     childList: true,
     subtree: true,
@@ -927,10 +993,15 @@
     pendingCleanUpRoots.clear();
   }
 
-  function reconcileRoute() {
+  const routeKey = () => location.pathname + (location.search || '');
+  let currentRoute = routeKey();
+  function reconcileRoute(event) {
     reconcileConfirmations(document);
-    resetTemporaryReveal();
-    if (syncMutationObservation()) cleanUp(document);
+    const nextRoute = routeKey();
+    const fullRefresh = event?.type !== 'yt-page-data-updated' || !observerActive || currentRoute !== nextRoute;
+    if (event?.type === 'yt-navigate-finish' || currentRoute !== nextRoute) resetTemporaryReveal();
+    currentRoute = nextRoute;
+    if (syncMutationObservation() && fullRefresh) scheduleCleanUp(document);
     reconcileHistoryActions();
   }
 

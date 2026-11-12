@@ -317,12 +317,12 @@ JSON.parse(document.documentElement.getAttribute("data-yt-master-events"))
 ```
 
 The startup marker reports version, module registration/initialisation and
-`ready` / `healthy`. It does not prove every feature works or include failures
-raised later. Runtime errors are kept separately, bounded to the latest 20;
-their shortened messages may contain contextual information, so do not share
-raw diagnostics without reviewing them. Missing attributes parse as `null`.
+`ready` / `healthy`. Runtime errors are kept separately, bounded to the latest
+20. The entries identify the module and operation. Missing attributes parse
+as `null`.
 
-Page coherence retains up to 20 navigation events and exposes
+Page coherence retains up to 20 navigation events and exposes summary statuses
+without publishing URLs, titles or video IDs. The page API provides
 `__YT_MASTER_STATE__.snapshot()`, `.events()` and `.check()` when available.
 Use `.snapshot()` and `.events()` for passive inspection; `.check()` actively
 evaluates the recovery safeguards. Page coherence uses bounded identity checks

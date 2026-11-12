@@ -85,7 +85,7 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
     if (!onWatchRoute() || suspended) marker(document.documentElement, headerAttribute, null);
   }
   const relevant = '#secondary, #secondary-inner, #related, ytd-watch-flexy, ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer';
-  function rendered(element, boundary) {
+  function rendered(element, boundary, requireBox = true) {
     if (!element?.isConnected) return false;
     for (let current = element; current; current = current.parentElement) {
       if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.hasAttribute('collapsed')) return false;
@@ -93,7 +93,20 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
       if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || css.opacity === '0') return false;
       if (current === boundary) break;
     }
-    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    return requireBox === false || [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  }
+  function renderedRailContent(node, boundary) {
+    if (node.nodeType === 3) {
+      if (!node.textContent.trim() || !rendered(node.parentElement, boundary, false)) return false;
+      const range = document.createRange(); range.selectNode(node);
+      return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+    }
+    if (node.nodeType !== 1 || node.tagName === 'STYLE' || node.tagName === 'SCRIPT' ||
+        !rendered(node, boundary, false)) return false;
+    if ([...node.getClientRects()].some(rect => rect.width > 0 && rect.height > 0)) return true;
+    // display:contents and zero-height overflow wrappers can have visible
+    // children without a box of their own. Descend only through such wrappers.
+    return [...node.childNodes].some(child => renderedRailContent(child, node));
   }
   function railHasOtherContent(watch, secondary, related) {
     const surfaces = secondary.querySelectorAll('ytd-playlist-panel-renderer, yt-playlist-panel-renderer, ytd-live-chat-frame, ytd-engagement-panel-section-list-renderer, #sponsorBlockPopupContainer');
@@ -105,11 +118,13 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
     }
     // Unknown native or extension surfaces keep their rail. Do not hide or
     // relocate a new feature merely because its custom-element name changed.
-    for (const child of secondary.children) {
-      const children = child.id === 'secondary-inner' ? [...child.children] : [child];
-      for (const surface of children) {
-        if (surface === related || surface.contains(related) || surface.tagName === 'STYLE' || surface.tagName === 'SCRIPT') continue;
-        if (rendered(surface, watch)) return true;
+    // A native or extension wrapper can contain both #related and unrelated
+    // controls. Check siblings along its ancestor path, rather than treating
+    // the whole shared wrapper as related content. Do not scan inside #related.
+    for (let branch = related; branch && branch !== secondary; branch = branch.parentElement) {
+      for (const surface of branch.parentElement?.childNodes || []) {
+        if (surface === branch) continue;
+        if (renderedRailContent(surface, watch)) return true;
       }
     }
     return false;
@@ -118,11 +133,15 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
     frame = 0;
     if (disposed || suspended) return;
     const route = onWatchRoute();
-    const hideHeader = flags.theatreHideHeader && route && [...document.querySelectorAll(theatreHost)].some(watch => rendered(watch, watch));
+    const visibleWatches = route && (flags.theatreHideHeader || flags.relatedBelowPlayer)
+      ? [...document.querySelectorAll('ytd-watch-flexy')].filter(watch => rendered(watch, document.documentElement)) : [];
+    // The masthead is global. A retained or ambiguous watch root cannot decide
+    // its visibility on behalf of the currently displayed page.
+    const hideHeader = flags.theatreHideHeader && visibleWatches.length === 1 && visibleWatches[0].matches(theatreHost);
     marker(document.documentElement, headerAttribute, hideHeader ? '1' : null);
     const active = new Set();
     if (flags.relatedBelowPlayer && route) {
-      for (const watch of document.querySelectorAll('ytd-watch-flexy')) {
+      for (const watch of visibleWatches) {
         const secondary = watch.querySelector('#secondary');
         const related = secondary?.querySelector('#related');
         if (!secondary || !related || !rendered(related, watch) || railHasOtherContent(watch, secondary, related)) continue;
@@ -149,17 +168,25 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
     if (mutations.some(mutation => {
       const target = mutation.target?.nodeType === 1 ? mutation.target : mutation.target?.parentElement;
       if (target?.closest('#secondary, #secondary-inner')) return true;
-      if (mutation.type === 'attributes') return target?.matches('ytd-watch-flexy');
+      if (mutation.type === 'attributes') return observedTargets.includes(target);
       return [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === 1 && (node.matches(relevant) || node.querySelector(relevant)));
     })) schedule();
   }) : null;
   function observe() {
     if (!observer) return;
-    const targets = onWatchRoute() ? [document.documentElement, ...document.querySelectorAll('ytd-watch-flexy, ytd-watch-flexy #secondary')] : [];
+    const targets = [];
+    if (onWatchRoute()) {
+      const unique = new Set([document.documentElement]);
+      for (const watch of document.querySelectorAll('ytd-watch-flexy')) {
+        for (let ancestor = watch; ancestor; ancestor = ancestor.parentElement) unique.add(ancestor);
+        for (const secondary of watch.querySelectorAll('#secondary')) unique.add(secondary);
+      }
+      targets.push(...unique);
+    }
     if (targets.length === observedTargets.length && targets.every((target, index) => target === observedTargets[index])) return;
     const registrations = targets.map(target => [target, target === document.documentElement
       ? { childList: true, subtree: true }
-      : { attributes: true, subtree: target.id === 'secondary', attributeFilter: ['hidden', 'collapsed', 'visibility', 'aria-hidden', 'class', 'style', 'theater', 'theatre'] }]);
+      : { attributes: true, characterData: target.id === 'secondary', subtree: target.id === 'secondary', attributeFilter: ['hidden', 'collapsed', 'visibility', 'aria-hidden', 'class', 'style', 'theater', 'theatre'] }]);
     if (typeof observer.replaceRegistrations === 'function') observer.replaceRegistrations(registrations);
     else { observer.disconnect(); for (const [target, options] of registrations) observer.observe(target, options); }
     observedTargets = targets;

@@ -43,6 +43,41 @@ async function open(t,{saved=true}={}) {
 async function applied(page){await page.locator('[data-ytms-playhead-marker="1"] > .ytms-playhead-marker').waitFor();}
 async function settle(page){await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));}
 
+test('late native video insertion and removal reconcile an existing scrubber', async t => {
+  const page = await open(t, { saved: false });
+  await page.evaluate(() => {
+    const video = document.querySelector('video');
+    const host = document.createElement('div'); host.className = 'html5-video-container';
+    video.before(host); window.lateMarkerVideo = video; video.remove();
+    marker.save({ dataUrl: syntheticImage, size: 24 });
+  });
+  await settle(page);
+  assert.equal(await page.locator('.ytms-playhead-marker').count(), 0);
+  await page.evaluate(() => document.querySelector('.html5-video-container').append(lateMarkerVideo));
+  await settle(page);
+  assert.equal(await page.locator('.ytms-playhead-marker').count(), 1, 'a late native video activates the saved marker without unrelated events');
+  await page.evaluate(() => lateMarkerVideo.remove());
+  await settle(page);
+  assert.equal(await page.locator('.ytms-playhead-marker').count(), 0, 'removing the media restores the native scrubber');
+});
+
+test('in-place visibility changes on internal controls restore and release the marker', async t => {
+  const page = await open(t, { saved: false });
+  await page.evaluate(() => {
+    const controls = document.querySelector('.ytp-progress-bar');
+    controls.style.opacity = '0';
+    marker.save({ dataUrl: syntheticImage, size: 24 });
+  });
+  await settle(page);
+  assert.equal(await page.locator('.ytms-playhead-marker').count(), 0);
+  await page.locator('.ytp-progress-bar').evaluate(node => node.style.opacity = '1');
+  await applied(page);
+  await page.locator('.ytp-progress-bar').evaluate(node => node.inert = true);
+  await page.locator('.ytms-playhead-marker').waitFor({ state: 'detached' });
+  await page.locator('.ytp-progress-bar').evaluate(node => node.inert = false);
+  await applied(page);
+});
+
 test('the marker remains opt-in and does not alter native controls before an image is saved',async t=>{
   const page=await open(t,{saved:false});await settle(page);
   assert.equal(await page.locator('.ytms-playhead-marker').count(),0);
@@ -91,6 +126,32 @@ test('ad playback and ambiguous visible players restore native dots and resume s
   assert.equal(await page.locator('.ytms-playhead-marker').count(),0);
   await page.locator('[data-fixture-duplicate]').evaluate(node=>node.remove());await applied(page);
 });
+test('invisible retained players preserve the marker until a second player is truly visible',async t=>{
+  const page=await open(t);
+  await page.evaluate(()=>{
+    const host=document.createElement('div');host.id='retained-player-host';
+    const duplicate=document.getElementById('movie_player').cloneNode(true);
+    duplicate.dataset.fixtureDuplicate='1';duplicate.style.opacity='0';
+    duplicate.querySelector('.ytms-playhead-marker')?.remove();
+    duplicate.querySelector('[data-ytms-playhead-marker]')?.removeAttribute('data-ytms-playhead-marker');
+    host.append(duplicate);document.body.append(host);
+  });
+  await settle(page);assert.equal(await page.locator('.ytms-playhead-marker').count(),1,'An opacity-zero player is not a second visible target');
+  await page.evaluate(()=>{
+    document.getElementById('retained-player-host').style.opacity='0';
+    document.querySelector('[data-fixture-duplicate]').style.opacity='1';
+  });
+  await settle(page);assert.equal(await page.locator('.ytms-playhead-marker').count(),1,'Ancestor opacity also hides a retained player');
+  await page.evaluate(()=>{
+    const host=document.getElementById('retained-player-host');host.style.opacity='1';host.style.visibility='hidden';
+  });
+  await settle(page);assert.equal(await page.locator('.ytms-playhead-marker').count(),1,'A visibility-hidden player is not an active target');
+  await page.evaluate(()=>document.getElementById('retained-player-host').style.visibility='visible');
+  await settle(page);assert.equal(await page.locator('.ytms-playhead-marker').count(),0,'Two truly visible targets remain ambiguous');
+  await page.evaluate(()=>document.getElementById('retained-player-host').remove());
+  await applied(page);assert.equal(await page.locator('.ytms-playhead-marker').count(),1);
+});
+
 test('navigation, unsupported native miniplayer ownership and disposal release marker state',async t=>{
   const page=await open(t);
   await page.evaluate(()=>window.dispatchEvent(new Event('yt-navigate-start')));await settle(page);

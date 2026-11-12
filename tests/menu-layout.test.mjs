@@ -17,7 +17,7 @@ test('menu layout rules embed without external runtime state', () => {
   const embedded = vm.runInNewContext(`(${createMenuLayout.toString()})()`);
   const value = embedded.fromPreferences({});
   assert.deepEqual(copy(embedded.validate(value)), layouts.fromPreferences({}));
-  assert.equal(embedded.actionIds.length, 10);
+  assert.equal(embedded.actionIds.length, 11);
 });
 
 test('legacy order, grouping and visibility become an equivalent detached layout', () => {
@@ -31,7 +31,7 @@ test('legacy order, grouping and visibility become an equivalent detached layout
   assert.equal(value.nodes.find(node => node.id === 'download').visible, true);
   assert.deepEqual(layouts.validate(value), value);
   const flat = layouts.fromPreferences({ menuGroupChannelTools: false });
-  assert.equal(flat.nodes.length, 10);
+  assert.equal(flat.nodes.length, 11);
   assert.ok(flat.nodes.every(node => node.parent === 'root'));
 });
 
@@ -47,6 +47,16 @@ test('validated custom menus preserve sibling order and labels without retaining
   const clone = layouts.clone(validated); clone.nodes[0].visible = false;
   assert.equal(validated.nodes[0].visible, true);
   assert.equal(layouts.clone(null), null);
+});
+
+test('older custom menus retain every node and gain only a visible Hype action', () => {
+  const original=custom();original.nodes=original.nodes.filter(node=>node.id!=='hype');
+  original.nodes.find(node=>node.id==='download').visible=false;
+  const migrated=layouts.validate(original);
+  assert.deepEqual(migrated.nodes.filter(node=>node.id!=='hype'),original.nodes);
+  assert.deepEqual(migrated.nodes.find(node=>node.id==='hype'),{id:'hype',parent:'root',visible:true});
+  const hidden=layouts.fromPreferences({menuShowHype:false});assert.equal(hidden.nodes.find(node=>node.id==='hype').visible,false);
+  assert.equal(layouts.validate({...original,nodes:original.nodes.filter(node=>node.id!=='watchLater')}),null);
 });
 
 test('three submenu levels and the full eight-menu limit are supported', () => {

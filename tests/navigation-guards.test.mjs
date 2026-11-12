@@ -5,7 +5,7 @@ import vm from "node:vm";
 const PAGE_COHERENCE_SOURCE = readFileSync(
   new URL("../sources/modules/youtube-page-coherence.user.js", import.meta.url),
   "utf8",
-);
+).replace('const INCLUDE_DETAILED_DIAGNOSTICS = false;', 'const INCLUDE_DETAILED_DIAGNOSTICS = true;');
 const COMMENT_CLEANER_SOURCE = readFileSync(
   new URL("../sources/modules/youtube-comment-cleaner.user.js", import.meta.url),
   "utf8",

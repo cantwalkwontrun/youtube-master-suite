@@ -46,6 +46,85 @@ function instrumentBroker(source) {
   return `window.mirrorBrokerAudit = { refreshes: 0, replacements: 0, nativeObserves: 0, activeObservers: 0, batches: 0, records: 0 };\n${source}`;
 }
 
+for (const bundled of [false, true]) test(`Mirror follows a visible replacement toolbar with retained hidden controls (${bundled ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t);
+  await page.addScriptTag({ content: bundled ? SUITE : SOURCE });
+  const button = page.locator('#ytppl-video-mirror-button');
+  await button.waitFor();
+  await page.evaluate(() => {
+    const previous = document.querySelector('#movie_player .ytp-right-controls');
+    const replacement = document.createElement('div'); replacement.className = 'ytp-right-controls';
+    replacement.innerHTML = '<button class="ytp-settings-button ytp-button">Settings</button><button class="ytp-fullscreen-button ytp-button">Fullscreen</button>';
+    const retained = document.createElement('div'); retained.hidden = true;
+    previous.replaceWith(retained, replacement); retained.append(previous);
+  });
+  await page.evaluate(async () => { for (let i=0;i<4;i++) await new Promise(requestAnimationFrame); });
+  assert.equal(await button.isVisible(), true);
+  assert.equal(await button.count(), 1);
+  await button.click();
+  assert.equal(await page.locator('video.html5-main-video').getAttribute('data-ytppl-video-mirrored'), '1');
+  await button.click();
+  assert.equal(await page.locator('video.html5-main-video').getAttribute('data-ytppl-video-mirrored'), null);
+});
+
+for (const bundled of [false, true]) test(`ordinary native autohide preserves Mirror's button and chosen state (${bundled ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t);
+  await page.addStyleTag({ content: '#movie_player.ytp-autohide .ytp-right-controls { visibility: hidden; opacity: 0; }' });
+  await page.addScriptTag({ content: bundled ? SUITE : SOURCE });
+  const button = page.locator('#ytppl-video-mirror-button');
+  await button.click();
+  await page.evaluate(() => {
+    window.originalMirrorButton = document.getElementById('ytppl-video-mirror-button');
+    document.getElementById('movie_player').classList.add('ytp-autohide');
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+  });
+  await page.evaluate(async () => { for (let i=0;i<4;i++) await new Promise(requestAnimationFrame); });
+  assert.equal(await page.evaluate(() => originalMirrorButton.isConnected), true);
+  assert.equal(await page.locator('video.html5-main-video').getAttribute('data-ytppl-video-mirrored'), '1');
+  await page.evaluate(() => document.getElementById('movie_player').classList.remove('ytp-autohide'));
+  assert.equal(await button.isVisible(), true);
+  await button.click();
+  assert.equal(await page.locator('video.html5-main-video').getAttribute('data-ytppl-video-mirrored'), null);
+});
+
+for (const bundled of [false, true]) for (const hiddenBy of ['opacity', 'scale', 'inert']) {
+  test(`Mirror selects the current watch player instead of a ${hiddenBy}-hidden retained owner (${bundled ? 'Suite' : 'source'})`, async t => {
+    const page = await open(t);
+    await page.addScriptTag({ content: bundled ? SUITE : SOURCE });
+    await page.locator('#ytppl-video-mirror-button').waitFor();
+    await page.evaluate(hiddenBy => {
+      const old = document.querySelector('ytd-watch-flexy');
+      window.originalRetainedMirrorVideo = old.querySelector('video');
+      old.id = 'retained-watch';
+      if (hiddenBy === 'opacity') old.style.opacity = '0';
+      if (hiddenBy === 'scale') old.style.transform = 'scale(0)';
+      if (hiddenBy === 'inert') old.inert = true;
+      const current = document.createElement('ytd-watch-flexy'); current.id = 'current-watch';
+      current.innerHTML = '<div id="movie_player" class="html5-video-player"><video class="html5-main-video"></video><div class="ytp-right-controls"><button class="ytp-settings-button ytp-button">Settings</button><button class="ytp-fullscreen-button ytp-button">Fullscreen</button></div></div>';
+      const player = current.querySelector('#movie_player');
+      player.getVideoData = () => ({ video_id: fixture.playerId });
+      old.after(current);
+      window.dispatchEvent(new Event('yt-page-data-updated'));
+    }, hiddenBy);
+    await page.evaluate(async () => { for (let i=0;i<4;i++) await new Promise(requestAnimationFrame); });
+    const button = page.locator('#current-watch #ytppl-video-mirror-button');
+    assert.equal(await button.count(), 1);
+    assert.equal(await page.locator('#retained-watch #ytppl-video-mirror-button').count(), 0);
+    await button.click();
+    assert.equal(await page.locator('#current-watch video').getAttribute('data-ytppl-video-mirrored'), '1');
+    const retained = await page.evaluate(() => ({
+      connected: originalRetainedMirrorVideo.isConnected,
+      mirrored: originalRetainedMirrorVideo.getAttribute('data-ytppl-video-mirrored'),
+      watch: originalRetainedMirrorVideo.closest('ytd-watch-flexy')?.id || null,
+      playerParent: originalRetainedMirrorVideo.closest('#movie_player')?.parentElement?.localName,
+      floating: document.body.classList.contains('ytsmp-scroll-miniplayer-active'),
+    }));
+    if (!retained.connected || retained.watch !== 'retained-watch') t.diagnostic(JSON.stringify(retained));
+    assert.equal(retained.connected, true);
+    assert.equal(retained.mirrored, null);
+  });
+}
+
 test('complete Suite batches Mirror tooltip registrations without changing native delivery or retaining observers', async t => {
   const marker = 'replaceObserverRegistrations(videoMirrorTooltipObserver, registrations);';
   assert.equal(SUITE.split(marker).length, 2, 'The generated Suite must contain the canonical registration batch');

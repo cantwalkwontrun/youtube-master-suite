@@ -518,21 +518,36 @@ test('Undo refuses to overwrite a concurrent edit to the same channel', async t 
   const page = await open(t, { rules: [] });
   await editOrigin(page);
   await saveDialog(page);
-  const outcome = await page.evaluate(updatedRule => {
+  await page.evaluate(updatedRule => {
     const panel = document.querySelector('#origin > .ytms-channel-filter-confirmation');
     const undo = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Undo');
-    const saved = ageFixture.save([updatedRule]);
-    // Reconciliation removes stale confirmations on a later frame. Activate
-    // Undo in this same task to exercise its storage conflict check directly.
-    undo.click();
-    const status = panel.querySelector('[role="status"]');
-    return { saved: saved.ok, status: status.textContent, statusVisible: !status.hidden };
+    window.fixtureUndoPanel = panel;
+    // Inject the concurrent edit during the real activation, before the
+    // bubble handler and before the next reconciliation frame.
+    undo.addEventListener('click', () => { window.fixtureConcurrentUndoSave = ageFixture.save([updatedRule]).ok; }, { capture: true, once: true });
   }, rule(ID, 2, 'months'));
+  await confirmation(page).getByRole('button', { name: 'Undo', exact: true }).click();
+  const outcome = await page.evaluate(() => {
+    const panel = window.fixtureUndoPanel;
+    const status = panel.querySelector('[role="status"]');
+    return { saved: window.fixtureConcurrentUndoSave, status: status.textContent, statusVisible: !status.hidden };
+  });
   assert.equal(outcome.saved, true);
   assert.equal(outcome.statusVisible, true);
   assert.match(outcome.status, /filter has changed.*Edit filter to review it/);
   assert.deepEqual(await page.evaluate(() => fixtureChannelAge.getRules().map(({ channelId, maxAge, unit }) =>
     ({ channelId, maxAge, unit }))), [{ channelId: ID, maxAge: 2, unit: 'months' }]);
+});
+
+test('a page-script Undo click cannot remove a saved channel filter', async t => {
+  const page = await open(t, { rules: [] });
+  await editOrigin(page); await saveDialog(page);
+  const before = await page.evaluate(() => fixtureChannelAge.getRules());
+  await confirmation(page).getByRole('button', { name: 'Undo', exact: true }).evaluate(button => button.click());
+  assert.deepEqual(await page.evaluate(() => fixtureChannelAge.getRules()), before);
+  assert.equal(await confirmation(page).isVisible(), true);
+  await confirmation(page).getByRole('button', { name: 'Undo', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => fixtureChannelAge.getRules()), []);
 });
 
 for (const recycle of ['video', 'channel', 'model', 'detach', 'navigate']) {

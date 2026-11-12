@@ -177,6 +177,19 @@ test("reveal clicks and route reconciliation retain explicit summary refreshes",
   assert.ok(await page.evaluate(() => window.feedAudit.scans >= 2));
 });
 
+test('same-route refresh and hidden thumbnail class churn do not reclassify the feed', async t => {
+  const page = await open(t);
+  await page.locator('#yt-master-filter-toggle').click();
+  await page.evaluate(() => {
+    window.feedAuditReset();
+    window.dispatchEvent(new Event('yt-page-data-updated'));
+    document.querySelector('#card-1 .views').classList.add('fixture-extension-churn');
+  });
+  await settle(page);
+  assert.equal(await page.locator('#yt-master-filter-toggle').getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(await page.evaluate(() => window.feedAudit.cleanups), []);
+});
+
 test("500 sibling roots are retained without pairwise containment checks", async t => {
   const page = await open(t, { count: 500 });
   await page.evaluate(() => {

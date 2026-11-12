@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.128
+// @version      1.141
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
 // @updateURL    none
@@ -460,6 +460,7 @@
   let preferredQualityNavigationPending = false;
   const preferredQualityRetryTimers = new Set();
   let theaterModeAttemptKey = "";
+  const theaterModeAttemptTimers = new Set();
   let playerLayoutRefreshFrame = 0;
   const playerLayoutRefreshAttemptTimers = new Map();
   let liveChatCollapseAttemptTimers = [];
@@ -480,6 +481,8 @@
   let videoMirrorPlayer = null;
   let videoMirrorControls = null;
   let videoMirrorPageSuspended = false;
+  let videoControlsRecoveryObserver = null;
+  let videoControlsRecoveryTargets = [];
   let liveChatSyncFrame = 0;
   let liveChatVideoId = "";
   let liveChatOverride = null;
@@ -1936,8 +1939,8 @@
     });
 
     while (walker.nextNode()) {
-      const text = walker.currentNode.textContent
-        .replace(HASHTAG_TEXT_PATTERN, "$1")
+      const originalText = walker.currentNode.textContent;
+      const text = (CONFIG.hideHashtags ? originalText.replace(HASHTAG_TEXT_PATTERN, "$1") : originalText)
         .replace(/\bShow\s+(?:less|more)\b/gi, "")
         .replace(/\s+/g, " ")
         .trim();
@@ -1969,39 +1972,33 @@
     ).some((el) => !closestElement(el, DESCRIPTION_CONTROL_SELECTOR));
   }
 
+  const collapsedDescriptionStyles = new WeakMap();
+  const collapsedDescriptionValues = { display: 'none', height: '0px', 'line-height': '0px',
+    'max-height': '0px', 'min-height': '0px', margin: '0px', overflow: 'hidden', padding: '0px' };
   function setExpandedDescriptionCollapsed(expanded, collapsed) {
+    const previous = collapsedDescriptionStyles.get(expanded);
     if (collapsed) {
-      if (
-        expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] !== "1"
-      ) {
-        expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] = "1";
+      if (previous) return;
+      expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] = '1';
+      const owned = [];
+      for (const [property, value] of Object.entries(collapsedDescriptionValues)) {
+        const original = expanded.style.getPropertyValue(property);
+        const priority = expanded.style.getPropertyPriority(property);
+        if (original === value && priority === 'important') continue;
+        setImportantStyleProperty(expanded, property, value);
+        owned.push([property, original, priority, expanded.style.getPropertyValue(property)]);
       }
-      setImportantStyleProperty(expanded, "display", "none");
-      setImportantStyleProperty(expanded, "height", "0px");
-      setImportantStyleProperty(expanded, "line-height", "0px");
-      setImportantStyleProperty(expanded, "max-height", "0px");
-      setImportantStyleProperty(expanded, "min-height", "0px");
-      setImportantStyleProperty(expanded, "margin", "0px");
-      setImportantStyleProperty(expanded, "overflow", "hidden");
-      setImportantStyleProperty(expanded, "padding", "0px");
+      collapsedDescriptionStyles.set(expanded, owned);
       return;
     }
-
-    if (expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY] !== "1") {
-      return;
-    }
-
+    if (!previous) return;
+    collapsedDescriptionStyles.delete(expanded);
     delete expanded.dataset[DESCRIPTION_EXPANDED_COLLAPSED_DATASET_KEY];
-    [
-      "display",
-      "height",
-      "line-height",
-      "max-height",
-      "min-height",
-      "margin",
-      "overflow",
-      "padding",
-    ].forEach((property) => expanded.style.removeProperty(property));
+    for (const [property, original, priority, applied] of previous) {
+      if (expanded.style.getPropertyValue(property) !== applied || expanded.style.getPropertyPriority(property) !== 'important') continue;
+      if (original) expanded.style.setProperty(property, original, priority);
+      else expanded.style.removeProperty(property);
+    }
   }
 
   function setImportantStyleProperty(el, property, value) {
@@ -2047,7 +2044,8 @@
 
     getExpandedDescriptionHeightResetElements(expanded).forEach((el) => {
       setImportantStyleProperty(el, "height", "auto");
-      setImportantStyleProperty(el, "min-height", "0px");
+      // Preserve the native automatic minimum size. A flex description with
+      // a zero basis otherwise collapses and paints over the comments below.
     });
     setImportantStyleProperty(expanded, "max-height", "none");
   }
@@ -2936,23 +2934,41 @@
       : location.pathname.split("/")[2] || "";
   }
 
+  function isAvailableVideoMirrorOwner(element) {
+    if (!isRenderedWatchFlexy(element) || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    // Floating can leave a zero-height owner; a zero-width transformed retained
+    // owner is still ineligible even though it has a client rect.
+    if (!(element.getBoundingClientRect().width > 0)) return false;
+    for (let current = element; current; current = current.parentElement) {
+      const style = getComputedStyle(current);
+      if (style.display === "none" || style.visibility === "hidden" ||
+          style.visibility === "collapse" || Number(style.opacity) === 0) return false;
+    }
+    return true;
+  }
+
+  function isVisibleVideoMirrorSurface(element) {
+    if (!isAvailableVideoMirrorOwner(element)) return false;
+    const bounds = element.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0;
+  }
+
   function getVideoMirrorTarget(videoId = getVideoMirrorRouteId()) {
     if (!videoId) return null;
     const placeholderOwner = document
       .querySelector("#ytsmp-player-placeholder")
       ?.closest("ytd-watch-flexy");
-    const watchOwner = getWatchFlexy();
-    const floatingOwner = isRenderedWatchFlexy(placeholderOwner)
+    const floatingOwner = () => isAvailableVideoMirrorOwner(placeholderOwner)
       ? placeholderOwner
-      : watchOwner;
+      : [...document.querySelectorAll("ytd-watch-flexy")].find(isAvailableVideoMirrorOwner);
     for (const player of document.querySelectorAll("#movie_player")) {
       if (
-        !isRenderedWatchFlexy(player) ||
+        !isVisibleVideoMirrorSurface(player) ||
         player.closest("ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer")
       ) continue;
 
       const owner = player.closest("ytd-watch-flexy") || (
-        player.parentElement === document.body ? floatingOwner : null
+        player.parentElement === document.body ? floatingOwner() : null
       );
       if (!isRenderedWatchFlexy(owner)) continue;
       let playerVideoId = "";
@@ -2964,8 +2980,8 @@
       // Never carry the previous video's mirror into a pending SPA handoff.
       if (playerVideoId !== videoId) continue;
       const video = Array.from(player.querySelectorAll("video.html5-main-video"))
-        .find(isRenderedWatchFlexy);
-      if (video) return { player, video };
+        .find(isVisibleVideoMirrorSurface);
+      if (video) return { player, video, owner };
     }
     return null;
   }
@@ -3224,6 +3240,51 @@
     return button;
   }
 
+  function clearVideoControlsRecovery() {
+    videoControlsRecoveryObserver?.disconnect();
+    videoControlsRecoveryObserver = null;
+    videoControlsRecoveryTargets = [];
+  }
+
+  function watchUnavailableVideoControls(player, controls) {
+    const targets = new Set();
+    for (const row of controls) {
+      for (let node = row; node; node = node.parentElement) {
+        targets.add(node);
+        if (node === player) break;
+      }
+    }
+    const next = [...targets];
+    if (next.length === videoControlsRecoveryTargets.length &&
+        next.every((target, index) => target === videoControlsRecoveryTargets[index])) return;
+    clearVideoControlsRecovery();
+    if (!next.length) return; // Child-list discovery handles controls not yet stamped.
+    videoControlsRecoveryTargets = next;
+    videoControlsRecoveryObserver = new MutationObserver(() => {
+      if (dynamicNavigationPending || videoMirrorPageSuspended) return;
+      scheduleVideoMirrorSync();
+      scheduleLiveChatSync();
+    });
+    for (const target of next) videoControlsRecoveryObserver.observe(target, {
+      attributes: true, attributeFilter: ["hidden", "inert", "aria-hidden", "style", "class"],
+    });
+  }
+
+  function getVideoPlayerControls(player) {
+    const rows = [...player.querySelectorAll(".ytp-right-controls")];
+    const candidates = rows.filter(controls =>
+      controls.getClientRects().length > 0 && !controls.closest('[hidden], [inert], [aria-hidden="true"]'),
+    );
+    const visible = candidates.find(isVisibleVideoMirrorSurface);
+    // Ordinary native autohide fades the sole toolbar without removing it.
+    const selected = visible || (candidates.length === 1 ? candidates[0] : null);
+    // Native transitions can reveal an existing row with attributes alone.
+    // Watch only its ancestry while missing, never the player's busy subtree.
+    if (selected) clearVideoControlsRecovery();
+    else watchUnavailableVideoControls(player, rows);
+    return selected;
+  }
+
   function placeVideoMirrorButton(controls) {
     const settingsButton = controls.querySelector(".ytp-settings-button");
     const defaultViewButton = controls.querySelector(".ytp-size-button");
@@ -3262,7 +3323,7 @@
     if (videoMirrorFrame) cancelAnimationFrame(videoMirrorFrame);
     videoMirrorFrame = 0;
     const videoId = getVideoMirrorRouteId();
-    if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || !videoId) {
+    if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || dynamicNavigationPending || !videoId) {
       resetVideoMirror();
       return;
     }
@@ -3273,6 +3334,7 @@
     }
     const target = getVideoMirrorTarget(videoId);
     if (!target) {
+      clearVideoControlsRecovery();
       clearVideoMirrorElements();
       return;
     }
@@ -3291,7 +3353,7 @@
       videoMirrorVideo.removeAttribute(VIDEO_MIRROR_ATTRIBUTE);
     }
 
-    const controls = target.player.querySelector(".ytp-right-controls");
+    const controls = getVideoPlayerControls(target.player);
     if (videoMirrorControls !== controls) hideVideoMirrorTooltip();
     videoMirrorControls = controls;
     if (!controls) {
@@ -3309,7 +3371,7 @@
   }
 
   function scheduleVideoMirrorSync() {
-    if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || videoMirrorFrame) return;
+    if (!CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended || dynamicNavigationPending || videoMirrorFrame) return;
     videoMirrorFrame = requestAnimationFrame(syncVideoMirror);
   }
 
@@ -3318,6 +3380,8 @@
       !CONFIG.enableVideoMirrorButton || videoMirrorPageSuspended ||
       !isWatchPath() || mutation.type !== "childList"
     ) return false;
+    const ignoredSurface = "ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container";
+    if (mutation.target?.closest?.(ignoredSurface)) return false;
     if (
       videoMirrorVideo?.isConnected && videoMirrorButton?.isConnected &&
       videoMirrorControls?.isConnected && videoMirrorPlayer?.isConnected &&
@@ -3326,15 +3390,18 @@
       videoMirrorPlayer.contains(videoMirrorVideo)
     ) {
       // Reconcile late/replaced placement anchors, not unrelated page traffic.
-      if (!videoMirrorControls.contains(mutation.target)) return false;
+      if (!videoMirrorControls.contains(mutation.target)) {
+        return videoMirrorPlayer.contains(mutation.target) &&
+          [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+            node.nodeType === Node.ELEMENT_NODE && (node.matches(".ytp-right-controls") ||
+              (node.children.length > 0 && Boolean(node.querySelector(".ytp-right-controls")))));
+      }
       return [...mutation.addedNodes, ...mutation.removedNodes].some((node) =>
         node.nodeType === Node.ELEMENT_NODE &&
         (node.matches(VIDEO_MIRROR_ANCHOR_SELECTOR) ||
           Boolean(node.querySelector(VIDEO_MIRROR_ANCHOR_SELECTOR))),
       );
     }
-    const ignoredSurface = "ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container";
-    if (mutation.target?.closest?.(ignoredSurface)) return false;
     return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
       if (node.nodeType !== Node.ELEMENT_NODE) return false;
       if (node.matches(ignoredSurface)) return false;
@@ -3433,33 +3500,41 @@
 
   function getLiveChatTarget(videoId) {
     const target = getVideoMirrorTarget(videoId);
-    if (!target) return null;
-    const owner = target.player.closest("ytd-watch-flexy") ||
-      document.querySelector("#ytsmp-player-placeholder")?.closest("ytd-watch-flexy");
+    if (!target) { clearVideoControlsRecovery(); return null; }
+    const owner = target.owner;
     if (!isRenderedWatchFlexy(owner) || owner.closest('[inert], [aria-hidden="true"]')) return null;
     const frames = [...owner.querySelectorAll("ytd-live-chat-frame#chat")].filter(frame =>
       frame.closest("ytd-watch-flexy") === owner &&
       (frame.querySelector("iframe#chatframe") || frame.querySelector(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR)),
     );
-    if (frames.length !== 1) return null;
-    const frame = frames[0];
+    const candidates = frames.map(frame => {
+      const iframe = frame.querySelector("iframe#chatframe");
+      const source = iframe?.getAttribute("src");
+      let valid = true;
+      if (source && source !== "about:blank") {
+        try {
+          const url = new URL(source, location.href);
+          if (url.origin !== location.origin || !/^\/live_chat(?:_replay)?$/.test(url.pathname) ||
+              (url.searchParams.has("v") && url.searchParams.get("v") !== videoId)) valid = false;
+        } catch { valid = false; }
+      }
+      return { frame, iframe, valid };
+    });
+    const matching = candidates.filter(candidate => candidate.valid);
+    // Retained frames for previous videos must not hide the current control.
+    // Keep one rejected frame under observation so its native src can recover.
+    const selected = matching.length === 1 ? matching[0] :
+      candidates.length === 1 ? candidates[0] : null;
+    if (!selected) return null;
+    const { frame, iframe, valid } = selected;
     if (frame.hasAttribute("popover") && frame.getAttribute(LIVE_CHAT_PANEL_ATTRIBUTE) !== "1") return null;
-    const source = frame.querySelector("iframe#chatframe")?.getAttribute("src");
-    let valid = true;
-    if (source && source !== "about:blank") {
-      try {
-        const url = new URL(source, location.href);
-        if (url.origin !== location.origin || !/^\/live_chat(?:_replay)?$/.test(url.pathname) ||
-            (url.searchParams.has("v") && url.searchParams.get("v") !== videoId)) valid = false;
-      } catch { valid = false; }
-    }
-    const controls = target.player.querySelector(".ytp-right-controls");
+    const controls = getVideoPlayerControls(target.player);
     const branch = [];
     for (let ancestor = frame.parentElement; ancestor; ancestor = ancestor.parentElement) {
       branch.push(ancestor);
       if (ancestor === owner) break;
     }
-    return controls ? { frame, owner, player: target.player, controls, branch, iframe: frame.querySelector("iframe#chatframe"), valid } : null;
+    return controls ? { frame, owner, player: target.player, controls, branch, iframe, valid } : null;
   }
 
   function canPresentLiveChat() {
@@ -3822,10 +3897,13 @@
         !isWatchPath() || mutation.type !== "childList") return false;
     if (mutation.target?.closest?.("ytd-comments, .ytp-caption-window-container, .ytp-progress-bar-container")) return false;
     const selector = `ytd-live-chat-frame#chat, iframe#chatframe, #movie_player, .ytp-right-controls, #ytsmp-player-placeholder, #${VIDEO_MIRROR_BUTTON_ID}, #ytms-player-settings-button, ${VIDEO_MIRROR_ANCHOR_SELECTOR}`;
+    const insideChat = Boolean(mutation.target?.closest?.("ytd-live-chat-frame#chat"));
     return [...mutation.addedNodes, ...mutation.removedNodes].some(node => {
       if (node.nodeType !== Node.ELEMENT_NODE) return false;
       if (node.id === LIVE_CHAT_BUTTON_ID) return node === liveChatButton && !node.isConnected;
-      return node.matches(selector) || Boolean(node.querySelector(selector));
+      return node.matches(selector) || Boolean(node.querySelector(selector)) ||
+        (insideChat && (node.matches(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR) ||
+          Boolean(node.querySelector(LIVE_CHAT_COLLAPSE_BUTTON_SELECTOR))));
     });
   }
 
@@ -4045,8 +4123,8 @@
     );
   }
 
-  function isTheaterModeEnabled() {
-    const flexy = getWatchFlexy();
+  function isTheaterModeEnabled(player = null) {
+    const flexy = player?.closest("ytd-watch-flexy") || getWatchFlexy();
     if (!flexy) {
       return false;
     }
@@ -4058,12 +4136,34 @@
     );
   }
 
+  function getTheaterModePlayer() {
+    const videoId = getVideoMirrorRouteId();
+    if (!videoId) return null;
+    const visible = element => {
+      if (!element?.isConnected || !element.getClientRects().length ||
+          element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      for (let node = element; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === "none" || ["hidden", "collapse"].includes(style.visibility) || Number(style.opacity) === 0) return false;
+      }
+      return true;
+    };
+    const players = [...document.querySelectorAll("#movie_player")].filter(player => {
+      if (!visible(player) || player.closest("ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer")) return false;
+      const owner = player.closest("ytd-watch-flexy") || (player.parentElement === document.body ? getWatchFlexy() : null);
+      if (!visible(owner) || !player.querySelector("video.html5-main-video")) return false;
+      try { return player.getVideoData?.()?.video_id === videoId; }
+      catch { return false; }
+    });
+    return players.length === 1 ? players[0] : null;
+  }
+
   function enableTheaterMode() {
     if (
       !CONFIG.enableTheaterMode ||
       theaterModeUserDisabled ||
-      !isWatchPath() ||
-      isTheaterModeEnabled()
+      dynamicNavigationPending || videoMirrorPageSuspended || document.hidden ||
+      !isWatchPath()
     ) {
       return;
     }
@@ -4071,7 +4171,8 @@
       return;
     }
 
-    const player = document.querySelector("#movie_player, .html5-video-player");
+    const player = getTheaterModePlayer();
+    if (!player || isTheaterModeEnabled(player)) return;
     const sizeButton = player && player.querySelector(".ytp-size-button");
     if (
       !sizeButton ||
@@ -4085,10 +4186,17 @@
     schedulePlayerLayoutRefreshAttempts();
   }
 
+  function clearTheaterModeAttempts() {
+    theaterModeAttemptTimers.forEach(timer => clearTimeout(timer));
+    theaterModeAttemptTimers.clear();
+    theaterModeAttemptKey = "";
+  }
+
   function scheduleTheaterModeAttempts() {
     if (
       !CONFIG.enableTheaterMode ||
       theaterModeUserDisabled ||
+      dynamicNavigationPending || videoMirrorPageSuspended || document.hidden ||
       !isWatchPath()
     ) {
       return;
@@ -4101,23 +4209,57 @@
 
     theaterModeAttemptKey = videoKey;
     [300, 1200, 2500].forEach((delay) => {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        theaterModeAttemptTimers.delete(timer);
         if (theaterModeAttemptKey === videoKey) {
           enableTheaterMode();
         }
       }, delay);
+      theaterModeAttemptTimers.add(timer);
     });
   }
 
   function handleTheaterModeToggle(event) {
-    if (!CONFIG.enableTheaterMode || !isWatchPath()) {
+    if (!CONFIG.enableTheaterMode || !event.isTrusted || !isWatchPath()) {
       return;
     }
-    if (!closestElement(event.target, ".ytp-size-button")) {
+    const button = closestElement(event.target, ".ytp-size-button");
+    if (!button) return;
+    const player = getTheaterModePlayer();
+    if (!player || button.closest("#movie_player") !== player) {
       return;
     }
 
-    theaterModeUserDisabled = isTheaterModeEnabled();
+    theaterModeUserDisabled = isTheaterModeEnabled(player);
+    if (theaterModeUserDisabled) clearTheaterModeAttempts();
+  }
+
+  function handleTheaterModeKeyDown(event) {
+    if (!CONFIG.enableTheaterMode || !event.isTrusted || event.defaultPrevented ||
+        event.repeat || event.isComposing || event.keyCode === 229 ||
+        event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+        event.key?.toLowerCase() !== "t" || dynamicNavigationPending ||
+        videoMirrorPageSuspended || !isWatchPath()) return;
+    const excluded = 'input, textarea, select, dialog, [contenteditable], [role="textbox"], [role="searchbox"], ' +
+      '[role="combobox"], [role="slider"], [role="menu"], [role="listbox"], [role="dialog"], ' +
+      '[role="alertdialog"], [aria-modal="true"], .ytp-settings-menu, .ytp-popup, .ytp-panel, .ytp-contextmenu';
+    if (event.target?.isContentEditable || document.activeElement?.isContentEditable ||
+        closestElement(event.target, excluded) || closestElement(document.activeElement, excluded)) return;
+    const player = getTheaterModePlayer(), videoKey = getVideoKey();
+    if (!player) return;
+    const before = isTheaterModeEnabled(player);
+    // A microtask can run between native event listeners in Chromium. Defer to
+    // the next task so native propagation finishes, without replaying the key.
+    const timer = setTimeout(() => {
+      theaterModeAttemptTimers.delete(timer);
+      if (dynamicNavigationPending || videoMirrorPageSuspended ||
+          videoKey !== getVideoKey() || getTheaterModePlayer() !== player) return;
+      const after = isTheaterModeEnabled(player);
+      if (after === before) return;
+      theaterModeUserDisabled = !after;
+      if (theaterModeUserDisabled) clearTheaterModeAttempts();
+    }, 0);
+    theaterModeAttemptTimers.add(timer);
   }
 
   function getVideoKey() {
@@ -4329,7 +4471,9 @@
   }
 
   function handleWheelVolume(event) {
-    if (!CONFIG.enablePlayerWheelVolume || event.deltaY === 0) {
+    if (!CONFIG.enablePlayerWheelVolume || event.defaultPrevented || !event.cancelable ||
+        event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+        !Number.isFinite(event.deltaY) || Math.abs(event.deltaY) <= Math.abs(event.deltaX || 0)) {
       return;
     }
 
@@ -4342,7 +4486,7 @@
     }
 
     const player = getPlayerFromTarget(event.target);
-    if (!player) {
+    if (!player || hasNestedFullscreenWheelSurface(event.target, player)) {
       return;
     }
 
@@ -4614,6 +4758,7 @@
   }
 
   function handleNavigateFinish() {
+    if (videoMirrorPageSuspended) return;
     dynamicNavigationPending = false;
     liveChatNavigationPending = false;
     preferredQualityNavigationPending = false;
@@ -4629,6 +4774,7 @@
     liveChatNavigationPending = true;
     resetLiveChat();
     preferredQualityNavigationPending = true;
+    clearTheaterModeAttempts();
     clearPreferredQualityAttempts();
     resetVideoMirror();
     document.documentElement?.removeAttribute(FULLSCREEN_COMMENTS_ATTRIBUTE);
@@ -4748,6 +4894,7 @@
   }
 
   function cancelScheduledAnimationWork() {
+    clearVideoControlsRecovery();
     if (applyFrame) cancelAnimationFrame(applyFrame);
     if (playerLayoutRefreshFrame) cancelAnimationFrame(playerLayoutRefreshFrame);
     if (videoMirrorFrame) cancelAnimationFrame(videoMirrorFrame);
@@ -5563,15 +5710,20 @@
     document.addEventListener("loadedmetadata", handlePreferredQualityMetadata, true);
   }
   document.addEventListener("click", handleTheaterModeToggle, true);
+  if (CONFIG.enableTheaterMode) document.addEventListener("keydown", handleTheaterModeKeyDown, true);
+  if (CONFIG.enableTheaterMode) document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearTheaterModeAttempts();
+    else scheduleTheaterModeAttempts();
+  }, true);
   document.addEventListener("click", handleDescriptionClick, true);
   document.addEventListener("click", handleCleanVideoUrlSelection, true);
   document.addEventListener("keydown", handleCleanVideoUrlSelection, true);
   document.addEventListener("copy", handleCleanVideoUrlCopy, true);
-  document.addEventListener("wheel", handleWheelVolume, {
+  document.addEventListener("wheel", handleFullscreenCommentsWheel, {
     capture: true,
     passive: false,
   });
-  document.addEventListener("wheel", handleFullscreenCommentsWheel, {
+  document.addEventListener("wheel", handleWheelVolume, {
     capture: true,
     passive: false,
   });
@@ -5610,6 +5762,7 @@
     () => {
       dynamicNavigationPending = true;
       videoMirrorPageSuspended = true;
+      clearTheaterModeAttempts();
       resetLiveChat();
       clearPreferredQualityAttempts();
       resetVideoMirror();
@@ -5625,10 +5778,17 @@
   window.addEventListener(
     "pageshow",
     () => {
-      if (videoMirrorPageSuspended) dynamicNavigationPending = false;
+      if (videoMirrorPageSuspended) {
+        dynamicNavigationPending = false;
+        preferredQualityNavigationPending = false;
+        liveChatNavigationPending = false;
+      }
       videoMirrorPageSuspended = false;
-      liveChatNavigationPending = false;
+      // An initial pageshow can arrive after SPA navigation has begun. Only
+      // an actual pagehide restoration can clear that unfinished handoff.
+      if (dynamicNavigationPending) return;
       schedulePreferredQualityAttempts();
+      scheduleTheaterModeAttempts();
       scheduleVideoMirrorSync();
       scheduleLiveChatSync();
       ensureStyles();

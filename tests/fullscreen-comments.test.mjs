@@ -85,6 +85,7 @@ function createHarness() {
     document,
     window: { addEventListener: register(windowListeners) },
     watchRoute: true,
+    videoMirrorPageSuspended: false,
     rightButtonHeldOnPlayer: false,
     getComputedStyle: (element) => element,
     isWatchPath: () => context.watchRoute,
@@ -95,7 +96,7 @@ function createHarness() {
     "ensureStyles", "convertCurrentShortsPage", "applyDynamicPreferences",
     "schedulePreferredQualityAttempts", "clearPreferredQualityAttempts", "scheduleLiveChatCollapseAttempts",
     "handleManualQualitySelection", "handlePreferredQualityMetadata",
-    "scheduleTheaterModeAttempts", "configureDynamicMutationObserver",
+    "scheduleTheaterModeAttempts", "clearTheaterModeAttempts", "configureDynamicMutationObserver",
     "schedulePlayerLayoutRefreshAttempts", "clearLiveChatCollapseAttempts",
     "clearPlayerLayoutRefreshAttempts", "cancelScheduledAnimationWork",
     "clearContextMenuSuppression", "handleShortsClick", "handleTheaterModeToggle",
@@ -240,8 +241,8 @@ test("fullscreen comments preserve mouse buttons, modifiers, horizontal and alre
   assert.equal(h.wheel().stopped, false);
   assert.equal(h.app.scrollTop, 0);
   const wheelListeners = h.documentListeners.get("wheel");
-  assert.equal(wheelListeners[0].handler, h.context.handleWheelVolume);
-  assert.equal(wheelListeners[1].handler, h.context.handleFullscreenCommentsWheel);
+  assert.equal(wheelListeners[0].handler, h.context.handleFullscreenCommentsWheel);
+  assert.equal(wheelListeners[1].handler, h.context.handleWheelVolume);
   assert.equal(wheelListeners[1].options.capture, true);
   assert.equal(wheelListeners[1].options.passive, false);
 });

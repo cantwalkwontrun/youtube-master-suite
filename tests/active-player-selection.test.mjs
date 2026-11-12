@@ -1,3 +1,4 @@
+// Language: en-GB. Native watch-owner selection contracts.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -45,12 +46,28 @@ function createWatchRoot(overrides = {}) {
     ariaHidden: null,
     display: "block",
     visibility: "visible",
+    opacity: "1",
+    parentElement: null,
+    inert: false,
     hasRect: true,
+    closest(selector) {
+      assert.equal(selector, '[hidden], [inert], [aria-hidden="true"]');
+      for (let node = this; node; node = node.parentElement) {
+        if (node.hidden || node.inert || node.ariaHidden === "true") return node;
+      }
+      return null;
+    },
+    hasAttribute(name) {
+      return name === "inert" && this.inert;
+    },
     getAttribute(name) {
       return name === "aria-hidden" ? this.ariaHidden : null;
     },
     getClientRects() {
       return this.hasRect ? [{}] : [];
+    },
+    getBoundingClientRect() {
+      return { width: this.hasRect ? 1280 : 0, height: this.hasRect ? 720 : 0 };
     },
     ...overrides,
   };

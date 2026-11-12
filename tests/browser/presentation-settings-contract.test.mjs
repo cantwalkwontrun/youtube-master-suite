@@ -12,6 +12,10 @@ after(async () => { await browser?.close(); }, { timeout: 10000 });
 const cases = [
   ['hideSubscriptionsHeaders','/feed/subscriptions','<ytd-browse><ytd-rich-grid-renderer><div id="header" data-target>Categories</div></ytd-rich-grid-renderer></ytd-browse>'],
   ['hideHomePosts','/','<ytd-browse><ytd-post-renderer data-target>Post</ytd-post-renderer></ytd-browse>'],
+  ['hideAllComments','/watch?v=aaaaaaaaaaa','<ytd-watch-flexy><ytd-comments data-target>Comments</ytd-comments></ytd-watch-flexy>'],
+  ['hideChannelBanner','/@Fixture','<ytd-c4-tabbed-header-renderer><div id="banner" data-target>Banner</div></ytd-c4-tabbed-header-renderer>'],
+  ['hideChannelBanner','/@Fixture/videos','<yt-page-header-renderer><yt-image-banner-view-model data-target>Banner</yt-image-banner-view-model></yt-page-header-renderer>'],
+  ['hideSubscriptionsChannels','/feed/subscriptions','<ytd-channel-list-sub-menu-renderer data-target>Subscribed channels</ytd-channel-list-sub-menu-renderer>'],
   ['hideSearchPrompts','/results?search_query=fixture','<ytd-search><ytd-search-refinement-card-renderer data-target>Prompt</ytd-search-refinement-card-renderer></ytd-search>'],
   ['hidePremiumUpsells','/','<ytd-mealbar-promo-renderer data-target>Premium</ytd-mealbar-promo-renderer>'],
   ['hideOpenApp','/','<ytd-app-install-promo-renderer data-target>Open app</ytd-app-install-promo-renderer>'],
@@ -84,4 +88,66 @@ for(const count of ['3','4','5','6']) test(`shortsColumns ${count} changes only 
   assert.equal(await page.locator('#unrelated').evaluate(el=>getComputedStyle(el).getPropertyValue('--ytd-rich-grid-slim-items-per-row').trim()),'');
   await page.evaluate(()=>disposeContract());
   assert.equal(await page.locator('[data-target]').evaluate(el=>getComputedStyle(el).getPropertyValue('--ytd-rich-grid-slim-items-per-row').trim()),'');
+});
+
+test('fullWidthChannel expands the channel content only while enabled on a channel route',async t=>{
+  const page=await open(t,'/@Fixture','<ytd-browse style="display:block;width:700px"><div id="primary" data-target>Channel content</div></ytd-browse>');
+  await install(page,{fullWidthChannel:false});
+  assert.equal((await page.locator('[data-target]').boundingBox()).width,180);
+  await page.evaluate(()=>disposeContract());
+  await install(page,{fullWidthChannel:true});
+  assert.equal((await page.locator('[data-target]').boundingBox()).width,700);
+  await page.evaluate(()=>{history.pushState({},'','/');window.dispatchEvent(new Event('yt-navigate-finish'));});
+  await page.waitForFunction(()=>document.documentElement.getAttribute('data-ytms-discovery-route')==='home');
+  assert.equal((await page.locator('[data-target]').boundingBox()).width,180);
+  await page.evaluate(()=>disposeContract());
+  assert.equal((await page.locator('[data-target]').boundingBox()).width,180);
+});
+
+test('viewsSeparateLine changes only recognised view metadata and restores native inline layout',async t=>{
+  const page=await open(t,'/','<ytd-browse><ytd-rich-grid-renderer><ytd-rich-item-renderer><div id="metadata-line"><span data-target style="display:inline">1,234 views</span><span id="published" style="display:inline">3 days ago</span></div></ytd-rich-item-renderer></ytd-rich-grid-renderer></ytd-browse>');
+  for(const enabled of [false,true]){
+    await install(page,{viewsSeparateLine:enabled});
+    assert.equal(await page.locator('[data-target]').evaluate(el=>getComputedStyle(el).display),enabled?'block':'inline');
+    assert.equal(await page.locator('#published').evaluate(el=>getComputedStyle(el).display),'inline');
+    await page.evaluate(()=>disposeContract());
+    assert.equal(await page.locator('[data-target]').evaluate(el=>getComputedStyle(el).display),'inline');
+  }
+});
+
+for(const [path,preference] of [['/','homeList'],['/feed/subscriptions','subscriptionsList']]) test(`${preference} changes actual card layout and stays scoped to its feed`,async t=>{
+  const page=await open(t,path,'<ytd-browse><ytd-rich-grid-renderer><div id="contents" style="display:grid"><ytd-rich-item-renderer style="display:block;width:240px"><ytd-rich-grid-media><div id="dismissible" data-target><a id="thumbnail">Thumbnail</a>Title</div></ytd-rich-grid-media></ytd-rich-item-renderer></div></ytd-rich-grid-renderer></ytd-browse>');
+  for(const enabled of [false,true]){
+    await install(page,{[preference]:enabled});
+    assert.equal(await page.locator('#contents').evaluate(el=>getComputedStyle(el).display),enabled?'block':'grid');
+    assert.equal(await page.locator('[data-target]').evaluate(el=>getComputedStyle(el).display),enabled?'flex':'block');
+    await page.evaluate(()=>disposeContract());
+  }
+  await install(page,{[preference]:true});
+  await page.evaluate(next=>{history.pushState({},'',next);window.dispatchEvent(new Event('yt-navigate-finish'));},path==='/'?'/feed/subscriptions':'/');
+  await page.waitForFunction(()=>!document.documentElement.hasAttribute('data-ytms-discovery-list'));
+  assert.equal(await page.locator('#contents').evaluate(el=>getComputedStyle(el).display),'grid');
+  await page.evaluate(()=>disposeContract());
+});
+
+test('Home post hiding removes the native grid slot while retaining mixed cards, queues and channel posts',async t=>{
+  const markup='<ytd-browse><ytd-rich-grid-renderer><div id="post-grid" style="display:grid;grid-template-columns:repeat(3,200px)">'+
+    '<ytd-rich-item-renderer id="post-card" style="display:block;min-height:120px"><ytd-post-renderer data-target>Community post</ytd-post-renderer></ytd-rich-item-renderer>'+
+    '<ytd-rich-item-renderer id="next-card" style="display:block;min-height:120px">Next video</ytd-rich-item-renderer>'+
+    '<ytd-rich-item-renderer id="mixed-card" style="display:block;min-height:120px"><ytd-post-renderer>Uncertain post</ytd-post-renderer><yt-lockup-view-model>Video card</yt-lockup-view-model></ytd-rich-item-renderer>'+
+    '</div></ytd-rich-grid-renderer><ytd-playlist-panel-renderer style="display:block"><ytd-post-renderer id="queued-post" style="display:block">Queued surface</ytd-post-renderer></ytd-playlist-panel-renderer></ytd-browse>';
+  const page=await open(t,'/',markup),firstX=(await page.locator('#post-card').boundingBox()).x;
+  await install(page,{hideHomePosts:false});
+  assert.equal(await page.locator('#post-card').isVisible(),true);
+  await page.evaluate(()=>disposeContract());
+  await install(page,{hideHomePosts:true});
+  assert.equal(await page.locator('#post-card').isVisible(),false);
+  assert.equal((await page.locator('#next-card').boundingBox()).x,firstX,'The next card must occupy the removed post slot');
+  assert.equal(await page.locator('#mixed-card').isVisible(),true);
+  assert.equal(await page.locator('#queued-post').isVisible(),true);
+  await page.evaluate(()=>{history.pushState({},'','/@Fixture/posts');window.dispatchEvent(new Event('yt-navigate-finish'));});
+  await page.waitForFunction(()=>document.documentElement.getAttribute('data-ytms-discovery-route')==='channel');
+  assert.equal(await page.locator('#post-card').isVisible(),true);
+  await page.evaluate(()=>disposeContract());
+  assert.equal(await page.locator('[data-target]').isVisible(),true);
 });

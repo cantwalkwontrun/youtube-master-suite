@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.80
+// @version      1.94
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -868,7 +868,7 @@ ${buildQueueCompatibilityCss()}
       frame = 0;
       if (navigating) return;
       const players = [...document.querySelectorAll('#movie_player')].filter(player =>
-        player.isConnected && player.getClientRects().length);
+        player.isConnected && !player.closest('ytd-video-preview, ytd-reel-video-renderer') && player.getClientRects().length);
       if (players.length !== 1 || players[0].classList.contains('ad-showing') ||
           players[0].classList.contains('ad-interrupting')) return;
       const player = players[0];
@@ -972,10 +972,12 @@ ${buildQueueCompatibilityCss()}
     let pending = null;
     let operationGeneration = 0;
     let confirmedMiniOrders = new WeakMap();
+    let hasConfirmedMiniOrders = false;
     let menuActivation = 0;
     let toast = null;
     let toastTimer = 0;
     let menuFrame = 0;
+    let navigating = false, pageSuspended = false;
 
     const controller = (element) => element?.polymerController || element?.getPolymerController?.() || element;
     const validId = (value) => typeof value === "string" && /^[\w-]{11}$/.test(value);
@@ -1004,6 +1006,8 @@ ${buildQueueCompatibilityCss()}
     function isVisibleQueuePlayer(player) {
       if (!player.isConnected || !player.getClientRects().length ||
           player.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const box = player.getBoundingClientRect();
+      if (!(box.width > 0 && box.height > 0)) return false;
       for (let node = player; node; node = node.parentElement) {
         const css = getComputedStyle(node);
         if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
@@ -1014,7 +1018,8 @@ ${buildQueueCompatibilityCss()}
     function activeVideoId() {
       const ids = new Set();
       let visible = 0;
-      const players = [...document.querySelectorAll('#movie_player')].filter(player => player.isConnected);
+      const players = [...document.querySelectorAll('#movie_player')].filter(player => player.isConnected &&
+        !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
       for (const player of players) {
         if (!isVisibleQueuePlayer(player)) continue;
         visible++;
@@ -1031,20 +1036,30 @@ ${buildQueueCompatibilityCss()}
 
     function activePlayer(anchor) {
       return [...document.querySelectorAll('#movie_player')].find(player =>
+        !player.closest('ytd-video-preview, ytd-reel-video-renderer') &&
         isVisibleQueuePlayer(player) &&
         player.getVideoData?.()?.video_id === anchor);
     }
 
     const sameIds = (left, right) => left.length === right.length && left.every((id, i) => id === right[i]);
 
+    function confirmedAnchor(proof, anchor) {
+      if (!proof || proof.expectedEntries.filter(entry => entry.videoId === proof.anchor).length !== 1) return false;
+      const previous = proof.expectedEntries.findIndex(entry => entry.videoId === proof.anchor);
+      return anchor === proof.anchor || !pending && proof.expectedEntries[previous + 1]?.videoId === anchor;
+    }
+
     function miniplayerQueue(player, anchor) {
       const mini = player?.closest("ytd-miniplayer");
       if (!mini) return null;
       const ids = player.getPlaylist?.();
       if (Array.isArray(ids) && !ids.length) return null; // A standalone video has no existing queue.
-      if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id)) ||
-          ids.filter(id => id === anchor).length !== 1) return { unavailable: true };
-      return { mini, ids: [...ids] };
+      if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id))) return { unavailable: true };
+      const requiresConfirmed = ids.filter(id => id === anchor).length !== 1;
+      const proof = confirmedMiniOrders.get(player);
+      if (requiresConfirmed && (!proof || proof.mini !== mini || !Array.isArray(proof.playerPlaylist) ||
+          !sameIds(ids, proof.playerPlaylist) || !confirmedAnchor(proof, anchor))) return { unavailable: true };
+      return { mini, ids: [...ids], requiresConfirmed };
     }
 
     const queueEntries = videos => videos.map(video => ({ videoId: video.videoId, playlistSetVideoId: video.playlistSetVideoId }));
@@ -1067,13 +1082,14 @@ ${buildQueueCompatibilityCss()}
     }
 
     function rememberMiniOrder(queue, player, proof, expectedEntries, operation) {
-      if (!proof || !queue.mini || proof.player !== player || proof.anchor !== operation.anchor ||
+      if (!proof || proof.player !== player || proof.anchor !== operation.anchor ||
           proof.panel !== queue.panel || proof.owner !== queue.owner || proof.mini !== queue.mini ||
           proof.listId !== queue.listId || proof.playerListId !== queue.playerListId ||
           !sameEntries(queueEntries(queue.videos), expectedEntries) || !reorderRows(queue) || pending !== operation) return;
       confirmedMiniOrders.set(player, { player, anchor: proof.anchor, panel: proof.panel, owner: proof.owner,
         mini: proof.mini, listId: proof.listId, playerListId: proof.playerListId,
         playerPlaylist: proof.playerPlaylist, expectedEntries });
+      hasConfirmedMiniOrders = true;
     }
 
     function allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery) {
@@ -1082,7 +1098,7 @@ ${buildQueueCompatibilityCss()}
       // an unrelated order, entry, owner or playback change still fails closed.
       const entries = queueEntries(queue.videos);
       const matchesContext = proof => proof && proof.player === player && proof.anchor === anchor && proof.mini === queue.mini &&
-        queue.mini && player.closest('ytd-miniplayer') === proof.mini && proof.panel === queue.panel &&
+        player.closest('ytd-miniplayer') === proof.mini && proof.panel === queue.panel &&
         proof.owner === queue.owner && proof.listId === queue.listId &&
         proof.playerListId === queue.playerListId &&
         Array.isArray(proof.playerPlaylist) && sameIds(nativePlaylist, proof.playerPlaylist);
@@ -1093,6 +1109,42 @@ ${buildQueueCompatibilityCss()}
       const activeMove = pending?.committed && pending.anchor === anchor ? pending.move : null;
       for (const proof of [activeMove, confirmedMiniOrders.get(player)]) {
         if (matchesContext(proof) && sameEntries(entries, proof.expectedEntries) && reorderRows(queue)) return true;
+      }
+      // A confirmed queue may advance while the player's playlist API still
+      // reports its pre-reorder snapshot. Carry proof across exactly the next
+      // bound entry, never an unexplained jump or an in-flight operation.
+      const confirmed = confirmedMiniOrders.get(player);
+      // Native minimisation/maximisation can adopt the exact completed queue without
+      // refreshing the player's order API. Rebind only that intact shared
+      // ownership transition; never carry an in-flight move or changed model.
+      const ownershipChanged = confirmed && confirmed.mini !== queue.mini &&
+        (confirmed.mini === null && queue.mini?.isConnected && confirmed.panel.closest('ytd-miniplayer') === queue.mini ||
+          confirmed.mini && queue.mini === null && !confirmed.panel.closest('ytd-miniplayer'));
+      if (!pending && ownershipChanged) {
+        const adopted = { ...confirmed, mini: queue.mini, anchor };
+        // The same native queue ID can disappear again when a watch queue is
+        // minimised. Carry only its proven panel ID across this exact handoff.
+        if (confirmed.mini === null && queue.mini && confirmed.playerListId === confirmed.listId &&
+            (queue.playerListId == null || queue.playerListId === '')) adopted.playerListId = queue.playerListId;
+        // Home can omit the native queue ID until maximisation. Accept only
+        // the same panel's already-proven ID becoming readable on its player.
+        if (confirmed.mini && queue.mini === null &&
+            (confirmed.playerListId == null || confirmed.playerListId === '') &&
+            queue.playerListId === confirmed.listId) adopted.playerListId = queue.playerListId;
+        if (confirmedAnchor(confirmed, anchor) && matchesContext(adopted) &&
+            sameEntries(entries, confirmed.expectedEntries) && reorderRows(queue)) {
+          confirmedMiniOrders.set(player, adopted);
+          return true;
+        }
+      }
+      if (!pending && confirmed && anchor !== confirmed.anchor && confirmedAnchor(confirmed, anchor)) {
+        const previous = confirmed.expectedEntries.findIndex(entry => entry.videoId === confirmed.anchor);
+        const advanced = { ...confirmed, anchor };
+        if (queue.currentIndex === previous + 1 && matchesContext(advanced) &&
+            sameEntries(entries, confirmed.expectedEntries) && reorderRows(queue)) {
+          confirmedMiniOrders.set(player, advanced);
+          return true;
+        }
       }
       const append = pending && !pending.committed && pending.anchor === anchor ? pending.appendProof : null;
       return matchesContext(append) && isAppendOrder(entries, append, pending.videoId) && Boolean(reorderRows(queue));
@@ -1107,12 +1159,17 @@ ${buildQueueCompatibilityCss()}
       const mini = player?.closest("ytd-miniplayer");
       const miniQueue = miniplayerQueue(player, anchor);
       if (missingListId && miniQueue?.unavailable) return { unavailable: true };
+      const nativePlaylist = missingListId ? miniQueue?.ids : player?.getPlaylist?.();
       for (const panel of document.querySelectorAll(panelSelector)) {
         if (!panel.isConnected) continue;
         const owner = controller(panel);
         const data = owner?.data;
         if (typeof data?.playlistId !== "string" || !data.playlistId.startsWith("TLPQ")) continue;
         const ownedMini = mini && panel.closest("ytd-miniplayer") === mini;
+        // YouTube retains the watch panel after adopting its queue into the
+        // miniplayer. A hidden copy outside that player is not a second queue,
+        // even when its stale model still has the same playlist ID.
+        if (mini && !ownedMini && !isVisibleQueuePlayer(panel)) continue;
         if (missingListId && ownedMini && !miniQueue?.mini) return { unavailable: true };
         if (!panel.getClientRects().length && data.playlistId !== activeListId && !ownedMini) continue;
         // Visible panels can also belong to a previous queue during navigation.
@@ -1140,10 +1197,18 @@ ${buildQueueCompatibilityCss()}
         const queue = { panel, owner, data, videos, currentIndex, listId: data.playlistId, playerListId: activeListId, mini: ownedMini ? mini : null };
         if (missingListId && !sameIds(videos.map(video => video.videoId), miniQueue.ids) &&
             !allowsLaggingPlayerOrder(queue, player, anchor, miniQueue.ids, recovery)) return { unavailable: true };
+        // A known queue ID does not prove that a retained panel has the current
+        // order. Honour an independently readable native order, allowing only
+        // this operation's exact captured append/reorder when that API lags.
+        if (!missingListId && Array.isArray(nativePlaylist) && nativePlaylist.length > 0 &&
+            nativePlaylist.length <= 1000 && nativePlaylist.every(validId) &&
+            !sameIds(videos.map(video => video.videoId), nativePlaylist) &&
+            !allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery)) return { unavailable: true };
         queues.push(queue);
       }
       // A collapsed Home queue may not have stamped a panel yet. Never mistake
       // its existing playlist for no queue and send an append-only command.
+      if (!queues.length && miniQueue?.requiresConfirmed) return { unavailable: true };
       if (!queues.length && miniQueue?.mini && (missingListId || activeListId?.startsWith("TLPQ"))) {
         return { awaitingPanel: true, ...miniQueue };
       }
@@ -1263,11 +1328,15 @@ ${buildQueueCompatibilityCss()}
         if (pending !== operation) return;
         if (operation.preparing) {
           const current = miniplayerQueue(player, operation.anchor);
-          if (!current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
+          if (player !== operation.player || !current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
             finish("The queue changed; no video was added.");
             return;
           }
           if (!queue || queue.unavailable || queue.awaitingPanel || !reorderRows(queue)) return;
+          if (operation.listId && queue.listId !== operation.listId) {
+            finish("The queue changed; no video was added.");
+            return;
+          }
           const { entry, popup, activation } = operation;
           finish();
           begin(entry, popup, activation);
@@ -1398,6 +1467,20 @@ ${buildQueueCompatibilityCss()}
       });
     }
 
+    function nativeQueueChanged() {
+      if (pending) { scheduleMove(); return; }
+      if (!hasConfirmedMiniOrders) return;
+      // Record each independently verified native advance, even when the user
+      // does not choose Play next between videos. Coalescing these signals can
+      // lose the intermediate entry and strand an otherwise coherent queue.
+      try {
+        const anchor = activeVideoId();
+        if (!anchor) return;
+        const player = activePlayer(anchor), proof = confirmedMiniOrders.get(player);
+        if (proof && anchor !== proof.anchor && confirmedAnchor(proof, anchor)) queueState(anchor);
+      } catch { /* A changing native binding must not manufacture order proof. */ }
+    }
+
     function queueDispatcher(popup) {
       const app = document.querySelector("ytd-app");
       // Some older clients expose this method on the host, others only on its
@@ -1434,7 +1517,7 @@ ${buildQueueCompatibilityCss()}
 
     function queueExpansionControl(queue) {
       const toggles = queue?.mini ? [...queue.mini.querySelectorAll("ytd-miniplayer-info-bar button[aria-expanded]")]
-        .filter(button => button.closest("ytd-miniplayer") === queue.mini && button.getClientRects().length) : [];
+        .filter(button => button.closest("ytd-miniplayer") === queue.mini && isVisibleQueuePlayer(button)) : [];
       return toggles.length === 1 && ['true', 'false'].includes(toggles[0].getAttribute('aria-expanded')) ? toggles[0] : null;
     }
 
@@ -1448,16 +1531,23 @@ ${buildQueueCompatibilityCss()}
       return { player, mini: queue.mini, listId, ids: [...queue.ids], currentIndex: queue.ids.indexOf(anchor) };
     }
 
-    function prepareMiniplayer(entry, popup, anchor, activation) {
-      const queue = miniplayerQueue(activePlayer(anchor), anchor);
+    function prepareMiniplayer(entry, popup, anchor, activation, startingGeneration) {
+      const player = activePlayer(anchor);
+      const queue = miniplayerQueue(player, anchor);
       const toggle = queueExpansionControl(queue);
       if (!toggle) {
         notify("Could not prepare Play next. Expand the video player once, then try again. Nothing was added.");
         return;
       }
-      pending = { anchor, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
+      // Expansion can stamp asynchronously. The same ordered video IDs do not
+      // identify a replacement player or another queue created meanwhile.
+      const listId = player.getPlaylistId?.();
+      if (operationGeneration !== startingGeneration) return;
+      const operation = pending = { anchor, player, listId, videoId: entry.videoId, entry, popup, activation, preparing: true, generation: ++operationGeneration,
         mini: queue.mini, ids: queue.ids, observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-      pending.timer = setTimeout(() => finish("Could not prepare Play next. Nothing was added; please try again."), 2000);
+      operation.timer = setTimeout(() => {
+        if (pending === operation) finish("Could not prepare Play next. Nothing was added; please try again.");
+      }, 2000);
       // The native queue header is outside the player's unrelated expand controls.
       if (toggle.getAttribute("aria-expanded") === "false") toggle.click();
       scheduleMove();
@@ -1465,6 +1555,10 @@ ${buildQueueCompatibilityCss()}
 
     function begin(entry, popup, activation = menuActivation) {
       if (entry.used === activation) return;
+      if (navigating || pageSuspended) {
+        notify("YouTube is changing pages. Reopen the menu once it finishes.");
+        return;
+      }
       const startingGeneration = operationGeneration;
       // Native menu objects can be recycled in place while a menu or queue
       // preparation is open. Never dispatch a changed command under an older
@@ -1489,7 +1583,7 @@ ${buildQueueCompatibilityCss()}
         // exact old queue plus this one addition before attempting any move.
         if (!queueExpansionControl(queue)) restore = queueRestorationProof(queue, entry, anchor);
         if (!restore) {
-          prepareMiniplayer(entry, popup, anchor, activation);
+          prepareMiniplayer(entry, popup, anchor, activation, startingGeneration);
           return;
         }
       }
@@ -1508,7 +1602,7 @@ ${buildQueueCompatibilityCss()}
       if (anchor) {
         const operation = pending = { anchor, videoId: entry.videoId, listId: restore?.listId || queue?.listId, mini: queue?.mini, generation, restore,
           observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
-        if (!existing && queue?.mini && !restore) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
+        if (!existing && queue && !restore) operation.appendProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
         if (pending !== operation) return;
         operation.timer = setTimeout(() => {
           if (pending !== operation) return;
@@ -1562,6 +1656,20 @@ ${buildQueueCompatibilityCss()}
       catch { return null; }
     }
 
+    function ownedRowMatches(row, record) {
+      try {
+        const model = typeof row?.componentProps?.data === 'function'
+          ? row.componentProps.data() : controller(row)?.data;
+        // Native sheet rows can expose an opaque/write-only model. An explicit
+        // object binding is stronger evidence than a retained data-target-id.
+        if (!model || typeof model !== 'object') return true;
+        const bound = model.listItemViewModel || model.menuServiceItemRenderer || model;
+        if (bound === record) return true;
+        const expected = boundedMenuSignature(record);
+        return expected !== null && boundedMenuSignature(bound) === expected;
+      } catch { return false; } // Disposal must not cancel another accepted request.
+    }
+
     function clearPendingIcons(popup = null) {
       for (const item of pendingIcons) if (!popup || item.popup === popup || popup.contains?.(item.svg)) {
         item.svg.remove(); pendingIcons.delete(item);
@@ -1588,10 +1696,13 @@ ${buildQueueCompatibilityCss()}
     function showPendingPlayNextIcon(popup) {
       const binding = menuBindings.get(popup);
       if (!binding || !popup.isConnected) return;
-      const row = binding.sheet
-        ? popup.querySelector('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
-        : [...popup.querySelectorAll('ytd-menu-service-item-renderer')].find(node => controller(node)?.data === binding.record);
-      if (!row || (binding.sheet ? sheetData(popup) !== binding.data : controller(popup)?.data !== binding.data)) return;
+      let row;
+      try {
+        row = binding.sheet
+          ? popup.querySelector('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
+          : [...popup.querySelectorAll('ytd-menu-service-item-renderer')].find(node => controller(node)?.data === binding.record);
+        if (!row || (binding.sheet ? sheetData(popup) !== binding.data : controller(popup)?.data !== binding.data)) return;
+      } catch { clearPendingIcons(popup); return; } // Native row getters can dispose before the queued icon pass.
       binding.row = row;
       // YouTube's known icon-shape renderer leaves this host empty while its
       // SVG promise is pending, then replaces its children when the icon loads.
@@ -1714,9 +1825,12 @@ ${buildQueueCompatibilityCss()}
       const row = event.target?.closest?.("ytd-menu-service-item-renderer, yt-list-item-view-model");
       const popup = row?.closest("ytd-menu-popup-renderer, yt-sheet-view-model");
       const sheet = sheets.get(popup);
-      const entry = row?.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
-        ? sheet?.entry
-        : row && entries.get(controller(row)?.data);
+      let entry;
+      try {
+        entry = row?.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]')
+          ? sheet?.entry
+          : row && entries.get(controller(row)?.data);
+      } catch { return; } // No verified owned action: leave native activation alone.
       if (!entry) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -1724,7 +1838,16 @@ ${buildQueueCompatibilityCss()}
         const binding = menuBindings.get(popup);
         const data = row.matches('yt-list-item-view-model') ? sheetData(popup) : controller(popup)?.data;
         const items = row.matches('yt-list-item-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
-        if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem)) {
+        // The native renderer may reuse a record in place without reopening
+        // its popup. A stale weak entry binding must not activate a row that
+        // has since become a different action, even if Add to queue is intact.
+        const ownedRecord = binding?.record;
+        if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem) ||
+            !items.some(item => (item?.menuServiceItemRenderer || item?.listItemViewModel) === ownedRecord) ||
+            ownedRecord?.[marker] !== true || binding.ownedSignature === null ||
+            boundedMenuSignature(ownedRecord) !== binding.ownedSignature ||
+            !ownedRowMatches(row, ownedRecord) ||
+            (!row.matches('yt-list-item-view-model') && controller(row)?.data !== ownedRecord)) {
           notify("This menu changed. Reopen it and choose Play next again.");
           return;
         }
@@ -1739,10 +1862,19 @@ ${buildQueueCompatibilityCss()}
       }
     }
 
-    function reset() {
+    function reset(event) {
+      if (event?.type === 'yt-navigate-start') navigating = true;
+      if (event?.type === 'pagehide') pageSuspended = true;
       ++operationGeneration;
       finish();
-      confirmedMiniOrders = new WeakMap();
+      // A completed queue may be adopted by the same player during SPA
+      // navigation. Keep its weak proof, which still requires exact native
+      // ownership, entry and row binding checks; cancel every pending move.
+      // Page suspension and explicit disposal must discard that proof.
+      if (event?.type !== 'yt-navigate-start') {
+        confirmedMiniOrders = new WeakMap();
+        hasConfirmedMiniOrders = false;
+      }
       // YouTube may keep this native menu model and reopen its owned row
       // without another popup-open event after SPA navigation or BFCache.
       // Retain its weak bindings: the placeholder has no native command of its
@@ -1762,8 +1894,15 @@ ${buildQueueCompatibilityCss()}
     }, true));
     ['click', 'keydown', 'contextmenu'].forEach(type => document.addEventListener(type, renewMenuActivation, true));
     ["click", "tap", "keydown"].forEach(type => document.addEventListener(type, activate, true));
-    ["yt-playlist-data-updated", "yt-page-data-updated"].forEach(type => window.addEventListener(type, scheduleMove, true));
+    ["yt-playlist-data-updated", "yt-page-data-updated"].forEach(type => window.addEventListener(type, nativeQueueChanged, true));
     ["yt-navigate-start", "pagehide"].forEach(type => window.addEventListener(type, reset, true));
+    window.addEventListener('yt-navigate-finish', () => { navigating = false; }, true);
+    window.addEventListener('pageshow', event => {
+      // A late initial pageshow is not a completed SPA navigation. Only an
+      // actual page suspension/restoration may release that interrupted lock.
+      if (pageSuspended || event.persisted === true) navigating = false;
+      pageSuspended = false;
+    }, true);
     return reset;
   }
 
@@ -1778,6 +1917,7 @@ ${buildQueueCompatibilityCss()}
     const validId = value => typeof value === "string" && /^[\w-]{11}$/.test(value);
     const same = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
     let frame = 0, pending = null, focusRequest = null, navigating = false, disposed = false;
+    let navigationPending = false, pageSuspended = false;
     let toast = null, toastTimer = 0;
     const sharedStyle = typeof suite !== 'undefined' && typeof suite.setStyle === 'function' && typeof suite.removeStyle === 'function';
     const stepCss = `
@@ -1880,9 +2020,9 @@ ${buildQueueCompatibilityCss()}
             controller(current.row)?.data?.playlistSetVideoId !== current.key || dragging(current.record.owner) ||
             current.row.parentElement !== current.record.items || !current.record.titles.has(current.title)) return false;
         for (let node = current.title; node; node = node.parentElement) {
-          if (node.hidden || node.getAttribute('aria-hidden') === 'true') return false;
+          if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true') return false;
           const css = getComputedStyle(node);
-          if (css.display === 'none' || css.visibility === 'hidden' || css.visibility === 'collapse' || css.opacity === '0') return false;
+          if (css.display === 'none' || (node === current.title && ['hidden','collapse'].includes(css.visibility)) || css.opacity === '0') return false;
         }
         const box = current.title.getBoundingClientRect();
         return box.width > 0 && box.height > 0 && box.bottom > 0 && box.right > 0 && box.top < innerHeight && box.left < innerWidth;
@@ -2063,10 +2203,19 @@ ${buildQueueCompatibilityCss()}
       target.addEventListener(type, callback, true); listeners.push([target, type, callback]);
     }
     function visible(node) {
-      return Boolean(node?.isConnected && !node.closest('[hidden], [aria-hidden="true"]') && node.getClientRects().length);
+      if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
+      for (let current = node; current; current = current.parentElement) {
+        const css = getComputedStyle(current);
+        if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
+      }
+      return true;
     }
     function activePlayer() {
-      const players = [...document.querySelectorAll('#movie_player')].filter(visible);
+      const players = [...document.querySelectorAll('#movie_player')].filter(player => {
+        if (!visible(player)) return false;
+        const box = player.getBoundingClientRect();
+        return box.width > 0 && box.height > 0;
+      });
       if (players.length !== 1 || players[0].classList.contains('ad-showing') || players[0].classList.contains('ad-interrupting')) return null;
       return players[0];
     }
@@ -2187,8 +2336,9 @@ ${buildQueueCompatibilityCss()}
         }
         const current = snapshot(operation.panel);
         if (current && current.owner === operation.owner && current.listId === operation.listId && same(current.keys, operation.expected)) {
-          if (document.activeElement === document.body || operation.panel.contains(document.activeElement)) {
-            focusRequest = { panel: current.panel, key: operation.keys[operation.from], direction: operation.direction };
+          if (!operation.focusMoved && (document.activeElement === document.body || document.activeElement === operation.button)) {
+            focusRequest = { panel: current.panel, key: operation.keys[operation.from], direction: operation.direction,
+              focused: document.activeElement };
           }
           finish();
         }
@@ -2274,7 +2424,8 @@ ${buildQueueCompatibilityCss()}
         const fallback = request.direction === 'up' ? entry?.down : entry?.up;
         const target = preferred && !preferred.disabled ? preferred : fallback;
         if (target && !target.disabled) queueMicrotask(() => {
-          if (target.isConnected && !target.disabled && (document.activeElement === document.body || state.panel.contains(document.activeElement))) target.focus({ preventScroll: true });
+          if (target.isConnected && !target.disabled &&
+              (document.activeElement === document.body || document.activeElement === request.focused)) target.focus({ preventScroll: true });
         });
       }
     }
@@ -2292,7 +2443,7 @@ ${buildQueueCompatibilityCss()}
       const to = from + (direction === 'up' ? -1 : 1);
       if (from < 0 || to < 0 || to >= state.rows.length) { schedule(); return; }
       const expected = [...state.keys]; expected.splice(to, 0, expected.splice(from, 1)[0]);
-      const operation = pending = { ...state, row, from, direction, expected, timer: 0 };
+      const operation = pending = { ...state, row, button, from, direction, expected, timer: 0 };
       disableAll();
       operation.timer = setTimeout(() => {
         if (pending !== operation) return;
@@ -2331,6 +2482,12 @@ ${buildQueueCompatibilityCss()}
       clearTimeout(toastTimer); toast?.remove(); toast = null; toastTimer = 0;
     }
     listen(document, 'pointerdown', guardPointer); listen(document, 'mousedown', guardPointer);
+    listen(document, 'focusin', event => {
+      // A later focus choice remains the user's even if that control is then
+      // restamped and the browser falls back to the body before confirmation.
+      if (pending && event.target !== pending.button) pending.focusMoved = true;
+      if (focusRequest && event.target !== focusRequest.focused) focusRequest = null;
+    });
     listen(document, 'click', activate);
     listen(document, 'keydown', event => {
       if (event.key === 'Escape') titlePresentation.cancel();
@@ -2350,8 +2507,11 @@ ${buildQueueCompatibilityCss()}
     });
     for (const type of ['yt-playlist-data-updated', 'yt-page-data-updated']) listen(window, type, schedule);
     listen(window, 'yt-rendererstamper-finished', event => { if (event.target?.closest?.(panelSelector)) schedule(); });
-    listen(window, 'yt-navigate-start', suspend); listen(window, 'pagehide', suspend);
-    for (const type of ['yt-navigate-finish', 'pageshow']) listen(window, type, () => { navigating = false; schedule(); });
+    listen(window, 'yt-navigate-start', () => { navigationPending = true; suspend(); });
+    listen(window, 'pagehide', () => { pageSuspended = true; suspend(); });
+    const resume = () => { navigating = navigationPending || pageSuspended; schedule(); };
+    listen(window, 'yt-navigate-finish', () => { navigationPending = false; resume(); });
+    listen(window, 'pageshow', () => { pageSuspended = false; resume(); });
     schedule();
     return () => {
       suspend(); disposed = true;

@@ -6,7 +6,7 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
   const markerAttribute = 'data-ytms-playhead-marker';
   const markerClass = 'ytms-playhead-marker';
   const styleId = 'ytms-playhead-marker-style';
-  const selector = '[id="movie_player"], .ytp-scrubber-container, .ytp-scrubber-button';
+  const selector = '[id="movie_player"], video, .ytp-scrubber-container, .ytp-scrubber-button';
   let started = false, disposed = false, navigationPending = false, pageSuspended = false, frame = 0;
   let current = null, record = null, style = null, unrenderableData = null;
   let discoveryTimer = 0, discoveryExpired = false;
@@ -178,8 +178,11 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
   }
   function visible(node) {
     if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
-    const computed = window.getComputedStyle(node);
-    return computed.display !== 'none' && computed.visibility !== 'hidden' && computed.visibility !== 'collapse';
+    for (let current = node; current; current = current.parentElement) {
+      const computed = window.getComputedStyle(current);
+      if (computed.display === 'none' || (current === node && ['hidden','collapse'].includes(computed.visibility)) || Number(computed.opacity) === 0) return false;
+    }
+    return true;
   }
   function clearMarker() {
     if (!record) return;
@@ -216,15 +219,24 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
   function disconnectObservers() {
     treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect(); stopDiscovery();
   }
-  function observePlayers(candidates) {
+  function observePlayers(candidates, containers) {
     treeObserver.disconnect(); structureObserver.disconnect(); attributeObserver.disconnect();
     const observed = new Set();
+    const attributes = { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert'] };
     for (const candidate of candidates.slice(0, 8)) {
       treeObserver.observe(candidate, { childList: true, subtree: true });
       for (let ancestor = candidate; ancestor; ancestor = ancestor.parentElement) {
         if (observed.has(ancestor)) continue;
         structureObserver.observe(ancestor, { childList: true });
-        attributeObserver.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
+        attributeObserver.observe(ancestor, attributes);
+        observed.add(ancestor);
+      }
+    }
+    for (const container of containers) {
+      for (let ancestor = container; ancestor && !observed.has(ancestor); ancestor = ancestor.parentElement) {
+        // The scrubber's own inline styles move on every playback tick.
+        attributeObserver.observe(ancestor, ancestor === container
+          ? { ...attributes, attributeFilter: ['class', 'hidden', 'aria-hidden', 'inert'] } : attributes);
         observed.add(ancestor);
       }
     }
@@ -246,11 +258,12 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
     if (!started || disposed || pageSuspended || navigationPending || document.hidden || !playbackPage() ||
         !current || unrenderableData === current.dataUrl) { disconnectObservers(); clearMarker(); return; }
     const candidates = [...document.querySelectorAll('[id="movie_player"]')];
-    observePlayers(candidates);
     const players = candidates.filter(player => visible(player) && !player.closest('ytd-miniplayer, ytd-video-preview, ytd-reel-video-renderer'));
+    const scrubbers = players.length === 1 ? [...players[0].querySelectorAll('.ytp-scrubber-container')] : [];
+    observePlayers(candidates, scrubbers);
     if (players.length !== 1) { clearMarker(); return; }
     const player = players[0];
-    const containers = [...player.querySelectorAll('.ytp-scrubber-container')].filter(visible);
+    const containers = scrubbers.filter(visible);
     if (player.matches('.ad-showing, .ad-interrupting') || !player.querySelector('video') || containers.length !== 1) { clearMarker(); return; }
     const container = containers[0], buttons = container.querySelectorAll(':scope > .ytp-scrubber-button');
     if (buttons.length !== 1 || !container.offsetWidth || !container.offsetHeight ||

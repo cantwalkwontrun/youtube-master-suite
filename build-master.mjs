@@ -12,6 +12,10 @@ import { classifyCatalogueFilm } from './sources/catalogue-film.mjs';
 import { installDiscoveryControls } from "./sources/discovery-controls.mjs";
 import { installLayoutControls } from "./sources/layout-controls.mjs";
 import { installCompactNativeQueue } from "./sources/compact-native-queue.mjs";
+import { installMiniplayerControls } from "./sources/miniplayer-controls.mjs";
+import { installMembershipOffers } from "./sources/membership-offers.mjs";
+import { installCurrentQueueMenu } from "./sources/current-queue-menu.mjs";
+import { installNativeMenuVisibility } from "./sources/native-menu-visibility.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
 import { createChannelAgeService } from "./sources/channel-age.mjs";
 import { createChannelAgeDialog } from "./sources/channel-age-dialog.mjs";
@@ -26,9 +30,12 @@ import { createSuiteUpdates } from "./sources/suite-updates.mjs";
 import { createSettingsExtraControls } from "./sources/settings-extra-controls.mjs";
 import { createIsolatedStorage } from "./sources/isolated-storage.mjs";
 import { initialiseIsolatedStorage } from "./sources/storage-bootstrap.mjs";
+import { createSettingsWriteGuard } from "./sources/settings-write-guard.mjs";
+import { createCustomJavascript } from "./sources/custom-javascript.mjs";
+import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.88";
+const MASTER_VERSION = "1.2.123";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -708,7 +715,7 @@ const consolidatedWatchLayoutSidebarCss = [
 ].join("\n");
 
 function transformModuleBody(moduleDefinition, body) {
-  if (["commentCleaner", "feedUiCleaner", "playerPreferencesLite", "scrollMiniplayer", "watchLayoutCleaner"].includes(moduleDefinition.id)) {
+  if (["commentCleaner", "feedUiCleaner", "miniplayerButtonRestorer", "playerPreferencesLite", "scrollMiniplayer", "watchLayoutCleaner"].includes(moduleDefinition.id)) {
     const configBlock = body.match(/  const CONFIG = \{[\s\S]*?\n  \};/);
     if (!configBlock) throw new Error(`${moduleDefinition.id}: missing settings integration point`);
     body = replaceExactly(body, configBlock[0], configBlock[0] +
@@ -718,7 +725,7 @@ function transformModuleBody(moduleDefinition, body) {
   let transformed = body.replace(
     /\bwindow\s*\.\s*addEventListener\s*\(/g,
     "suite.addWindowListener(",
-  );
+  ).replace(/\bwindow\s*\.\s*removeEventListener\s*\(/g, "suite.removeWindowListener(");
 
   if (moduleDefinition.id === "miniplayerButtonRestorer") {
     transformed = replaceExactly(
@@ -1603,7 +1610,7 @@ for (const [index, extension] of recommendedExtensions.entries()) {
 }
 settingsAssets.recommendedExtensions = recommendedExtensions;
 
-const output = `// ==UserScript==
+const output = normaliseNewlines(`// ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
 // @version      ${MASTER_VERSION}
@@ -1625,6 +1632,7 @@ const output = `// ==UserScript==
 
 (async () => {
   "use strict";
+  if (window.top !== window) return;
 
   const rejectYouTubeOptionalCookies = ${rejectYouTubeOptionalCookies.toString()};
   rejectYouTubeOptionalCookies(window, document);
@@ -1656,6 +1664,7 @@ ${moduleSwitches}
 ${sourceModules.flatMap(({ id }) => id === "watchLayoutCleaner" ? [id, "watchLayoutCleanerDrag", "watchLayoutCleanerQueueSteps"] : [id]).map(id => `    ${JSON.stringify(id)},`).join("\n")}
   ];
   const sharedWindowListeners = new Map();
+  const diagnosticWindowListeners = new WeakMap();
   const sharedMutationObservers = new Set();
   const styleParts = new Map();
   const idleModules = [];
@@ -1684,12 +1693,10 @@ ${runtimeMutationCoverageHelpers}
     return true;
   }
 
-  function recordRuntimeError(ownerId, operation, error) {
+  function recordRuntimeError(ownerId, operation) {
     runtimeErrors.push({
       module: String(ownerId || "suite").slice(0, 100),
       operation: String(operation || "runtime").slice(0, 160),
-      message: String(error?.message || error).slice(0, 500),
-      timestamp: new Date().toISOString(),
     });
     if (runtimeErrors.length > MAX_RUNTIME_ERRORS) {
       runtimeErrors.splice(0, runtimeErrors.length - MAX_RUNTIME_ERRORS);
@@ -1707,12 +1714,9 @@ ${runtimeMutationCoverageHelpers}
     );
   }
 
-  function reportModuleError(ownerId, label, error) {
-    console.error(
-      \`[YouTube Master Suite] [\${ownerId}] \${label} failed\`,
-      error,
-    );
-    recordRuntimeError(ownerId, label, error);
+  function reportModuleError(ownerId, label) {
+    console.error(\`[YouTube Master Suite] [\${ownerId}] \${label} failed\`);
+    recordRuntimeError(ownerId, label);
   }
 
   function now() {
@@ -1822,12 +1826,18 @@ ${runtimeMutationCoverageHelpers}
   function addWindowListener(type, listener, options) {
     const ownerId = activeModuleId;
     if (!SHARED_WINDOW_EVENTS.has(type)) {
-      const registeredListener = DIAGNOSTICS.enabled
-        ? (event) =>
-            runWithDiagnostics(ownerId, \`event:\${type}\`, 1, () =>
-              invokeEventListener(listener, event),
-            )
-        : listener;
+      let registeredListener = listener;
+      if (DIAGNOSTICS.enabled && listener !== null &&
+          (typeof listener === "function" || typeof listener === "object")) {
+        let registrations = diagnosticWindowListeners.get(listener);
+        if (!registrations) { registrations = new Map(); diagnosticWindowListeners.set(listener, registrations); }
+        const key = String(type) + "|" + Number(getCapture(options));
+        registeredListener = registrations.get(key);
+        if (!registeredListener) {
+          registeredListener = (event) => runWithDiagnostics(ownerId, \`event:\${type}\`, 1, () => invokeEventListener(listener, event));
+          registrations.set(key, registeredListener);
+        }
+      }
       globalThis.addEventListener(type, registeredListener, options);
       return;
     }
@@ -1844,6 +1854,7 @@ ${runtimeMutationCoverageHelpers}
           beginBatch();
           try {
             for (const registeredListener of [...group.listeners]) {
+              if (!group.listeners.includes(registeredListener)) continue;
               try {
                 runWithDiagnostics(
                   registeredListener.ownerId,
@@ -1874,7 +1885,21 @@ ${runtimeMutationCoverageHelpers}
         capture,
       );
     }
-    group.listeners.push({ listener, ownerId });
+    if (!group.listeners.some(entry => entry.listener === listener)) group.listeners.push({ listener, ownerId });
+  }
+
+  function removeWindowListener(type, listener, options) {
+    const capture = getCapture(options);
+    const group = sharedWindowListeners.get(String(type) + "|" + (capture ? "capture" : "bubble"));
+    if (SHARED_WINDOW_EVENTS.has(type) && group) {
+      group.listeners = group.listeners.filter(entry => entry.listener !== listener);
+    }
+    const registrations = listener !== null && (typeof listener === "function" || typeof listener === "object")
+      ? diagnosticWindowListeners.get(listener) : null;
+    const key = String(type) + "|" + Number(capture);
+    const registeredListener = registrations?.get(key) || listener;
+    globalThis.removeEventListener(type, registeredListener, options);
+    registrations?.delete(key);
   }
 
   function mutationMatches(observer, mutation) {
@@ -2222,10 +2247,7 @@ ${runtimeMutationCoverageHelpers}
       runWithDiagnostics(id, "initialise", 1, initialise);
       moduleStates.set(id, { status: "initialised" });
     } catch (error) {
-      moduleStates.set(id, {
-        status: "failed",
-        error: String(error?.message || error).slice(0, 500),
-      });
+      moduleStates.set(id, { status: "failed" });
       reportModuleError(id, label, error);
     } finally {
       activeModuleId = previousModuleId;
@@ -2290,7 +2312,7 @@ ${runtimeMutationCoverageHelpers}
     const disabledModules = moduleIdsWithStatus("disabled");
     const failedModules = states
       .filter((entry) => entry.status === "failed")
-      .map(({ id, error }) => ({ id, error }));
+      .map(({ id }) => ({ id }));
     const ready = pendingModules.length === 0;
     root.setAttribute(
       HEALTH_ATTRIBUTE,
@@ -2318,9 +2340,11 @@ ${runtimeMutationCoverageHelpers}
   const menuLayout = createMenuLayout();
   const createSuiteSettings = ${createSuiteSettings.toString()};
   const createChannelAgeService = ${createChannelAgeService.toString()};
+  const createSettingsWriteGuard = ${createSettingsWriteGuard.toString()};
   let storage;
+  let storageApis;
   try {
-    const storageApis = (${scopeStorageApis.toString()})({
+    storageApis = (${scopeStorageApis.toString()})({
       info: typeof GM_info === 'object' ? GM_info : null,
       getValue: typeof GM_getValue === 'function' ? GM_getValue : null,
       setValue: typeof GM_setValue === 'function' ? GM_setValue : null,
@@ -2352,6 +2376,7 @@ ${runtimeMutationCoverageHelpers}
     storage,
     SharedMutationObserver,
     addWindowListener,
+    removeWindowListener,
     registerModule,
     reportModuleError,
     removeStyle,
@@ -2368,7 +2393,38 @@ ${runtimeMutationCoverageHelpers}
     createSettingsDialog: ${createSettingsDialog.toString()},
     createSettingsSupportPanel: ${createSettingsSupportPanel.toString()},
     createSettingsExtraControls: ${createSettingsExtraControls.toString()},
+    createCustomJavascriptPanel: ${createCustomJavascriptPanel.toString()},
   };
+  suite.customJavascript = (${createCustomJavascript.toString()})({ document, window,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    write: createSettingsWriteGuard({
+      key: 'yt-master-suite.custom-javascript-write.v1', locks: navigator.locks,
+      getCoordinationStorage: () => window.localStorage, getValue: storageApis.getValue, setValue: storageApis.setValue,
+      getMainRecord: () => storageApis.getValue('yt-master-suite.custom-javascript.v1', null),
+      newRevision: () => window.crypto.randomUUID(),
+    }),
+  });
+  const writeMainSettings = createSettingsWriteGuard({
+    locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.settings.key), newRevision: () => window.crypto.randomUUID(),
+  });
+  suite.writeCorner = createSettingsWriteGuard({
+    key: 'yt-master-suite.corner-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.settings.cornerKey), newRevision: () => window.crypto.randomUUID(),
+  });
+  // Every main save/restore also writes the corner. Share its lock with the
+  // live player control, including when a tab's protected GM cache is delayed.
+  suite.writeSettings = (write, coordinate) => writeMainSettings(write,
+    callback => suite.writeCorner(callback, coordinate));
+  suite.writeChannelFilters = createSettingsWriteGuard({
+    key: 'yt-master-suite.channel-filters-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.channelAge.key), newRevision: () => window.crypto.randomUUID(),
+  });
   suite.channelLookup = (${createChannelLookup.toString()})({ fetch: (...args) => window.fetch(...args), origin: location.origin });
   suite.backup = (${createSuiteBackup.toString()})(() => storage, suite.settings, suite.channelAge);
   suite.support = (${createSuiteSupport.toString()})(document, MASTER_VERSION, STYLE_ORDER);
@@ -2377,6 +2433,18 @@ ${runtimeMutationCoverageHelpers}
     getStorage: () => storage, installedVersion: MASTER_VERSION,
     defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
     fetch: (...args) => window.fetch(...args),
+  });
+  suite.writeMarker = createSettingsWriteGuard({
+    key: 'yt-master-suite.marker-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.playheadMarker.key), newRevision: () => window.crypto.randomUUID(),
+  });
+  suite.writeUpdateSource = createSettingsWriteGuard({
+    key: 'yt-master-suite.update-source-write.v1', locks: navigator.locks,
+    getCoordinationStorage: () => window.localStorage,
+    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getMainRecord: () => storage.getItem(suite.updates.key), newRevision: () => window.crypto.randomUUID(),
   });
 
   let nativeQueueLayoutStarted = false;
@@ -2394,10 +2462,10 @@ ${runtimeMutationCoverageHelpers}
   suite.startFeatureControls = () => {
     if (featureControlsStarted) return;
     featureControlsStarted = true;
-    const options = { document, window, preferences: suite.settings.initial, classifyFilm: suite.classifyFilm,
+    const options = { document, window, preferences: suite.settings.initial, menuLayout: suite.menuLayout, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
-    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}]) {
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installMiniplayerControls.toString()}, ${installMembershipOffers.toString()}, ${installCurrentQueueMenu.toString()}, ${installNativeMenuVisibility.toString()}]) {
       try { install(options); } catch { options.reportError(); }
     }
   };
@@ -2411,8 +2479,9 @@ ${moduleInitialisers}
     });
   }
   startIdleModules();
+  suite.customJavascript.start();
 })();
-`;
+`);
 
 const releaseManifest = `${JSON.stringify(
   {
