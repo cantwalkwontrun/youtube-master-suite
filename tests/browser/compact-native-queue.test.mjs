@@ -158,6 +158,62 @@ const state = page => page.evaluate(() => {
     anchors:[f.host.style.top, f.host.style.bottom, f.host.style.left, f.host.style.right] };
 });
 
+for (const suite of [false, true]) for (const location of ['panel', 'list', 'row']) for (const attribute of ['opacity', 'aria-hidden'])
+test(`nested native queue visibility restores compact ownership (${suite ? 'Suite' : 'source'}, ${location}, ${attribute})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(location => {
+    const f = compactFixture;
+    const target = location === 'panel' ? f.panel : location === 'list' ? f.list : f.items.firstElementChild;
+    const wrapper = document.createElement('div');
+    if (location !== 'row') wrapper.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0';
+    target.before(wrapper); wrapper.append(target); f.nestedWrapper = wrapper;
+  }, location);
+  await settle(page);
+  assert.equal((await state(page)).compact, true);
+  await page.evaluate(attribute => {
+    const wrapper = compactFixture.nestedWrapper;
+    if (attribute === 'opacity') wrapper.style.opacity = '0';
+    else wrapper.setAttribute('aria-hidden', 'true');
+  }, attribute);
+  await settle(page);
+  assert.equal((await state(page)).compact, false, 'An internal visibility path must release the old fit without resize or navigation');
+  await page.evaluate(attribute => {
+    const wrapper = compactFixture.nestedWrapper;
+    if (attribute === 'opacity') wrapper.style.opacity = '1';
+    else wrapper.removeAttribute('aria-hidden');
+  }, attribute);
+  await settle(page);
+  assert.equal((await state(page)).compact, true, 'Attribute-only reveal must restore compact sizing');
+  assert.equal((await state(page)).time, 42, 'Visibility reconciliation must not change playback');
+});
+
+for (const suite of [false, true]) test(`nested queue observation ignores unrelated variables and follows inherited visibility (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => {
+    const f = compactFixture, wrapper = document.createElement('div'), row = f.items.firstElementChild;
+    row.before(wrapper); wrapper.append(row);
+    f.nestedWrapper = wrapper; wrapper.firstElementChild.style.opacity = 'var(--fixture-row-opacity, 1)';
+  });
+  await settle(page); await settle(page);
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame.bind(window);
+    compactFixture.fitFrames = 0;
+    window.requestAnimationFrame = callback => {
+      if (callback.name === 'sync' && String(callback).includes('const hosts')) compactFixture.fitFrames++;
+      return raf(callback);
+    };
+    for (let i = 0; i < 2000; i++) compactFixture.nestedWrapper.style.setProperty('--fixture-unrelated', String(i));
+  });
+  await settle(page);
+  assert.equal(await page.evaluate(() => compactFixture.fitFrames), 0, 'Unrelated internal styles must not schedule queue fitting');
+  await page.evaluate(() => compactFixture.nestedWrapper.style.setProperty('--fixture-row-opacity', '0'));
+  await settle(page);
+  assert.equal((await state(page)).compact, false, 'An inherited variable can hide a row without changing wrapper opacity');
+  await page.evaluate(() => compactFixture.nestedWrapper.style.setProperty('--fixture-row-opacity', '1'));
+  await settle(page);
+  assert.equal((await state(page)).compact, true);
+});
+
 for (const suite of [false, true]) test(`an opacity-hidden retained host cannot displace the visible compact queue (${suite ? 'Suite' : 'source'})`, async t => {
   const page = await open(t, { suite });
   assert.equal((await state(page)).compact, true);

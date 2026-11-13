@@ -23,6 +23,7 @@ import { createSuiteBackup } from "./sources/suite-backup.mjs";
 import { createSuiteSupport } from "./sources/suite-support.mjs";
 import { createSettingsSupportPanel } from "./sources/settings-support-panel.mjs";
 import { installVideoMenu } from "./sources/video-menu.mjs";
+import { createQueueMenuBindings } from "./sources/queue-menu-bindings.mjs";
 import { rejectYouTubeOptionalCookies } from "./sources/youtube-cookie-consent.mjs";
 import { installPlayerPresentation } from "./sources/player-presentation.mjs";
 import { createPlayheadMarker } from "./sources/playhead-marker.mjs";
@@ -35,7 +36,7 @@ import { createCustomJavascript } from "./sources/custom-javascript.mjs";
 import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.126";
+const MASTER_VERSION = "1.2.128";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -770,6 +771,12 @@ function transformModuleBody(moduleDefinition, body) {
   }
 
   if (moduleDefinition.id === "watchLayoutCleaner") {
+    transformed = replaceExactly(
+      transformed,
+      "  installQueuePlayNext();",
+      "  installQueuePlayNext({ uniqueVideos: suite.settings.initial.uniqueQueueVideos, menuBindings: suite.queueMenuBindings });",
+      "Native queue uniqueness preferences and verified menu bindings",
+    );
     transformed = replaceExactly(
       transformed,
       watchLayoutStyles,
@@ -2395,6 +2402,9 @@ ${runtimeMutationCoverageHelpers}
     createSettingsExtraControls: ${createSettingsExtraControls.toString()},
     createCustomJavascriptPanel: ${createCustomJavascriptPanel.toString()},
   };
+  if (suite.settings.initial.uniqueQueueVideos) {
+    suite.queueMenuBindings = (${createQueueMenuBindings.toString()})({ document, window });
+  }
   suite.customJavascript = (${createCustomJavascript.toString()})({ document, window,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     write: createSettingsWriteGuard({

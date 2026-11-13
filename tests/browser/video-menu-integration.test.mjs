@@ -14,7 +14,7 @@ after(async () => { await browser?.close(); });
 
 for (const sheet of [false, true]) {
  for (const eventless of [false, true]) {
-  test(`complete Suite retains Play next and native actions while opening channel tools (${sheet ? 'current sheet' : 'legacy popup'}, ${eventless ? 'cached eventless reopen' : 'native open event'})`, { timeout: 20000 }, async t => {
+  test(`complete Suite retains Play next, guarded queue actions and channel tools (${sheet ? 'current sheet' : 'legacy popup'}, ${eventless ? 'cached eventless reopen' : 'native open event'})`, { timeout: 20000 }, async t => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
     await context.route('**/*', route => route.request().url() === 'https://www.youtube.com/watch?v=aaaaaaaaaaa'
       ? route.fulfill({ contentType: 'text/html', body: FIXTURE }) : route.abort());
@@ -55,12 +55,18 @@ for (const sheet of [false, true]) {
       dropdown.hidden = true;
       const popup = document.createElement(sheet ? 'yt-sheet-view-model' : 'ytd-menu-popup-renderer');
       popup.style.display = 'block'; popup.setAttribute('role', 'menu'); dropdown.append(popup); document.body.append(dropdown);
-      const fixture = window.menuIntegration = { calls: [], refits: 0, data: null };
+      const fixture = window.menuIntegration = { calls: [], refits: 0, data: null, popup };
       dropdown.refit = () => { fixture.refits++; };
       dropdown.close = () => { dropdown.hidden = true; dropdown.dispatchEvent(new CustomEvent('iron-overlay-closed', { bubbles: true })); };
       const endpoint = { signalServiceEndpoint: { signal: 'CLIENT_SIGNAL', actions: [{ addToPlaylistCommand: {
         videoId: 'bbbbbbbbbbb', videoIds: ['bbbbbbbbbbb'], listType: 'PLAYLIST_EDIT_LIST_TYPE_QUEUE',
       } }] } };
+      fixture.queueCommand = endpoint.signalServiceEndpoint.actions[0].addToPlaylistCommand;
+      fixture.rejectedIds = [];
+      document.querySelector('ytd-app').resolveCommand = command => {
+        fixture.rejectedIds.push(command.signalServiceEndpoint.actions[0].addToPlaylistCommand.videoId);
+        return false;
+      };
       // Exact live model variants: Download is a distinct outer view model;
       // Save to playlist and Not interested use BOOKMARK_BORDER and HIDE.
       const definitions = [['Add to queue', 'ADD_TO_QUEUE_TAIL', endpoint], ['Watch later', 'WATCH_LATER', {}],
@@ -140,7 +146,13 @@ for (const sheet of [false, true]) {
     await page.locator('[data-ytms-video-menu="1"]').waitFor();
     assert.equal(await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).count(), 1);
     await page.getByRole('menuitem', { name: 'Add to queue', exact: true }).click();
-    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
+    // The native resolver deliberately returns an unconfirmed result. The
+    // default duplicate policy owns the action and must not retry it through
+    // the toy native click handler. Successful native queue updates and the
+    // explicit opt-out are covered by review128-queue-submenus.test.mjs.
+    assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /could not accept/);
+    assert.deepEqual(await page.evaluate(() => menuIntegration.rejectedIds), ['bbbbbbbbbbb']);
+    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     for (const [tag, parentTag] of [['ytd-playlist-video-renderer', 'ytd-playlist-video-list-renderer'],
       ['ytd-playlist-panel-video-renderer', 'ytd-playlist-panel-renderer']]) {
       await page.evaluate(({ tag, parentTag }) => {
@@ -158,7 +170,7 @@ for (const sheet of [false, true]) {
       await page.locator('#ytms-age-dialog').waitFor();
       assert.equal(await page.getByLabel('Channel ID or channel URL', { exact: true }).inputValue(), 'UCabcdefghijklmnopqrstuv', tag);
       await page.locator('#ytms-age-cancel').click();
-      assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
+      assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
       assert.equal(await page.evaluate(() => fixtureStorage.getItem('yt-master-suite.channel-age.v1')), null);
     }
     const unrelatedRule = { channelId: 'UCABCDEFGHIJKLMNOPQRSTUV', name: 'Other channel',
@@ -203,7 +215,7 @@ for (const sheet of [false, true]) {
     const confirmation = page.locator('#integration-card > .ytms-channel-filter-confirmation');
     await confirmation.waitFor();
     assert.match(await confirmation.textContent(), /Hide uploads older than 1 week\./);
-    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
+    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     assert.equal(await page.evaluate(() => menuIntegration.originalCardNodes.every(node =>
       node.parentElement === document.getElementById('integration-card')) &&
       document.querySelector('#movie_player video') === menuIntegration.originalVideo), true);
@@ -216,10 +228,15 @@ for (const sheet of [false, true]) {
       node.parentElement === document.getElementById('integration-card')) &&
       document.querySelector('#movie_player video') === menuIntegration.originalVideo), true);
     assert.equal(await page.locator('#integration-card').getAttribute('data-ytms-channel-filter-confirmation'), null);
-    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue']);
+    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     // A cached injected row must remain callable after the SPA reset above,
     // including native clients that do not emit another popup-opened event.
     await page.evaluate(() => {
+      // Use a fresh target: the earlier unconfirmed B addition must remain
+      // reserved rather than being silently retried after an SPA transition.
+      menuIntegration.queueCommand.videoId = 'ddddddddddd';
+      menuIntegration.queueCommand.videoIds = ['ddddddddddd'];
+      document.querySelector('#integration-card > a').href = '/watch?v=ddddddddddd';
       menuIntegration.dispatchedIds = [];
       document.querySelector('ytd-app').resolveCommand = endpoint => {
         const command = endpoint?.signalServiceEndpoint?.actions?.[0]?.addToPlaylistCommand;
@@ -230,9 +247,20 @@ for (const sheet of [false, true]) {
     await page.locator('#integration-trigger').click();
     await page.locator('[data-ytms-video-menu="1"]').waitFor();
     await page.getByRole('menuitem', { name:'Play next in queue',exact:true }).click();
-    assert.deepEqual(await page.evaluate(() => menuIntegration.dispatchedIds), [['bbbbbbbbbbb']],
+    if (eventless) {
+      // A cached placeholder cannot acquire the changed D command without a
+      // fresh native binding. Refuse that stale activation, then model a real
+      // native reopen/stamp before accepting the new command.
+      assert.deepEqual(await page.evaluate(() => menuIntegration.dispatchedIds), []);
+      assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /menu changed/);
+      await page.locator('#integration-trigger').click();
+      await page.evaluate(() => menuIntegration.popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true })));
+      await page.locator('[data-ytms-video-menu="1"]').waitFor();
+      await page.getByRole('menuitem', { name:'Play next in queue',exact:true }).click();
+    }
+    assert.deepEqual(await page.evaluate(() => menuIntegration.dispatchedIds), [['ddddddddddd']],
       'Play next must dispatch its native queue command after navigation');
-    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), ['Add to queue'],
+    assert.deepEqual(await page.evaluate(() => menuIntegration.calls), [],
       'the owned placeholder must not fall through to native activation');
 
     // Collaboration choice must survive the real contextual editor and Undo.

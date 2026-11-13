@@ -44,7 +44,15 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
   if (!navigation) style.textContent += 'ytd-miniplayer .ytp-miniplayer-controls :is(.ytp-prev-button,.ytp-next-button){display:none !important;}';
   (document.head || document.documentElement).append(style);
   const anchors = new Map();
+  const playSelector = 'ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button';
   let observer = null;
+  function activePlayButton() {
+    const candidates = [...document.querySelectorAll(`${playSelector}:is(:hover,:focus-visible)`)].filter(visible);
+    const hovered = candidates.filter(button => button.matches(':hover'));
+    if (hovered.length) return hovered.length === 1 ? hovered[0] : null;
+    const focused = candidates.filter(button => button.matches(':focus-visible'));
+    return focused.length === 1 ? focused[0] : null;
+  }
   function restoreAnchors(except=null){
     for(const [player,values]of anchors)if(player!==except){
       for(const [name,old]of values)if(player.style.getPropertyValue(name)===old.written){if(old.value)player.style.setProperty(name,old.value,old.priority);else player.style.removeProperty(name);}
@@ -54,8 +62,10 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
   }
   function positionPlayTooltip(event) {
     if(disposed || suspended || navigating || document.hidden){restoreAnchors();return;}
-    const button=event?.target?.closest?.('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button') ||
-      (!event ? document.querySelector('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)') : null);
+    if(event && !event.target?.closest?.(playSelector))return;
+    // An opacity-hidden retained Play control can keep keyboard focus. Give
+    // the rendered pointer owner priority over focus in another generation.
+    const button=activePlayButton();
     const player=button?.closest('#movie_player');
     if(!player){if(!event)restoreAnchors();return;}
     const box=player.getBoundingClientRect(),target=button.getBoundingClientRect();
@@ -74,9 +84,9 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     }
   }
   function releaseUnusedAnchors(event) {
-    if(!event.target?.closest?.('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button'))return;
+    if(!event.target?.closest?.(playSelector))return;
     window.queueMicrotask(()=>{
-      const active=document.querySelector('ytd-miniplayer .ytp-miniplayer-ui .ytp-play-button:is(:hover,:focus-visible)');
+      const active=activePlayButton();
       restoreAnchors(active?.closest('#movie_player') || null);
     });
   }

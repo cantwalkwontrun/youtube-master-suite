@@ -107,6 +107,62 @@ async function settlePlayerFrames(page) {
   });
 }
 
+for (const suite of [false, true]) for (const nextPlayback of ['replay', 'next video', 'replacement media']) {
+  test(`an old ended callback preserves fresh scroll playback (${suite ? 'complete Suite' : 'source'}, ${nextPlayback})`, async t => {
+    const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });
+    await page.evaluate(nextPlayback => {
+      const video = document.querySelector('body > #movie_player video');
+      const player = video.closest('#movie_player');
+      window.fixture.endedReadoptions = 0;
+      window.fixture.endedObserver = new MutationObserver(records => {
+        window.fixture.endedReadoptions += records.filter(record => [...record.addedNodes].includes(player)).length;
+      });
+      window.fixture.endedObserver.observe(document.body, { childList: true });
+      window.fixture.mediaEnded = true;
+      Object.defineProperty(video, 'ended', { configurable: true, get: () => window.fixture.mediaEnded });
+      video.dispatchEvent(new Event('ended', { bubbles: true }));
+      // Native replay/queue loading can reuse the media element before the
+      // deferred ended handler runs. The old event no longer owns playback.
+      if (nextPlayback === 'replacement media') video.replaceWith(video.cloneNode(true));
+      else window.fixture.mediaEnded = false;
+      if (nextPlayback !== 'replay') window.fixture.playerId = 'bbbbbbbbbbb';
+    }, nextPlayback);
+    await settlePlayerFrames(page);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active')), true);
+    assert.equal(await page.locator('body > #movie_player video').count(), 1);
+    assert.equal(await page.evaluate(() => { fixture.endedObserver.disconnect(); return fixture.endedReadoptions; }), 0,
+      'A superseded ended event must not restore and refloat the current player');
+  });
+}
+
+for (const suite of [false, true]) test(`new active media metadata resumes scroll floating after completion (${suite ? 'complete Suite' : 'source'})`, async t => {
+  const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });
+  await page.evaluate(() => {
+    const video = document.querySelector('body > #movie_player video');
+    window.fixture.mediaEnded = true;
+    Object.defineProperty(video, 'ended', { configurable: true, get: () => window.fixture.mediaEnded });
+    video.dispatchEvent(new Event('ended', { bubbles: true }));
+  });
+  await settlePlayerFrames(page);
+  assert.equal(await page.evaluate(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active')), false);
+  await page.evaluate(() => {
+    const preview = document.createElement('ytd-video-preview'), previewVideo = document.createElement('video');
+    preview.append(previewVideo); document.body.append(preview);
+    previewVideo.dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
+  });
+  await settlePlayerFrames(page);
+  assert.equal(await page.evaluate(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active')), false,
+    'Unrelated preview metadata must not trigger scroll-player restoration');
+  await page.evaluate(() => {
+    window.fixture.mediaEnded = false;
+    const video = document.querySelector('#movie_player video');
+    video.dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
+  });
+  await settlePlayerFrames(page);
+  assert.equal(await page.evaluate(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active')), true,
+    'Starting media again while still scrolled must not require a manual scroll or resize');
+});
+
 for (const suite of [false, true]) for (const restoration of [false, true]) {
   test(`${restoration ? "actual BFCache restoration releases" : "late initial pageshow preserves"} the pending scroll-miniplayer navigation lock (${suite ? "complete Suite" : "source"})`, async t => {
     const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });

@@ -36,7 +36,10 @@ async function open(t, options = {}) {
     const f = window.queueFixture = { adds: [], moves: [], current, delay, ids: ids || [], seed: ids !== null, nativeItems: null,
       displayWrites: 0, rowWrites: 0, staleSelected: new Set(), staleRows: new Set() };
     fixture.playerId = current;
-    document.getElementById('movie_player').getPlaylistId = () => listId;
+    // A native standalone video has no queue ID until its first accepted add.
+    // Existing watch queues expose their independently readable native order.
+    document.getElementById('movie_player').getPlaylistId = () => f.seed ? listId : null;
+    document.getElementById('movie_player').getPlaylist = () => [...f.ids];
     document.querySelectorAll("ytd-playlist-panel-renderer").forEach(panel => panel.remove());
     const panel = document.createElement("ytd-playlist-panel-renderer");
     panel.style.display = "block";

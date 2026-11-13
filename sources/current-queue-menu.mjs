@@ -90,8 +90,16 @@ export function installCurrentQueueMenu({ document, window, preferences = {}, Mu
     return items.length ? { items, accessibility:{ accessibilityData:{ label:'More actions' } } } : null;
   }
   function targetsCurrentEntry(model, data, entries, current) {
-    for (const item of model.items) {
-      const endpoint = item?.menuServiceItemRenderer?.serviceEndpoint;
+    // Native Download rows have their own renderer. Inspect both supported
+    // bindings independently so a conflicting supplied action cannot hide
+    // behind an agreeing normal service renderer.
+    for (const item of model.items) for (const endpoint of [
+      item?.menuServiceItemRenderer?.serviceEndpoint,
+      item?.menuServiceItemDownloadRenderer?.serviceEndpoint,
+    ]) {
+      const download = endpoint?.offlineVideoEndpoint;
+      if (Object.hasOwn(endpoint || {}, 'offlineVideoEndpoint') &&
+          (!download || typeof download !== 'object' || download.videoId !== current.videoId)) return false;
       const edit = endpoint?.playlistEditEndpoint;
       if (Array.isArray(edit?.actions)) for (const action of edit.actions) {
         if (action?.action === 'ACTION_ADD_VIDEO' && action.addedVideoId !== current.videoId) return false;
@@ -103,6 +111,17 @@ export function installCurrentQueueMenu({ document, window, preferences = {}, Mu
       const save = endpoint?.addToPlaylistServiceEndpoint;
       if (save && (('videoId' in save && save.videoId !== current.videoId) ||
           ('videoIds' in save && (!Array.isArray(save.videoIds) || save.videoIds.length !== 1 || save.videoIds[0] !== current.videoId)))) return false;
+      const signals = endpoint?.signalServiceEndpoint?.actions;
+      if (Array.isArray(signals)) for (const signal of signals) {
+        const queue = signal?.addToPlaylistCommand;
+        if (queue === undefined) continue;
+        // Recycled native queue commands can lag behind both row models.
+        // Every supplied target must identify this exact current video.
+        if (!queue || typeof queue !== 'object' ||
+            (!('videoId' in queue) && !('videoIds' in queue)) ||
+            ('videoId' in queue && queue.videoId !== current.videoId) ||
+            ('videoIds' in queue && (!Array.isArray(queue.videoIds) || queue.videoIds.length !== 1 || queue.videoIds[0] !== current.videoId))) return false;
+      }
     }
     return true;
   }
