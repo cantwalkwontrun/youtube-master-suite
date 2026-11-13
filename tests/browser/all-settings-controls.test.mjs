@@ -90,5 +90,5 @@ test('every scalar setting exposes its declared choices and saves each through i
     }
   });
   assert.equal(scalarKeys.length + menuKeys.length, Object.keys(defaults).length);
-  assert.deepEqual(menuKeys.sort(), ['menuGroupChannelTools', 'menuItemOrder', 'menuLayout', 'menuShowAgeLimit', 'menuShowDontRecommend', 'menuShowDownload', 'menuShowNotInterested', 'menuShowReport'].sort());
+  assert.deepEqual(menuKeys.sort(), ['menuGroupChannelTools', 'menuItemOrder', 'menuLayout', 'menuShowAgeLimit', 'menuShowDontRecommend', 'menuShowDownload', 'menuShowHype', 'menuShowNotInterested', 'menuShowReport'].sort());
 });
