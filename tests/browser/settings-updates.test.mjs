@@ -178,10 +178,11 @@ for(const saved of [false,true])test(`compiled Credits use the current Suite rep
   const requests=[],url='https://www.youtube.com/watch?v=aaaaaaaaaaa';
   const source=readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8');
   const manifest=JSON.parse(readFileSync(new URL('../../release-manifest.json',import.meta.url),'utf8'));
+  const newerVersion=manifest.version.replace(/\d+$/,part=>String(Number(part)+1));
   const body=readFileSync(new URL('./watch-page.html',import.meta.url),'utf8');
   await context.route('**/*',route=>{
     if(route.request().url()===url)return route.fulfill({contentType:'text/html',body});
-    if(route.request().url()===CURRENT_SUITE_API){requests.push(route.request().url());return route.fulfill({contentType:'application/json',headers:{'access-control-allow-origin':'https://www.youtube.com'},body:JSON.stringify(suiteRelease('1.2.127'))});}
+    if(route.request().url()===CURRENT_SUITE_API){requests.push(route.request().url());return route.fulfill({contentType:'application/json',headers:{'access-control-allow-origin':'https://www.youtube.com'},body:JSON.stringify(suiteRelease(newerVersion))});}
     return route.abort();
   });
   const raw=saved?JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2):null;
@@ -201,7 +202,7 @@ for(const saved of [false,true])test(`compiled Credits use the current Suite rep
   assert.deepEqual(requests,[]);
   await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
   assert.deepEqual(requests,[CURRENT_SUITE_API]);
-  assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),suiteDownload('1.2.127'));
+  assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),suiteDownload(newerVersion));
   assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SOURCE_KEY),raw);
   assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SETTINGS_KEY),mainBefore);
 });

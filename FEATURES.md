@@ -4,7 +4,7 @@ lang: en-GB
 
 # Optional controls and compatibility
 
-The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting, the current-video menu and queue-header menu cleanup start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
+The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting, duplicate prevention, the current-video menu and queue-header menu cleanup start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
 
 ## Membership offers
@@ -26,6 +26,10 @@ When YouTube omits the playing queue item's menu, the Suite can rebuild supporte
 When a video lists several verified creators, **Filter channel uploads** lets you choose whose settings to open. Each creator keeps an independent rule; a collaboration is filtered when any explicitly saved creator rule matches. Conflicting or unverified identities remain unfiltered.
 
 For handle-only cards, **Look up channel ID** makes an explicit public-channel request. Opening a video menu alone sends no lookup. Requests omit account cookies and referrers, reject redirects and conflicting identities, and have time and size limits. Verified lookup results are held temporarily in this page's memory; permanent channel-filter rules remain in private settings storage.
+
+## Native queue duplicates
+
+**Miniplayer → Native queue → Prevent duplicate queue videos** starts on. In a verified native queue, Add to queue moves an existing upcoming video to the end, and Play next moves it after the current video. The playing entry is kept; its extra copies can be removed without moving that entry. Existing duplicates are removed by their exact native queue-entry IDs, one confirmed update at a time. Saved playlists are excluded. If the player, queue or row bindings cannot be verified, the Suite waits or refuses the action instead of guessing. Save and reload to apply changes to this setting.
 
 ## Conflicting options
 
@@ -175,6 +179,7 @@ Compact queues retain the native corner alignment, including the bottom inset. N
 | feed / Feed cleanup | Show hidden-card reveal control | On | Keep the Suite’s temporary reveal control for filtered feed cards. |
 | miniplayer / Native queue | Fit native queue to contents | On | Short queues fit their rows and retain native corner alignment. Longer queues scroll. Native height is restored temporarily during drag and resize interactions, then fitted again. |
 | miniplayer / Native queue | Show current video menu | On | Expose the playing queue item's own native menu when the queue and menu can be verified. Native removal may advance playback. No commands are copied from other videos. |
+| miniplayer / Native queue | Prevent duplicate queue videos | On | Keep one entry per video in verified native queues. Add to queue moves an existing upcoming entry to the end; Play next moves it after the current entry. Preserve the playing entry and remove only verified extra copies. |
 | miniplayer / Native queue | Hide queue header menu | On | Hide the native overflow trigger above miniplayer queue rows. Keep top-level Save buttons, individual video menus and watch-page queue menus. Turn this off to restore the header trigger. |
 
 The watched-video threshold also supports 5%, 10%, 25%, 50% and 75%, alongside the existing values. Settings export/import includes every control and accepts earlier valid backups, supplying defaults only for newly introduced fields.

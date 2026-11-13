@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "name": "YouTube Master Suite",
-  "version": "1.2.126",
+  "version": "1.2.128",
   "source": "youtube-master-suite.user.js",
-  "sha256": "b26e68080e0f35cb32551dd5f2efcb203f28dc75dd96017a6697177f4ab552f3",
-  "bytes": 1336204,
-  "characters": 1336060,
+  "sha256": "974dd9bb0b4fc63c7956e0070ef764deb9e17a0620077fc50abf5510135796b1",
+  "bytes": 1370088,
+  "characters": 1369944,
   "registeredModules": 8
 }

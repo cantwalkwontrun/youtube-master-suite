@@ -97,7 +97,20 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   }
   function observeHostVisibility(hosts) {
     const candidates = new Set();
-    for (const candidate of hosts) for (let node = candidate; node; node = node.parentElement) candidates.add(node);
+    for (const candidate of hosts) {
+      for (let node = candidate; node; node = node.parentElement) candidates.add(node);
+      // Native adoption can fade a wrapper inside the host without resizing it.
+      // Follow the supported queue's bounded layout paths as well as the host's
+      // ancestors, including hidden paths which must wake on an attribute reveal.
+      for (const queue of candidate.querySelectorAll(panelSelector)) {
+        if (queue.closest(hostSelector) !== candidate) continue;
+        const list = queue.querySelector('.playlist-items');
+        const roots = [queue, list,
+          ...[...queue.querySelectorAll('ytd-playlist-panel-video-renderer')].slice(0, 64),
+          ...[...(list?.children || [])].slice(0, 64)];
+        for (const root of roots) for (let node = root; node && node !== candidate; node = node.parentElement) candidates.add(node);
+      }
+    }
     const next = [...candidates];
     if (next.length === visibilityAncestors.length && next.every((node,index) => node === visibilityAncestors[index])) return;
     visibilityObserver?.disconnect();

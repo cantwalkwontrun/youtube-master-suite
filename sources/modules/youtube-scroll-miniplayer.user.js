@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Scroll Miniplayer
 // @namespace    Citizen.youtube.scroll-miniplayer
-// @version      5.43
+// @version      5.44
 // @description  Floats the active YouTube player with compact queue context, YouTube-style controls, and synchronised corner selection across open windows.
 // @author       Citizen
 // @updateURL    none
@@ -2136,9 +2136,13 @@
   document.addEventListener("fullscreenchange", handleFullscreenChange, true);
 
   document.addEventListener("ended", (event) => {
-    if (event.target === getPlayerVideo()) {
+    const video = event.target;
+    if (video === getPlayerVideo()) {
       // Do not reparent YouTube's player during its ended-event dispatch.
       setTimeout(() => {
+        // Replay or queue loading may reuse/replace the media before this task.
+        // An old completion must not restore and refloat fresh playback.
+        if (video !== getPlayerVideo() || !video.ended) return;
         setActive(false);
         finaliseOffRouteOrphanIfSafe();
       }, 0);
@@ -2158,13 +2162,16 @@
   }, true);
 
   document.addEventListener("loadedmetadata", (event) => {
-    if (
-      floatedPlayer &&
-      event.target instanceof HTMLMediaElement &&
-      reconcileTrackedPlayer()
-    ) {
+    if (!(event.target instanceof HTMLMediaElement)) return;
+    if (floatedPlayer && reconcileTrackedPlayer()) {
       scheduleRouteSync();
+      return;
     }
+    // Completed media can already be back in its watch host. Its next load
+    // must resume floating without relying on another module's resize event.
+    if (!navigationInProgress && isEligiblePath() &&
+        !event.target.closest('ytd-video-preview, ytd-reel-video-renderer') &&
+        event.target === getPlayerVideo()) scheduleRouteSync();
   }, true);
 
   window.addEventListener("yt-navigate-start", () => {

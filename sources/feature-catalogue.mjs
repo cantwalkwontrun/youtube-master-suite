@@ -1033,6 +1033,14 @@ export function createFeatureCatalogue() {
     "default": true
   },
   {
+    "key": "uniqueQueueVideos",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Prevent duplicate queue videos",
+    "description": "Keep one entry per video in native queues. Verified extra copies are removed and the playing entry is kept. Add to queue moves an existing upcoming entry to the end; Play next moves it after the current entry. Saved playlists are unchanged. Save and reload to apply.",
+    "default": true
+  },
+  {
     "key": "hideMiniplayerQueueMenu",
     "tab": "miniplayer",
     "section": "Native queue",

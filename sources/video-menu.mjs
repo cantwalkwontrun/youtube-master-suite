@@ -678,6 +678,9 @@ export function installVideoMenu(suite) {
       model:data,items,trigger:selection.button,page:'root',stack:[],tools:false,
       keyboard:selection.keyboard,interacted:false,redirectingFocus:false,ownsTabIndex:!popup.hasAttribute('tabindex') };
     if (active.ownsTabIndex) popup.setAttribute('tabindex','-1');
+    // Opaque sheet rows lose their original slot once submenus rearrange them.
+    // Share this verified native stamp before the first physical layout move.
+    suite.queueMenuBindings?.capture(popup, { data, items, rows, sheet });
     appendInOrder(parent,[back,...arranged.map(entry => entry.row)]);
     popup.setAttribute('data-ytms-video-menu', '1');
     setPage(false, false);
