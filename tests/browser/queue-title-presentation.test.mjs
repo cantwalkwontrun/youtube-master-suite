@@ -485,7 +485,7 @@ test('title tooltips treat markup-looking text as plain text', async t => {
   assert.equal(await page.evaluate(() => window.queueTitleInjected), undefined);
 });
 
-for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden', 'ancestor-hidden', 'row-inert', 'ancestor-inert', 'owner-change', 'native-restamp']) {
+for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden', 'ancestor-hidden', 'title-inert', 'row-inert', 'ancestor-inert', 'owner-change', 'native-restamp']) {
   test(`an open title tooltip releases on ${reason}`, async t => {
     const page = await open(t); await ready(page); await tooltip(page);
     await page.evaluate(reason => {
@@ -499,12 +499,17 @@ for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden'
       }
       if (reason === 'row-hidden') fixture.items.children[1].hidden = true;
       if (reason === 'ancestor-hidden') fixture.panel.parentElement.style.display = 'none';
+      if (reason === 'title-inert') fixture.items.children[1].querySelector('[data-ywlc-queue-title="1"]').inert = true;
       if (reason === 'row-inert') fixture.items.children[1].inert = true;
       if (reason === 'ancestor-inert') fixture.panel.parentElement.inert = true;
       if (reason === 'owner-change') { fixture.owner = { ...fixture.owner }; fixture.panel.polymerController = fixture.owner; fixture.notifyQueue(); }
       if (reason === 'native-restamp') fixture.restampRows();
     }, reason);
     await assertNoTooltip(page);
+    if (reason.endsWith('-inert')) {
+      assert.equal(await title(page).getAttribute('title'), 'Native tooltip ' + LONG);
+      assert.equal(await title(page).getAttribute('aria-describedby'), 'native-help');
+    }
     if (reason === 'navigation' || reason === 'pagehide') assert.equal(await page.locator('[data-ywlc-queue-title]').count(), 0);
     if (reason === 'native-restamp') {
       await page.mouse.move(10, 10); await assertNoTooltip(page);
@@ -512,6 +517,25 @@ for (const reason of ['scroll', 'navigation', 'pagehide', 'hidden', 'row-hidden'
       assert.equal(await title(page).getAttribute('title'), 'Native tooltip ' + LONG, 'An identical native row clone recovers temporary title suppression');
     }
   });
+}
+
+for (const view of ['desktop', 'miniplayer']) {
+  for (const target of ['title', 'row', 'ancestor']) {
+    test(`the generated Suite dismisses and restores an inert title tooltip (${view}, ${target})`, async t => {
+      const page = await open(t, { view, suite: true }); await ready(page); await tooltip(page);
+      const setInert = value => title(page).evaluate((node, { target, value }) => {
+        const owner = target === 'title' ? node : target === 'row'
+          ? node.closest('ytd-playlist-panel-video-renderer')
+          : node.closest('ytd-playlist-panel-renderer').parentElement;
+        owner.inert = value;
+      }, { target, value });
+      await setInert(true); await assertNoTooltip(page);
+      assert.equal(await title(page).getAttribute('title'), 'Native tooltip ' + LONG);
+      assert.equal(await title(page).getAttribute('aria-describedby'), 'native-help');
+      await page.mouse.move(10, 10); await setInert(false); await tooltip(page);
+      await page.keyboard.press('Escape'); await assertNoTooltip(page);
+    });
+  }
 }
 
 test('native dragging dismisses a focused title tooltip without consuming the grip gesture', async t => {

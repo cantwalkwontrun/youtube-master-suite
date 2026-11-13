@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.128
+// @version      1.2.129
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.128";
+  const MASTER_VERSION = "1.2.129";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -21682,7 +21682,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.100",
+    "Watch Layout Cleaner v1.101",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -24103,9 +24103,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               });
               current.observer = new MutationObserver(refresh);
               current.observer.observe(current.title, { childList: true, subtree: true, characterData: true, attributes: true,
-                attributeFilter: ['title', 'class', 'style', 'hidden', 'aria-hidden'] });
+                attributeFilter: ['title', 'class', 'style', 'hidden', 'inert', 'aria-hidden'] });
               for (let node = current.title.parentElement; node; node = node.parentElement) current.observer.observe(node, {
-                attributes: true, attributeFilter: ['title', 'class', 'style', 'hidden', 'aria-hidden'] });
+                attributes: true, attributeFilter: ['title', 'class', 'style', 'hidden', 'inert', 'aria-hidden'] });
               if (focus) show(current); else current.timer = setTimeout(() => show(current), 500);
             }
             function clear(record) {

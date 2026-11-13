@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.100
+// @version      1.101
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -2426,9 +2426,9 @@ ${buildQueueCompatibilityCss()}
         });
         current.observer = new MutationObserver(refresh);
         current.observer.observe(current.title, { childList: true, subtree: true, characterData: true, attributes: true,
-          attributeFilter: ['title', 'class', 'style', 'hidden', 'aria-hidden'] });
+          attributeFilter: ['title', 'class', 'style', 'hidden', 'inert', 'aria-hidden'] });
         for (let node = current.title.parentElement; node; node = node.parentElement) current.observer.observe(node, {
-          attributes: true, attributeFilter: ['title', 'class', 'style', 'hidden', 'aria-hidden'] });
+          attributes: true, attributeFilter: ['title', 'class', 'style', 'hidden', 'inert', 'aria-hidden'] });
         if (focus) show(current); else current.timer = setTimeout(() => show(current), 500);
       }
       function clear(record) {
