@@ -156,6 +156,7 @@ export function createMenuEditor(document, layouts, options) {
     }
     if (!siblings.length) list.append(el('li', 'This submenu is empty. Move an action here using its Menu selector.', 'section-note'));
     drawPreview(layout);
+    options.onRender?.();
   }
   location.addEventListener('change', () => {
     if (invalid) { location.value = current; name.focus(); return; }

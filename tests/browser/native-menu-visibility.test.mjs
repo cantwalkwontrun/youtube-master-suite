@@ -6,7 +6,7 @@ import { installNativeMenuVisibility } from '../../sources/native-menu-visibilit
 import { createMenuLayout } from '../../sources/menu-layout.mjs';
 import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
 let browser; before(async()=>{browser=await launchFixtureBrowser();});after(async()=>{await browser?.close();});
-async function open(t,{sheet=false,download=false,hype=true,layout=false,invalid=false}={}){
+async function open(t,{sheet=false,download=false,hype=true,layout=false,invalid=false,compiled=false}={}){
  const context=await browser.newContext({serviceWorkers:'block'});
  await context.route('**/*',route=>route.request().isNavigationRequest()?route.fulfill({contentType:'text/html',body:'<!doctype html><html lang="en-GB"><style>ytd-app,ytd-popup-container,tp-yt-iron-dropdown,ytd-menu-popup-renderer,yt-sheet-view-model,yt-list-view-model,ytd-menu-service-item-renderer,ytd-menu-service-item-download-renderer,yt-list-item-view-model,yt-download-list-item-view-model{display:block}[hidden]{display:none!important}</style><body><ytd-app><ytd-popup-container><tp-yt-iron-dropdown></tp-yt-iron-dropdown></ytd-popup-container></ytd-app>'}):route.abort());
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));t.after(async()=>{try{assert.deepEqual(errors,[]);}finally{await context.close();}});await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
@@ -26,6 +26,12 @@ async function open(t,{sheet=false,download=false,hype=true,layout=false,invalid
   if(layout){preferences.menuLayout=menuLayout.fromPreferences({menuShowDownload:true,menuShowHype:false});}
   f.dispose=(0,eval)('('+installer+')')({document,window,preferences,menuLayout});
  },{sheet,download,hype,layout,invalid,installer:installNativeMenuVisibility.toString(),layouts:createMenuLayout.toString()});
+ if(compiled){
+  await page.evaluate(({download,hype})=>{f.dispose();localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{menuShowDownload:download,menuShowHype:hype,theatreMode:false,miniplayerEnabled:false}}));},{download,hype});
+  await page.addScriptTag({content:readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8')});
+  const manifest=JSON.parse(readFileSync(new URL('../../release-manifest.json',import.meta.url),'utf8'));
+  await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true,timeoutMs:10000});
+ }
  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});return page;
 }
 for(const sheet of [false,true])for(const download of [false,true])for(const hype of [false,true])test(`unbound native overflow obeys Download ${download} and Hype ${hype} (${sheet?'sheet':'legacy'})`,async t=>{
@@ -52,6 +58,70 @@ test('a recycled row cannot retain another action visibility marker',async t=>{
  });
  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
  assert.equal(await page.locator('[data-action="Other action"]').isVisible(),true);
+});
+for(const compiled of [false,true])for(const sheet of [false,true])for(const scope of ['popup','row'])test(`conflicting component and legacy ${scope} models cannot hide a recycled Report action (${sheet?'sheet':'legacy'}, ${compiled?'Suite':'source'})`,async t=>{
+ const page=await open(t,{sheet,hype:false,compiled});
+ await page.evaluate(({sheet,scope})=>{
+  const retained=sheet?f.popup.componentProps.data():f.popup.data,current=structuredClone(retained);
+  const oldItems=sheet?retained.content.listViewModel.listItems:retained.items;
+  const newItems=sheet?current.content.listViewModel.listItems:current.items;
+  newItems[1]=sheet?{listItemViewModel:{title:{content:'Report'},leadingImage:{sources:[{clientResource:{imageName:'FLAG'}}]}}}:{menuServiceItemRenderer:{text:{simpleText:'Report'},icon:{iconType:'FLAG'},serviceEndpoint:{}}};
+  f.popup.componentProps={data:()=>retained};f.popup.data=scope==='popup'?current:retained;
+  const row=document.querySelector('[data-action="Hype"]');
+  row.componentProps={data:()=>sheet?oldItems[1].listItemViewModel:oldItems[1].menuServiceItemRenderer};
+  row.data=sheet?newItems[1].listItemViewModel:newItems[1].menuServiceItemRenderer;
+  row.querySelector('button').textContent='Report recycled';
+ },{sheet,scope});
+ await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+ assert.equal(await page.locator('[data-action="Hype"]').isVisible(),true,
+  'An explicit disagreement between native model generations must release the old action marker');
+});
+for(const compiled of [false,true])for(const sheet of [false,true])test(`equivalent component and legacy models still apply visibility preferences (${sheet?'sheet':'legacy'}, ${compiled?'Suite':'source'})`,async t=>{
+ const page=await open(t,{sheet,hype:false,compiled});
+ await page.evaluate(sheet=>{
+  const current=sheet?f.popup.componentProps.data():f.popup.data;
+  f.popup.componentProps={data:()=>current};f.popup.data=structuredClone(current);
+  const items=sheet?current.content.listViewModel.listItems:current.items;
+  for(const [i,row]of [...f.popup.querySelectorAll(sheet?'yt-list-item-view-model,yt-download-list-item-view-model':'ytd-menu-service-item-renderer,ytd-menu-service-item-download-renderer')].entries()){
+   const current=items[i].listItemViewModel||items[i].downloadListItemViewModel||items[i].menuServiceItemRenderer||items[i].menuServiceItemDownloadRenderer;
+   row.componentProps={data:()=>current};row.data=structuredClone(current);
+  }
+  f.popup.dispatchEvent(new CustomEvent('yt-popup-opened',{bubbles:true}));
+ },sheet);
+ await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+ assert.equal(await page.locator('[data-action="Hype"]').isVisible(),false);
+ assert.equal(await page.locator('[data-action="Download"]').isVisible(),false);
+ assert.equal(await page.locator('[data-action="Report"]').isVisible(),true);
+});
+test('sixty-row copied popup models do not churn visibility markers or native refits',async t=>{
+ const page=await open(t,{hype:false});
+ await page.evaluate(()=>{
+  const current=f.popup.data;
+  while(current.items.length<60){
+   const item=structuredClone(current.items[3]),row=document.querySelector('[data-action="Report"]').cloneNode(true);
+   row.removeAttribute('data-action');row.data=item.menuServiceItemRenderer;current.items.push(item);f.popup.append(row);
+  }
+  f.popup.componentProps={data:()=>current};f.popup.data=structuredClone(current);
+ });
+ await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+ const result=await page.evaluate(async()=>{
+  let markerChanges=0,serialisations=0,maxCharacters=0;
+  const markers=new MutationObserver(records=>markerChanges+=records.length);
+  markers.observe(f.popup,{subtree:true,attributes:true,attributeFilter:['data-ytms-native-menu-hidden']});
+  const stringify=JSON.stringify,refits=f.refits,start=performance.now();
+  JSON.stringify=function(...args){const value=stringify.apply(this,args);serialisations++;maxCharacters=Math.max(maxCharacters,value?.length||0);return value;};
+  try{
+   for(let i=0;i<100;i++){f.popup.className=i%2?'native-layout-a':'native-layout-b';await Promise.resolve();await Promise.resolve();}
+   await new Promise(requestAnimationFrame);
+  }finally{JSON.stringify=stringify;markers.disconnect();}
+  return {elapsedMs:Math.round(performance.now()-start),serialisations,maxCharacters,markerChanges,refits:f.refits-refits};
+ });
+ assert.equal(result.markerChanges,0);assert.equal(result.refits,0);
+ assert.ok(result.serialisations>0,'Separate native model copies exercise the bounded agreement path');
+ assert.ok(result.maxCharacters<131072);
+ assert.equal(await page.locator('[data-action="Download"]').isVisible(),false);
+ assert.equal(await page.locator('[data-action="Hype"]').isVisible(),false);
+ t.diagnostic(JSON.stringify(result));
 });
 test('other popup content causes no native-menu layout reads',async t=>{
  const page=await open(t);

@@ -1,23 +1,24 @@
 // Language: en-GB. Synthetic native membership dialogs; no personal profile or requests.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { installMembershipOffers } from '../../sources/membership-offers.mjs';
 import { createFeatureCatalogue } from '../../sources/feature-catalogue.mjs';
-import { launchFixtureBrowser } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
 
-const URL = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+const FIXTURE_URL = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
 let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); });
 
-async function open(t, enabled = true, install = true) {
+async function open(t, enabled = true, install = true, compiled = false) {
   const context = await browser.newContext({ serviceWorkers:'block' });
-  await context.route('**/*', route => route.request().url() === URL ? route.fulfill({contentType:'text/html',body:
+  await context.route('**/*', route => route.request().url() === FIXTURE_URL ? route.fulfill({contentType:'text/html',body:
     '<!doctype html><html lang="en-GB"><style>ytd-app,ytd-popup-container,tp-yt-paper-dialog,[data-renderer]{display:block}tp-yt-paper-dialog{width:400px;padding:16px}button{width:90px;height:36px}[hidden]{display:none!important}</style><body><video></video><ytd-app><ytd-popup-container></ytd-popup-container></ytd-app></body></html>'}) : route.abort());
   const page = await context.newPage(); page.setDefaultTimeout(4000);
   const errors=[]; page.on('pageerror',error=>errors.push(error.message));
   t.after(async()=>{try{assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>fixture.effects),{purchase:0,media:0,storage:0,network:0});}finally{await context.close();}});
-  await page.goto(URL);
+  await page.goto(FIXTURE_URL);
   await page.evaluate(() => {
     window.fixture={calls:[],effects:{purchase:0,media:0,storage:0,network:0}, observers:0, activeObservers:0, deliveries:0, measurements:0};
     const Native=MutationObserver;
@@ -59,9 +60,33 @@ async function open(t, enabled = true, install = true) {
     };
   });
   if(install)await page.addScriptTag({content:`window.fixtureInstalling=true;try {window.fixtureDispose = (${installMembershipOffers.toString()})({document,window,preferences:{dismissMembershipOffers:${enabled}}});}finally{window.fixtureInstalling=false;}`});
+  if(compiled){
+    await page.evaluate(()=>localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{dismissMembershipOffers:true,theatreMode:false,miniplayerEnabled:false}})));
+    await page.addScriptTag({content:readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8')});
+    const manifest=JSON.parse(readFileSync(new URL('../../release-manifest.json',import.meta.url),'utf8'));
+    await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true,timeoutMs:10000});
+    await page.evaluate(()=>{fixture.effects={purchase:0,media:0,storage:0,network:0};});
+  }
   return page;
 }
 async function settle(page){await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});}
+
+for(const compiled of [false,true])for(const interruption of ['yt-navigate-start','pagehide',...(compiled?[]:['dispose'])])
+for(const phase of ['close','method lookup'])test(`membership ${phase} ${interruption} invalidates the remaining dismissal scan (${compiled?'Suite':'source'})`,async t=>{
+  const page=await open(t,true,!compiled,compiled);
+  await page.evaluate(({interruption,phase})=>{
+    const interrupt=()=>interruption==='dispose'?fixtureDispose():dispatchEvent(new Event(interruption));
+    const first=fixture.make({name:'first'}),second=fixture.make({name:'second'});
+    const close=first.close;
+    if(phase==='close')first.close=()=>{close();interrupt();};
+    else Object.defineProperty(first,'close',{get(){interrupt();return close;}});
+    fixture.first=first;fixture.second=second;fixture.show(first);fixture.show(second);
+  },{interruption,phase});
+  await settle(page);
+  assert.deepEqual(await page.evaluate(()=>fixture.calls),phase==='close'?['first']:[],
+    'Native reentrancy must not invoke an action after the lifecycle invalidates its scan');
+  assert.equal(await page.evaluate(()=>fixture.second.hidden),false);
+});
 
 test('membership dismissal is a default-off Interface setting beside Premium promotions',()=>{
   const definitions=createFeatureCatalogue().definitions;

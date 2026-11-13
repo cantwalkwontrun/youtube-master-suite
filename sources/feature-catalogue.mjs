@@ -1033,6 +1033,14 @@ export function createFeatureCatalogue() {
     "default": true
   },
   {
+    "key": "hideMiniplayerQueueMenu",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Hide queue header menu",
+    "description": "Hide the native three-dot overflow above miniplayer queue rows. Keep top-level Save buttons and each video's menu. Turn this off to restore the queue header menu. Save and reload to apply.",
+    "default": true
+  },
+  {
     "key": "compactNativeQueue",
     "tab": "miniplayer",
     "section": "Native queue",

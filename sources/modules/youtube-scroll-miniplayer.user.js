@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Scroll Miniplayer
 // @namespace    Citizen.youtube.scroll-miniplayer
-// @version      5.42
+// @version      5.43
 // @description  Floats the active YouTube player with compact queue context, YouTube-style controls, and synchronised corner selection across open windows.
 // @author       Citizen
 // @updateURL    none
@@ -1201,7 +1201,8 @@
       return false;
     }
 
-    const parent = getSafeRestoreParent(floatedPlayer);
+    const player = floatedPlayer;
+    const parent = getSafeRestoreParent(player);
     if (!parent) {
       if (scheduleRetries) schedulePlayerRestoreRetries();
       return false;
@@ -1211,13 +1212,16 @@
       const nextSibling = restoreNextSibling && restoreNextSibling.parentNode === parent
         ? restoreNextSibling
         : null;
-      parent.insertBefore(floatedPlayer, nextSibling);
+      parent.insertBefore(player, nextSibling);
     } catch {
       if (scheduleRetries) schedulePlayerRestoreRetries();
       return false;
     }
 
-    if (floatedPlayer.parentElement !== parent) {
+    // Native adoption/media callbacks can complete restoration synchronously
+    // during insertion. Do not clear or dereference a newer ownership state.
+    if (floatedPlayer !== player) return !floatedPlayer;
+    if (player.parentElement !== parent) {
       if (scheduleRetries) schedulePlayerRestoreRetries();
       return false;
     }

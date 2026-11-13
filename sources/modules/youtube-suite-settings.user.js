@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.81
+// @version      1.83
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -182,7 +182,23 @@
     const searchActions = new WeakMap();
     searchResults.append(searchStatus, searchList); dialog.querySelector('.content').append(searchResults);
     let searchIndex = [], searchActive = false;
+    let searchDestination = null;
+    let searchDestinationMarks = [];
+    let searchDestinationRequest = null;
+    function clearSearchDestination() {
+      searchDestination?.classList.remove('settings-search-destination');
+      searchDestination = null;
+      searchDestinationRequest = null;
+      for (const mark of searchDestinationMarks) {
+        const parent = mark.parentNode;
+        if (!parent) continue;
+        mark.replaceWith(...mark.childNodes);
+        parent.normalize();
+      }
+      searchDestinationMarks = [];
+    }
     function resetSearch() {
+      clearSearchDestination();
       searchActive = false;
       searchInput.value = ''; searchClear.hidden = true; searchResults.hidden = true;
       searchList.replaceChildren(); searchStatus.textContent = '';
@@ -327,6 +343,7 @@
         } else draft.menuLayout = suite.menuLayout.clone(layout);
       },
       onChange: () => markDraftChanged(),
+      onRender: () => refreshSearchDestination(),
       onReset: () => {
         for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
           draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
@@ -858,7 +875,41 @@
       }
       element.append(document.createTextNode(text.slice(end)));
     }
+    function highlightSearchDestination(target, pattern) {
+      searchDestination = target.closest('.row, .colour-row, [data-menu-item]') || target;
+      searchDestinationRequest = target.closest('[data-menu-item]') && target.id.startsWith('ytms-')
+        ? { target: target.id.slice(5), pattern } : null;
+      searchDestination.classList.add('settings-search-destination');
+      // Change only text nodes in this owned row. Keep controls, listeners,
+      // values and drafts intact; never inspect editable code or select options.
+      const walker = document.createTreeWalker(searchDestination, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.parentElement?.closest('input, textarea, select, button, script, style, mark, .preference-badge')) continue;
+        nodes.push(node);
+      }
+      for (const node of nodes) {
+        const fragment = document.createDocumentFragment();
+        highlightSearchText(fragment, node.data, pattern);
+        const marks = [...fragment.querySelectorAll('mark')];
+        if (!marks.length) continue;
+        for (const mark of marks) mark.classList.add('settings-search-destination-match');
+        searchDestinationMarks.push(...marks);
+        node.replaceWith(fragment);
+      }
+    }
+    function refreshSearchDestination() {
+      // Menu editing replaces its owned rows. Reapply the existing destination
+      // to its new control without observing DOM churn or stealing focus.
+      if (!searchDestinationRequest || searchDestination?.isConnected) return;
+      const { target, pattern } = searchDestinationRequest;
+      clearSearchDestination();
+      const replacement = $(target);
+      if (replacement && !replacement.closest('[hidden]')) highlightSearchDestination(replacement, pattern);
+    }
     function showSearch() {
+      clearSearchDestination();
       const terms = searchInput.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
       searchClear.hidden = !searchInput.value;
       if (!terms.length) { selectTab(currentTab); return; }
@@ -910,7 +961,8 @@
           if (target.disabled && controller[entry.target]) target = $(controller[entry.target]) || target;
           for (let details = target.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
           if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
-          target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' });
+          highlightSearchDestination(target, highlightPattern);
+          target.focus({ preventScroll: true }); searchDestination.scrollIntoView({ block: 'nearest' });
         };
         searchActions.set(result, activateResult);
         result.addEventListener('click', event => { if (event.isTrusted && panelSession && dialog.open) activateResult(); });

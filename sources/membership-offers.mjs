@@ -48,7 +48,7 @@ export function installMembershipOffers({ document, window, preferences = {}, Mu
     return controls.length === 1 ? () => controls[0].click() : null;
   }
 
-  function inspect(dialog) {
+  function inspect(dialog, active) {
     if (!dialog.closest(containerSelector) || !visible(dialog) || dialog.opened === false) {
       states.delete(dialog); return;
     }
@@ -60,20 +60,25 @@ export function installMembershipOffers({ document, window, preferences = {}, Mu
       return;
     }
     const offer = offers[0];
+    if (!active()) return;
     let state = states.get(dialog);
     if (!state) { state = { attempted: false }; states.set(dialog, state); }
     if (state.attempted) return;
     const dismiss = nativeDismiss(dialog, offer);
-    if (!dismiss) return; // A later stamped native close control can be discovered.
+    if (!dismiss || !active()) return; // A native property getter can interrupt the scan.
     state.attempted = true;
     try { dismiss(); } catch { /* Leave an unsupported/refused native dialog usable; never retry in a loop. */ }
   }
 
   function scan() {
+    const request = generation;
+    const active = () => request === generation && !disposed && !suspended;
     for (const container of containers) {
+      if (!active()) return;
       if (!container.isConnected) continue;
       for (const dialog of container.querySelectorAll(dialogSelector)) {
-        try { inspect(dialog); } catch { /* A partially initialised native dialog cannot block other popups. */ }
+        if (!active()) return;
+        try { inspect(dialog, active); } catch { /* A partially initialised native dialog cannot block other popups. */ }
       }
     }
   }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.94
+// @version      1.97
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -1162,14 +1162,15 @@ ${buildQueueCompatibilityCss()}
       const nativePlaylist = missingListId ? miniQueue?.ids : player?.getPlaylist?.();
       for (const panel of document.querySelectorAll(panelSelector)) {
         if (!panel.isConnected) continue;
-        const owner = controller(panel);
-        const data = owner?.data;
-        if (typeof data?.playlistId !== "string" || !data.playlistId.startsWith("TLPQ")) continue;
         const ownedMini = mini && panel.closest("ytd-miniplayer") === mini;
         // YouTube retains the watch panel after adopting its queue into the
         // miniplayer. A hidden copy outside that player is not a second queue,
-        // even when its stale model still has the same playlist ID.
+        // even when its stale model still has the same playlist ID. Exclude it
+        // before accessing native bindings, which may already be disposed.
         if (mini && !ownedMini && !isVisibleQueuePlayer(panel)) continue;
+        const owner = controller(panel);
+        const data = owner?.data;
+        if (typeof data?.playlistId !== "string" || !data.playlistId.startsWith("TLPQ")) continue;
         if (missingListId && ownedMini && !miniQueue?.mini) return { unavailable: true };
         if (!panel.getClientRects().length && data.playlistId !== activeListId && !ownedMini) continue;
         // Visible panels can also belong to a previous queue during navigation.
@@ -1302,7 +1303,12 @@ ${buildQueueCompatibilityCss()}
       if (!pending) return;
       const operation = pending;
       try {
-        if (activeVideoId() !== operation.anchor) {
+        const playing = activeVideoId();
+        // Native player adoption can briefly fade the sole player, or expose
+        // both retained hosts. Unknown visibility is not a playback change.
+        // Wait for the next native signal within this operation's deadline.
+        if (playing === undefined) return;
+        if (playing !== operation.anchor) {
           finish("Playback changed; the queue was not reordered.");
           return;
         }
@@ -1430,7 +1436,11 @@ ${buildQueueCompatibilityCss()}
         operation.committed = true;
         operation.entryId = entryId;
         try {
-          queue.owner.handleDrop({ currDragItem: row });
+          const commit = queue.owner.handleDrop;
+          // Native method accessors can synchronously navigate or suspend the
+          // page. A returned callable cannot revive that cancelled operation.
+          if (pending !== operation) return;
+          commit.call(queue.owner, { currDragItem: row });
           if (pending === operation) scheduleMove();
         } catch {
           // Never retry an ambiguous native commit. Only restore the owned DOM
@@ -1488,7 +1498,8 @@ ${buildQueueCompatibilityCss()}
       const targets = popup.matches("yt-sheet-view-model") ? [app, popup] : [popup, app];
       for (const target of targets) {
         for (const owner of [target, controller(target)]) {
-          if (typeof owner?.resolveCommand === "function") return endpoint => owner.resolveCommand(endpoint);
+          const resolve = owner?.resolveCommand;
+          if (typeof resolve === "function") return endpoint => resolve.call(owner, endpoint);
         }
       }
       if (!app?.isConnected) return null;
@@ -1834,6 +1845,7 @@ ${buildQueueCompatibilityCss()}
       if (!entry) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      const previousOperation = pending;
       try {
         const binding = menuBindings.get(popup);
         const data = row.matches('yt-list-item-view-model') ? sheetData(popup) : controller(popup)?.data;
@@ -1853,7 +1865,13 @@ ${buildQueueCompatibilityCss()}
         }
         begin(entry, popup);
       }
-      catch { finish("Play next could not be completed. Please check the queue."); }
+      catch {
+        // A disposed/rebound second popup does not own an earlier accepted
+        // request. Cancel only work created by this activation, preserving the
+        // first request's native append and its eventual reorder confirmation.
+        if (pending !== previousOperation) finish("Play next could not be completed. Please check the queue.");
+        else notify("Play next could not be completed. Please check the queue.");
+      }
       finally {
         // Native activation is suppressed above, so dismiss rejected and
         // preparing selections too. Resolve/dispatch before native teardown.

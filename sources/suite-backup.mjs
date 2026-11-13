@@ -13,7 +13,8 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
     name !== "hideFullscreenQuickActions" && name !== "liveChatButton" &&
     name !== "hideLiveVideos" && name !== "hideUpcomingStreams" && name !== "timelinePreviewSize" &&
     name !== "keepHoverPreviews" && name !== "timeDisplayMode" &&
-    name !== "miniplayerSizeMode" && name !== "miniplayerWidth" && name !== "menuLayout");
+    name !== "miniplayerSizeMode" && name !== "miniplayerWidth" && name !== "menuLayout" &&
+    name !== "menuShowHype");
   const ruleNames = ["channelId", "name", "maxAge", "unit", "enabled", "blocked"];
   const previews = new WeakMap();
   const channelPreviews = new WeakMap();
@@ -40,6 +41,12 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
       // This exact earlier default is a supported preference migration, not a
       // malformed custom order. Keep all other normalisation failures rejected.
       if (name === "menuItemOrder" && settings.isPreviousDefaultMenuOrder(input[name])) continue;
+      // Hype was added to an existing format. A complete former order gains
+      // only that action; partial, duplicate and unknown orders stay invalid.
+      if (name === "menuItemOrder" && Array.isArray(input[name]) &&
+          input[name].length === settings.defaults.menuItemOrder.length - 1 &&
+          !input[name].includes('hype') &&
+          settings.defaults.menuItemOrder.every(id => id === 'hype' || input[name].includes(id))) continue;
       // A submenu node's field order is immaterial; sibling array order is
       // preserved by the strict layout validator and remains significant.
       if (name === "menuLayout") {

@@ -2678,3 +2678,66 @@ for(const suite of [false,true])test(`disposed legacy row lookup preserves anoth
   assert.deepEqual((await snapshot(page)).ids,[A,D,B,C]);assert.equal((await snapshot(page)).adds.length,1);
   assert.equal(await page.evaluate(()=>queueFixture.nativeUnknownClicks),1,'No verified owned row means native handlers retain control');
 });
+
+// Language: en-GB. Hidden native watch panels can dispose while the active queue is adopted.
+for(const suite of [false,true])for(const getter of ['controller','data'])for(const hidden of ['display','ancestor'])test(`Play next skips a disposed hidden retained ${getter} before reading it (${suite?'Suite':'source'}, ${hidden})`,async t=>{
+  const page=await open(t,{sheet:true,suite,homeMiniplayer:true});
+  await page.evaluate(({getter,hidden})=>{
+    const panel=document.createElement('ytd-playlist-panel-renderer');
+    panel.style.cssText='display:block;width:400px;height:100px';
+    const wrapper=document.createElement('div');wrapper.append(panel);
+    if(hidden==='display')panel.style.display='none';else wrapper.style.opacity='0';
+    queueFixture.disposedReads=0;
+    const disposed=()=>{queueFixture.disposedReads++;throw new Error('Disposed retained native binding');};
+    if(getter==='controller')Object.defineProperty(panel,'polymerController',{get:disposed});
+    else panel.polymerController=Object.defineProperty({},'data',{get:disposed});
+    document.querySelector('#secondary').prepend(wrapper);
+  },{getter,hidden});
+  await choose(page,D);
+  await page.waitForFunction(()=>queueFixture.moves.length===1);
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,D,B,C]);assert.equal(after.adds.length,1);assert.equal(after.playing,A);
+  assert.equal(await page.evaluate(()=>queueFixture.disposedReads),0,'An unrelated hidden native binding must not be read');
+});
+
+for(const suite of [false,true])for(const hidden of ['opacity','visibility'])test(`an accepted Play next survives a temporary native player fade (${suite?'Suite':'source'}, ${hidden})`,async t=>{
+  const page=await open(t,{sheet:true,suite,homeMiniplayer:true,delay:150});
+  await page.evaluate(hidden=>{
+    const app=document.querySelector('ytd-app'),player=document.getElementById('movie_player');
+    const resolve=app.resolveCommand;
+    app.resolveCommand=function(endpoint){
+      const result=resolve.call(this,endpoint);
+      player.style[hidden]=hidden==='opacity'?'0':'hidden';
+      setTimeout(()=>{player.style[hidden]='';},50);
+      return result;
+    };
+  },hidden);
+  const before=await snapshot(page);
+  await choose(page,D);
+  await page.waitForFunction(()=>queueFixture.moves.length===1);
+  const after=await snapshot(page);
+  assert.deepEqual(after.ids,[A,D,B,C]);assert.equal(after.adds.length,1);assert.equal(after.playing,before.playing);
+  assert.equal(after.url,before.url);assert.equal(after.title,before.title);assert.equal(after.comments,before.comments);
+});
+
+for(const suite of [false,true])for(const cancellation of ['yt-navigate-start','pagehide','playback'])test(`an accepted faded-player request still cancels on ${cancellation} (${suite?'Suite':'source'})`,async t=>{
+  const page=await open(t,{sheet:true,suite,homeMiniplayer:true,delay:150});
+  await page.evaluate(cancellation=>{
+    const app=document.querySelector('ytd-app'),player=document.getElementById('movie_player');
+    const resolve=app.resolveCommand;
+    app.resolveCommand=function(endpoint){
+      const result=resolve.call(this,endpoint);player.style.opacity='0';
+      setTimeout(()=>{
+        if(cancellation==='playback'){queueFixture.current='bbbbbbbbbbb';fixture.playerId=queueFixture.current;queueFixture.render();}
+        else dispatchEvent(new Event(cancellation));
+      },25);
+      setTimeout(()=>{player.style.opacity='';},50);
+      return result;
+    };
+  },cancellation);
+  await choose(page,D);
+  await page.waitForFunction(()=>queueFixture.ids.length===4);
+  await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});
+  assert.deepEqual((await snapshot(page)).ids,[A,B,C,D]);assert.equal((await snapshot(page)).adds.length,1);
+  assert.deepEqual((await snapshot(page)).moves,[],'The original native append must never be retried or committed after cancellation');
+});

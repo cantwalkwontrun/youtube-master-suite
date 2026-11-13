@@ -13,6 +13,12 @@ let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); }, { timeout: 10000 });
 
+async function assertSuiteRuntimeHealthy(page, suite) {
+  if (!suite) return;
+  const errors = await page.locator('html').getAttribute('data-yt-master-runtime-errors');
+  assert.ok(!errors || errors === '[]', errors);
+}
+
 async function openFloatingFixture(t, viewport, { suite = false } = {}) {
   const context = await browser.newContext({ viewport, serviceWorkers: "block" });
   await context.route("**/*", route => route.request().url() === WATCH_URL
@@ -23,7 +29,7 @@ async function openFloatingFixture(t, viewport, { suite = false } = {}) {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   t.after(async () => {
-    try { assert.deepEqual(errors, []); }
+    try { assert.deepEqual(errors, []); await assertSuiteRuntimeHealthy(page, suite); }
     finally { await context.close(); }
   });
   await page.goto(WATCH_URL);
@@ -120,13 +126,47 @@ for (const suite of [false, true]) for (const restoration of [false, true]) {
   });
 }
 
+// Language: en-GB. A native reparent may synchronously reconcile its media owner.
+for (const suite of [false, true]) test(`synchronous native media adoption completes restoration without stale player access (${suite ? 'complete Suite' : 'source'})`, async t => {
+  const page = await openFloatingFixture(t, { width: 1280, height: 900 }, { suite });
+  const before = await page.evaluate(() => {
+    const player = document.querySelector('body > #movie_player');
+    const host = document.querySelector('ytd-watch-flexy #player');
+    const insert = host.insertBefore;
+    window.restoreAdoptionCount = 0;
+    host.insertBefore = function (node, next) {
+      const result = insert.call(this, node, next);
+      if (node === player && !restoreAdoptionCount++) {
+        node.querySelector('video').dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
+      }
+      return result;
+    };
+    const video = player.querySelector('video');
+    return { time: video.currentTime, paused: video.paused, playing: fixture.playerId };
+  });
+  await page.evaluate(() => dispatchEvent(new Event('yt-navigate-start')));
+  await settlePlayerFrames(page);
+  assert.equal(await page.locator('ytd-watch-flexy #player > #movie_player').count(), 1);
+  assert.equal(await page.evaluate(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active')), false);
+  assert.equal(await page.evaluate(() => restoreAdoptionCount), 1);
+  assert.deepEqual(await page.evaluate(() => {
+    const video = document.querySelector('#movie_player video');
+    return { time: video.currentTime, paused: video.paused, playing: fixture.playerId };
+  }), before);
+  const runtimeErrors = await page.locator('html').getAttribute('data-yt-master-runtime-errors');
+  assert.ok(!runtimeErrors || runtimeErrors === '[]', runtimeErrors);
+  await page.evaluate(() => dispatchEvent(new Event('yt-navigate-finish')));
+  await page.waitForFunction(() => document.body.classList.contains('ytsmp-scroll-miniplayer-active'));
+  assert.equal(await page.locator('body > #movie_player').count(), 1);
+});
+
 for (const suite of [false, true]) test(`a scale-hidden retained watch cannot donate or lose its player during a current-watch handoff (${suite ? 'complete Suite' : 'source'})`, async t => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
   await context.route("**/*", route => route.request().url() === WATCH_URL
     ? route.fulfill({ contentType: "text/html", body: FIXTURE }) : route.abort());
   const page = await context.newPage(), errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
+  t.after(async () => { try { assert.deepEqual(errors, []); await assertSuiteRuntimeHealthy(page, suite); } finally { await context.close(); } });
   await page.goto(WATCH_URL);
   await page.evaluate(() => {
     const old = document.querySelector("ytd-watch-flexy");
@@ -179,7 +219,7 @@ for (const suite of [false, true]) {
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
       t.after(async () => {
-        try { assert.deepEqual(errors, []); }
+        try { assert.deepEqual(errors, []); await assertSuiteRuntimeHealthy(page, suite); }
         finally { await context.close(); }
       });
       await page.goto(WATCH_URL);

@@ -36,6 +36,11 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     #ytms-mini-navigation-tooltip .ytp-tooltip-bottom-text { display:flex;align-items:center;width:max-content;max-width:100%;box-sizing:border-box; }
     #ytms-mini-navigation-tooltip .ytp-tooltip-keyboard-shortcut { display:inline-flex;align-items:center;justify-content:center;border:1px solid #ffffff4d;min-width:11px;border-radius:4px;margin-left:4px;color:#fff;padding:0 2px; }
   `;
+  if (preferences.hideMiniplayerQueueMenu !== false) style.textContent += `
+    /* Native renderer-stamper header slots only. Keep Save's top-level
+       buttons, extension widgets, video menus and watch-page queues intact. */
+    ytd-miniplayer ytd-playlist-panel-renderer > #container.ytd-playlist-panel-renderer > .header.ytd-playlist-panel-renderer :is(#playlist-action-menu,#overflow-menu,#overflow-menu-top-row).ytd-playlist-panel-renderer > ytd-menu-renderer > :is(yt-icon-button#button.dropdown-trigger.ytd-menu-renderer,yt-button-shape#button-shape.ytd-menu-renderer):not(:is(ytd-playlist-panel-video-renderer,yt-playlist-panel-video-renderer) *) { display:none !important; }
+  `;
   if (!navigation) style.textContent += 'ytd-miniplayer .ytp-miniplayer-controls :is(.ytp-prev-button,.ytp-next-button){display:none !important;}';
   (document.head || document.documentElement).append(style);
   const anchors = new Map();
@@ -165,9 +170,17 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     button.addEventListener('click', event => {
       if (!event.isTrusted) return;
       event.preventDefault(); event.stopPropagation();
+      const request = generation;
       if (!eligibility(player, direction) || button.disabled) return;
       // One native action per activation; never retry an ambiguous result.
-      try { player[direction < 0 ? 'previousVideo' : 'nextVideo'](); } catch { /* Native transition unavailable. */ }
+      try {
+        const navigate = player[direction < 0 ? 'previousVideo' : 'nextVideo'];
+        // Native accessors can synchronously suspend navigation while returning
+        // a callable. Recheck ownership before invoking that captured method.
+        if (request !== generation || disposed || suspended || navigating || document.hidden ||
+            !button.isConnected || button.disabled || typeof navigate !== 'function') return;
+        navigate.call(player);
+      } catch { /* Native transition unavailable. */ }
       schedule();
     });
     records.set(button, { player, direction });
@@ -187,7 +200,7 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     // Native layout changes can move a focused control without pointer events.
     // Keep the existing anchor current, including when navigation is disabled.
     if(anchors.size)refreshPlayTooltip();
-    const activeHosts = new Set();
+    const activeHosts = new Set(), activePlayers = new Set();
     const players = navigation ? [...document.querySelectorAll('ytd-miniplayer #movie_player')] : [];
     visibilityPaths.clear();
     const playControls = new Map();
@@ -210,6 +223,7 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
       const play = plays.length === 1 ? plays[0] : null;
       const controls = play?.closest('.ytp-miniplayer-controls');
       if (!controls || !play) continue;
+      activePlayers.add(player);
       activeHosts.add(host); hosts.add(host); if (!host.hasAttribute('data-ytms-mini-navigation')) host.setAttribute('data-ytms-mini-navigation','');
       for (const direction of [-1, 1]) {
         if(!active())return;
@@ -245,7 +259,9 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     }
     if(!active())return;
     for (const host of hosts) if (!activeHosts.has(host)) { host.removeAttribute('data-ytms-mini-navigation'); hosts.delete(host); }
-    for (const [button,record] of records) if (!activeHosts.has(record.player.closest('ytd-miniplayer')) || !button.isConnected) { button.remove(); records.delete(button); }
+    // A host can retain its hidden previous player during native adoption.
+    // Host identity alone must not retain that player's controls and handlers.
+    for (const [button,record] of records) if (!activePlayers.has(record.player) || !button.isConnected) { button.remove(); records.delete(button); }
     if(tooltipButton)positionTooltip();
   }
   function schedule() { if (!disposed && !suspended && !navigating && !frame) frame = window.requestAnimationFrame(sync); }

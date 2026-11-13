@@ -1,14 +1,15 @@
 // Language: en-GB. Independent local review regressions; synthetic page only.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
-import { launchFixtureBrowser } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
 import { installNativeMenuVisibility } from '../../sources/native-menu-visibility.mjs';
 import { installVideoMenu } from '../../sources/video-menu.mjs';
 import { createMenuLayout } from '../../sources/menu-layout.mjs';
 let browser;
 before(async () => { browser = await launchFixtureBrowser(); });
 after(async () => { await browser?.close(); });
-async function fixture(t, { hiddenAncestor = false, sheet = false } = {}) {
+async function fixture(t, { hiddenAncestor = false, sheet = false, compiled = false } = {}) {
   const context = await browser.newContext({ serviceWorkers:'block' });
   await context.route('**/*', route => route.request().isNavigationRequest()
     ? route.fulfill({ contentType:'text/html', body:'<!doctype html><html lang="en-GB"><style>ytd-app,ytd-popup-container,ytd-menu-popup-renderer,ytd-menu-service-item-renderer,yt-sheet-view-model,yt-list-view-model,yt-list-item-view-model{display:block}[hidden]{display:none!important}</style><body><ytd-app><div id="ancestor"><ytd-popup-container></ytd-popup-container></div></ytd-app>' })
@@ -35,6 +36,12 @@ async function fixture(t, { hiddenAncestor = false, sheet = false } = {}) {
     document.querySelector('#ancestor').hidden = hiddenAncestor;
     window.review122 = { popup, data, dispose:(0,eval)('('+installer+')')({ document, window, preferences:{ menuShowDownload:false, menuShowHype:false } }) };
   }, { hiddenAncestor, sheet, installer:installNativeMenuVisibility.toString() });
+  if(compiled){
+    await page.evaluate(()=>{review122.dispose();localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{menuShowDownload:false,menuShowHype:false,theatreMode:false,miniplayerEnabled:false}}));});
+    await page.addScriptTag({content:readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8')});
+    const manifest=JSON.parse(readFileSync(new URL('../../release-manifest.json',import.meta.url),'utf8'));
+    await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true,timeoutMs:10000});
+  }
   await settle(page);
   return page;
 }
@@ -87,8 +94,8 @@ test('external ancestor observation ignores unrelated descendant style churn', a
   assert.equal(reads,0);
 });
 
-for (const clone of [false,true]) test(`distinct equivalent sheet models remain supported (${clone?'cloned wrapper':'cloned inner model'})`, async t => {
-  const page=await fixture(t,{sheet:true});
+for (const compiled of [false,true]) for (const clone of [false,true]) test(`distinct equivalent sheet models remain supported (${compiled?'Suite':'source'}, ${clone?'cloned wrapper':'cloned inner model'})`, async t => {
+  const page=await fixture(t,{sheet:true,compiled});
   await page.evaluate(clone=>{
     for(const row of review122.popup.querySelectorAll('yt-list-item-view-model')) {
       const value=JSON.parse(JSON.stringify(row.data));

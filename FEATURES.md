@@ -4,7 +4,7 @@ lang: en-GB
 
 # Optional controls and compatibility
 
-The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting and the current-video menu start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
+The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting, the current-video menu and queue-header menu cleanup start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
 
 ## Membership offers
@@ -175,5 +175,6 @@ Compact queues retain the native corner alignment, including the bottom inset. N
 | feed / Feed cleanup | Show hidden-card reveal control | On | Keep the Suite’s temporary reveal control for filtered feed cards. |
 | miniplayer / Native queue | Fit native queue to contents | On | Short queues fit their rows and retain native corner alignment. Longer queues scroll. Native height is restored temporarily during drag and resize interactions, then fitted again. |
 | miniplayer / Native queue | Show current video menu | On | Expose the playing queue item's own native menu when the queue and menu can be verified. Native removal may advance playback. No commands are copied from other videos. |
+| miniplayer / Native queue | Hide queue header menu | On | Hide the native overflow trigger above miniplayer queue rows. Keep top-level Save buttons, individual video menus and watch-page queue menus. Turn this off to restore the header trigger. |
 
 The watched-video threshold also supports 5%, 10%, 25%, 50% and 75%, alongside the existing values. Settings export/import includes every control and accepts earlier valid backups, supplying defaults only for newly introduced fields.

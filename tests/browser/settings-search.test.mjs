@@ -81,6 +81,75 @@ test('search highlights literal keywords without changing result text, controls 
   assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
 });
 
+test('opening a search result keeps its row and literal keyword matches highlighted', async t => {
+  const page = await pageFor(t);
+  const control = page.locator('#ytms-hideShorts');
+  const row = control.locator('..');
+  const original = await row.textContent();
+  const checked = await control.isChecked();
+  await control.evaluate(el => { window.originalSearchControl = el; });
+  await page.locator('#ytms-settings-search').fill('rem');
+  await page.locator('.settings-search-result[data-target="hideShorts"]').click();
+  assert.equal(await row.evaluate(el => el.classList.contains('settings-search-destination')), true);
+  assert.deepEqual(await row.locator('mark').allTextContents(), ['Rem']);
+  assert.equal(await row.textContent(), original);
+  assert.equal(await control.evaluate(el => el === window.originalSearchControl && document.activeElement === el), true);
+  assert.equal(await control.isChecked(), checked);
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+  // Moving the pointer or focus must not erase the user's visual reference.
+  await page.locator('#ytms-settings-search').click();
+  assert.equal(await row.locator('mark').count(), 1);
+  assert.equal(await row.evaluate(el => getComputedStyle(el).outlineStyle), 'solid');
+  await control.setChecked(!checked);
+  assert.equal(await page.locator('#ytms-save-preview').isEnabled(), true);
+});
+
+test('destination highlighting clears on new searches, tab changes and reopening without damaging labels', async t => {
+  const page = await pageFor(t);
+  const search = page.locator('#ytms-settings-search');
+  const control = page.locator('#ytms-hideShorts');
+  const row = control.locator('..');
+  const original = await row.textContent();
+  const openResult = async () => {
+    await search.fill('rem');
+    await page.locator('.settings-search-result[data-target="hideShorts"]').click();
+    assert.equal(await row.locator('mark').count(), 1);
+  };
+  await openResult();
+  await search.fill('Hype');
+  assert.equal(await row.locator('mark').count(), 0);
+  assert.equal(await page.locator('.settings-search-destination').count(), 0);
+  await search.press('Escape');
+  await openResult();
+  await page.locator('#ytms-tab-player').click();
+  assert.equal(await page.locator('.settings-search-destination').count(), 0);
+  await openResult();
+  await page.locator('#ytms-cancel-panel').click();
+  await page.locator('#ytms-settings-button').click();
+  assert.equal(await page.locator('.settings-search-destination, .settings-search-destination-match').count(), 0);
+  assert.equal(await row.textContent(), original);
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+});
+
+test('keyboard results mark nested menu controls and conditional controlling rows', async t => {
+  const page = await pageFor(t);
+  const search = page.locator('#ytms-settings-search');
+  await search.fill('Show Hype in video menus');
+  await page.locator('.settings-search-result[data-target="menuShowHype"]').focus();
+  await page.keyboard.press('Enter');
+  const action = page.locator('#ytms-menuShowHype');
+  assert.equal(await action.evaluate(el => el === document.activeElement), true);
+  assert.equal(await page.locator('[data-menu-item="hype"].settings-search-destination').count(), 1);
+  assert.deepEqual(await page.locator('[data-menu-item="hype"] mark').allTextContents(), ['Hype']);
+  await search.fill('viewer colour');
+  await page.locator('.settings-search-result[data-target="viewer-hex"]').click();
+  const target = page.locator('.settings-search-destination');
+  assert.equal(await target.count(), 1);
+  assert.equal(await target.isVisible(), true);
+  assert.equal(await target.locator('#ytms-colour-mode, #ytms-viewer-hex').count(), 1);
+  assert.equal(await page.locator('#ytms-save-preview').isDisabled(), true);
+});
+
 test('search includes descriptive text and can reveal a collapsed context-menu control', async t => {
   const page = await pageFor(t);
   const search = page.locator('#ytms-settings-search');
@@ -221,6 +290,21 @@ for (const light of [false, true]) {
     await result.click();
     assert.equal(await page.locator('#ytms-settings-dialog nav').isVisible(), true);
     assert.equal(await page.locator('#ytms-timelinePreviewSize').isVisible(), true);
+    const destination = await page.locator('.settings-search-destination').evaluate(el => {
+      const style = getComputedStyle(el), mark = getComputedStyle(el.querySelector('mark'));
+      const content = el.closest('.content'), box = content.getBoundingClientRect();
+      const control = el.querySelector('select').getBoundingClientRect();
+      return { outline: style.outlineStyle, outlineColor: style.outlineColor,
+        surface: getComputedStyle(el.closest('dialog')).backgroundColor,
+        markColor: mark.color, markBackground: mark.backgroundColor,
+        scrollWidth: content.scrollWidth, clientWidth: content.clientWidth,
+        controlVisible: control.top >= box.top && control.bottom <= box.bottom };
+    });
+    assert.equal(destination.outline, 'solid');
+    assert.ok(contrast(destination.outlineColor, destination.surface) >= 3, JSON.stringify(destination));
+    assert.ok(contrast(destination.markColor, destination.markBackground) >= 4.5, JSON.stringify(destination));
+    assert.ok(destination.scrollWidth <= destination.clientWidth + 1, JSON.stringify(destination));
+    assert.equal(destination.controlVisible, true);
   });
 }
 

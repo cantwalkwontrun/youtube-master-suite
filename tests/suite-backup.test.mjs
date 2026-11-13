@@ -114,6 +114,51 @@ test('older backups gain automatic sizing and personal marker/update data stays 
   assert.equal(f.backup.preview(JSON.stringify(documentFor(f, { miniplayerWidth: '900' }))).ok, false);
 });
 
+// Language: en-GB. Complete pre-Hype backups must retain their original menu choices.
+for (const customised of [false, true]) test(`pre-Hype backups restore their existing menu order and groups (${customised ? 'custom' : 'default'})`, () => {
+  const f = fixture();
+  const old = documentFor(f, { hideChat: false, menuShowDownload: true }, [rule()]);
+  delete old.settings.menuShowHype;
+  old.settings.menuItemOrder = old.settings.menuItemOrder.filter(id => id !== 'hype');
+  if (customised) {
+    old.settings.menuItemOrder.reverse();
+    old.settings.menuLayout = createMenuLayout().fromPreferences(old.settings);
+    old.settings.menuLayout.nodes = old.settings.menuLayout.nodes.filter(node => node.id !== 'hype');
+    old.settings.menuLayout.nodes.push({ id: 'submenu-sharing', name: 'Sharing', parent: 'root' });
+    old.settings.menuLayout.nodes.find(node => node.id === 'share').parent = 'submenu-sharing';
+  }
+  const order = [...old.settings.menuItemOrder];
+  const preview = f.backup.preview(JSON.stringify(old));
+  assert.equal(preview.ok, true, preview.error);
+  assert.deepEqual(f.writes, [], 'Previewing never writes the old or migrated settings');
+  const restored = f.backup.restore(preview.preview);
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.values.menuShowHype, true);
+  assert.equal(restored.values.menuShowDownload, true);
+  assert.equal(restored.values.hideChat, false);
+  assert.deepEqual(restored.values.menuItemOrder, [...order, 'hype']);
+  if (customised) assert.deepEqual(restored.values.menuLayout.nodes.filter(node => node.id !== 'hype'), old.settings.menuLayout.nodes);
+  assert.deepEqual(f.channelAge.read(), [rule()]);
+});
+
+test('pre-Hype migration accepts only complete former orders and keeps strict field validation', () => {
+  const f = fixture();
+  for (const mutate of [
+    values => { values.menuItemOrder = values.menuItemOrder.filter(id => id !== 'report'); },
+    values => { values.menuItemOrder[0] = values.menuItemOrder[1]; },
+    values => { values.menuItemOrder[0] = 'unknown-action'; },
+    values => { values.menuShowHype = 'true'; },
+    values => { delete values.hideChat; },
+  ]) {
+    const old = documentFor(f);
+    delete old.settings.menuShowHype;
+    old.settings.menuItemOrder = old.settings.menuItemOrder.filter(id => id !== 'hype');
+    mutate(old.settings);
+    assert.equal(f.backup.preview(JSON.stringify(old)).ok, false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
 test("backup factory embeds without imports or external runtime state", () => {
   const f = fixture();
   const create = vm.runInNewContext(`(${createSuiteBackup.toString()})`, { TextEncoder });

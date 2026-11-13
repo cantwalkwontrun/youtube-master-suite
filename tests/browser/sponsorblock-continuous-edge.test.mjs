@@ -102,11 +102,32 @@ test('a transition from an unexpected foreign start remains native',async t=>{
   const page=await fixture(t);
   await page.addStyleTag({content:'#movie_player .ytp-tooltip:not(.sponsorCategoryTooltipVisible){transform:translateY(-250px)!important}'});
   await page.waitForTimeout(350);
-  await page.locator('.ytp-tooltip').evaluate(tip=>{tip.classList.add('sponsorCategoryTooltipVisible');tip.querySelector('.sponsorCategoryTooltip').style.removeProperty('display')});
+  // Keep the foreign motion active while browser automation enters the track.
+  // A 250 ms transition can finish before hover arrives under concurrent load.
+  await page.locator('.ytp-tooltip').evaluate(tip=>{tip.style.transition='transform 1500ms linear';window.foreignTransitionStarted=performance.now();tip.classList.add('sponsorCategoryTooltipVisible');tip.querySelector('.sponsorCategoryTooltip').style.removeProperty('display')});
   await page.waitForTimeout(50);
   await page.locator('.ytp-progress-bar').hover(); await page.waitForTimeout(50);
-  const observed=await page.locator('.ytp-tooltip').evaluate(tip=>({scale:tip.style.scale,width:tip.querySelector('.ytp-tooltip-bg').getBoundingClientRect().width,transform:getComputedStyle(tip).transform}));
-  assert.equal(observed.scale,''); assert.ok(observed.width<210,JSON.stringify(observed));
+  const observed=await page.locator('.ytp-tooltip').evaluate(tip=>({scale:tip.style.scale,width:tip.querySelector('.ytp-tooltip-bg').getBoundingClientRect().width,transform:getComputedStyle(tip).transform,elapsed:performance.now()-window.foreignTransitionStarted,animations:tip.getAnimations().map(animation=>({state:animation.playState,property:animation.transitionProperty,onTooltip:animation.effect?.target===tip,currentTime:animation.currentTime,duration:animation.effect.getComputedTiming().duration}))}));
+  assert.ok(observed.animations.some(animation=>animation.state==='running'&&animation.property==='transform'&&animation.onTooltip),JSON.stringify(observed));
+  assert.equal(observed.scale,'',JSON.stringify(observed)); assert.ok(observed.width<210,JSON.stringify(observed));
+});
+test('a documented sponsor endpoint can enlarge after its foreign transition finishes',async t=>{
+  const page=await fixture(t);
+  await page.addStyleTag({content:'#movie_player .ytp-tooltip:not(.sponsorCategoryTooltipVisible){transform:translateY(-250px)!important}'});
+  await page.waitForTimeout(350);
+  await page.locator('.ytp-tooltip').evaluate(tip=>{
+    tip.style.transition='transform 100ms linear';
+    tip.classList.add('sponsorCategoryTooltipVisible');
+    tip.querySelector('.sponsorCategoryTooltip').style.removeProperty('display');
+  });
+  await page.waitForFunction(()=>{
+    const tip=document.querySelector('.ytp-tooltip');
+    return !tip.getAnimations().some(animation=>animation.transitionProperty==='transform'&&animation.playState==='running')&&
+      Math.abs(new DOMMatrixReadOnly(getComputedStyle(tip).transform).f+14)<.1;
+  },null,{polling:50,timeout:3000});
+  await page.locator('.ytp-progress-bar').hover();
+  await page.waitForFunction(()=>document.querySelector('.ytp-tooltip').style.scale==='2.4',null,{polling:50,timeout:3000});
+  assert.ok(Math.abs(await page.locator('.ytp-tooltip-bg').evaluate(node=>node.getBoundingClientRect().width)-480)<1);
 });
 test('a first observed transition between documented nonzero sponsor offsets stays large',async t=>{
   const page=await fixture(t);

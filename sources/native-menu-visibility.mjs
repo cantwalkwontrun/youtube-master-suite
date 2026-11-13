@@ -6,23 +6,42 @@ export function installNativeMenuVisibility({ document, window, preferences = {}
   const popupSelector='ytd-menu-popup-renderer, yt-sheet-view-model';
   const rowSelector='ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';
   const marker='data-ytms-native-menu-hidden';
+  const ambiguousModel=Symbol('ambiguous native menu model');
   const owned=new Map(); let roots=[], ancestors=new Set(), disposed=false, navigating=false, pageHidden=false, scheduled=false, generation=0;
   const controller=node=>node?.polymerController || node?.getPolymerController?.() || node;
-  const model=node=>typeof node?.componentProps?.data==='function' ? node.componentProps.data() : controller(node)?.data;
+  function signature(value) {
+    let fields=0;
+    const json=JSON.stringify(value,(_key,entry)=>{
+      if(++fields>4000 || typeof entry==='string'&&entry.length>16384)throw Error('Unsupported native menu model');
+      return entry;
+    });
+    return typeof json==='string'&&json.length<=131072?json:null;
+  }
+  function model(node) {
+    if(typeof node?.componentProps?.data!=='function')return controller(node)?.data;
+    const current=node.componentProps.data(),legacy=controller(node)?.data;
+    // During native recycling both model APIs can briefly expose different
+    // generations. Neither alone may authorise hiding a newly rebound row.
+    if(current&&typeof current==='object'&&legacy&&typeof legacy==='object'&&current!==legacy){
+      // Sheet rows expose either their item wrapper or its inner model. Those
+      // equivalent API shapes are not evidence of different generations.
+      const sheetRow=node.matches('yt-list-item-view-model, yt-download-list-item-view-model');
+      const normalise=value=>sheetRow ? value.downloadListItemViewModel || value.listItemViewModel || value : value;
+      const left=normalise(current),right=normalise(legacy);
+      if(left!==right){
+        const stamp=signature(left);
+        if(stamp===null||stamp!==signature(right))return ambiguousModel;
+      }
+    }
+    return current;
+  }
   function sheetBindingMatches(row,item) {
     const bound=model(row), expected=item?.downloadListItemViewModel || item?.listItemViewModel;
+    if(bound===ambiguousModel)return false;
     // Current native sheets can expose no per-row model. Preserve that contract,
     // but never override an explicit object binding that disagrees with its slot.
     if(!bound || typeof bound!=='object' || bound===item || bound===expected)return true;
     const candidate=bound.downloadListItemViewModel || bound.listItemViewModel || bound;
-    function signature(value) {
-      let fields=0;
-      const json=JSON.stringify(value,(_key,entry)=>{
-        if(++fields>4000 || typeof entry==='string'&&entry.length>16384)throw Error('Unsupported row model');
-        return entry;
-      });
-      return typeof json==='string'&&json.length<=131072?json:null;
-    }
     const expectedSignature=signature(expected);
     return expectedSignature!==null&&expectedSignature===signature(candidate);
   }
