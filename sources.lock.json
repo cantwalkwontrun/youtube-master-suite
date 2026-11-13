@@ -38,8 +38,8 @@
     },
     "watchLayoutCleaner": {
       "path": "sources/modules/youtube-watch-layout-cleaner.user.js",
-      "version": "1.100",
-      "sha256": "7f8094375bf4e34a4ad63531d8d7574fbfb178a24c373b460795ce86c1e0d4c0"
+      "version": "1.101",
+      "sha256": "24ef99197636ce77968f3d638f1b6526a761fa69088120d4164d51c3717779c5"
     }
   }
 }
