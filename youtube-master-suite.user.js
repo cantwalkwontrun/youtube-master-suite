@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.125
+// @version      1.2.126
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.125";
+  const MASTER_VERSION = "1.2.126";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -7049,8 +7049,15 @@
     if (url.hostname === 'github.com' && !url.port) {
       const path = url.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/releases(?:\/latest)?\/?$/);
       if (!path || path[2] === '.' || path[2] === '..') return null;
-      const [, owner, repository] = path;
-      return { type: 'github', url: `https://github.com/${owner}/${repository}/releases/latest`, owner, repository,
+      let [, owner, repository] = path;
+      const configuredUrl = `https://github.com/${owner}/${repository}/releases/latest`;
+      // This exact Suite repository moved accounts. Route its known former
+      // address in memory, preserving saved records and every custom source.
+      // Download validation still requires the canonical repository below.
+      if (owner.toLowerCase() === 'noswimmingplease' && repository.toLowerCase() === 'youtube-master-suite') {
+        owner = 'cantwalkwontrun'; repository = 'youtube-master-suite';
+      }
+      return { type: 'github', url: configuredUrl, owner, repository,
         requestUrl: `https://api.github.com/repos/${owner}/${repository}/releases/latest` };
     }
     if (!url.pathname.endsWith(`/${manifestName}`)) return null;
@@ -7247,7 +7254,7 @@
   return Object.freeze({ key, readSource, saveSource, check, installationUrl, cancel });
 })({
     getStorage: () => storage, installedVersion: MASTER_VERSION,
-    defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
+    defaultSourceUrl: 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/latest',
     fetch: (...args) => window.fetch(...args),
   });
   suite.writeMarker = createSettingsWriteGuard({

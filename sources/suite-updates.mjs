@@ -53,8 +53,15 @@ export function createSuiteUpdates({
     if (url.hostname === 'github.com' && !url.port) {
       const path = url.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/releases(?:\/latest)?\/?$/);
       if (!path || path[2] === '.' || path[2] === '..') return null;
-      const [, owner, repository] = path;
-      return { type: 'github', url: `https://github.com/${owner}/${repository}/releases/latest`, owner, repository,
+      let [, owner, repository] = path;
+      const configuredUrl = `https://github.com/${owner}/${repository}/releases/latest`;
+      // This exact Suite repository moved accounts. Route its known former
+      // address in memory, preserving saved records and every custom source.
+      // Download validation still requires the canonical repository below.
+      if (owner.toLowerCase() === 'noswimmingplease' && repository.toLowerCase() === 'youtube-master-suite') {
+        owner = 'cantwalkwontrun'; repository = 'youtube-master-suite';
+      }
+      return { type: 'github', url: configuredUrl, owner, repository,
         requestUrl: `https://api.github.com/repos/${owner}/${repository}/releases/latest` };
     }
     if (!url.pathname.endsWith(`/${manifestName}`)) return null;

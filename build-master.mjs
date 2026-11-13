@@ -35,7 +35,7 @@ import { createCustomJavascript } from "./sources/custom-javascript.mjs";
 import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.125";
+const MASTER_VERSION = "1.2.126";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -2431,7 +2431,7 @@ ${runtimeMutationCoverageHelpers}
   suite.playheadMarker = (${createPlayheadMarker.toString()})({ document, window, getStorage: () => storage, subscribeStorage: storage.subscribe });
   suite.updates = (${createSuiteUpdates.toString()})({
     getStorage: () => storage, installedVersion: MASTER_VERSION,
-    defaultSourceUrl: 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest',
+    defaultSourceUrl: 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/latest',
     fetch: (...args) => window.fetch(...args),
   });
   suite.writeMarker = createSettingsWriteGuard({

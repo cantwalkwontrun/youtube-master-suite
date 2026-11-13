@@ -1,13 +1,17 @@
 // Language: en-GB. Isolated Credits update controls with synthetic release data.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
 import { createSettingsExtraControls } from '../../sources/settings-extra-controls.mjs';
 import { createSuiteUpdates } from '../../sources/suite-updates.mjs';
-import { launchFixtureBrowser } from './fixture-browser.mjs';
+import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs';
 
 const PAGE_URL = 'https://www.youtube.com/fixture-settings-updates';
 const SOURCE_URL = 'https://github.com/fixture-owner/fixture-suite/releases/latest';
 const API_URL = 'https://api.github.com/repos/fixture-owner/fixture-suite/releases/latest';
+const LEGACY_SUITE_SOURCE = 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest';
+const CURRENT_SUITE_SOURCE = 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/latest';
+const CURRENT_SUITE_API = 'https://api.github.com/repos/cantwalkwontrun/youtube-master-suite/releases/latest';
 const SOURCE_KEY = 'yt-master-suite.update-source.v1';
 const SETTINGS_KEY = 'yt-master-suite.settings.v1';
 const HASH = 'a'.repeat(64);
@@ -15,6 +19,10 @@ const downloadUrl = version => `https://github.com/fixture-owner/fixture-suite/r
 const release = (version = '1.2.62') => ({ draft: false, prerelease: false, published_at: '2026-01-01T12:00:00Z',
   tag_name: `v${version}`, assets: [{ name: 'youtube-master-suite.user.js', state: 'uploaded', size: 900000,
     digest: `sha256:${HASH}`, browser_download_url: downloadUrl(version) }] });
+const suiteDownload = version => `https://github.com/cantwalkwontrun/youtube-master-suite/releases/download/v${version}/youtube-master-suite.user.js`;
+const suiteRelease = (version = '1.2.126') => {
+  const value = release(version); value.assets[0].browser_download_url = suiteDownload(version); return value;
+};
 const html = `<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><title>Synthetic update settings</title>
 <style>dialog{width:640px}section{padding:8px}input[type=url]{width:100%}.extra-settings-controls{display:flex;gap:8px;margin:12px 0}button,a{padding:8px}</style>
 </head><body><button id="fixture-open">Open settings</button><dialog id="ytms-settings-dialog">
@@ -28,13 +36,13 @@ let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); }, { timeout: 10000 });
 
-async function pageFor(t, { initialSource = null } = {}) {
+async function pageFor(t, { initialSource = null, defaultSource = SOURCE_URL, apiUrl = API_URL, releaseValue = release() } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
-  const network = { requests: [], hold: false, pending: [], value: release(), onRequest: null,
+  const network = { requests: [], hold: false, pending: [], value: releaseValue, onRequest: null,
     release() { this.pending.splice(0).forEach(resolve => resolve()); } };
   await context.route('**/*', async route => {
     if (route.request().url() === PAGE_URL) return route.fulfill({ contentType: 'text/html', body: html });
-    if (route.request().url() === API_URL) {
+    if (route.request().url() === apiUrl) {
       network.requests.push(route.request());
       network.onRequest?.();
       if (network.hold) await new Promise(resolve => network.pending.push(resolve));
@@ -64,7 +72,7 @@ async function pageFor(t, { initialSource = null } = {}) {
     const dialog = document.getElementById('ytms-settings-dialog');
     const suite = {
       playheadMarker: { defaultSize:24, read:()=>({ok:true,value:null}), prepareFile:async()=>({ok:false,error:'No fixture image'}), save:()=>({ok:true}), remove:()=>({ok:true}) },
-      updates: createSuiteUpdates({getStorage:()=>localStorage,installedVersion:'1.2.61',defaultSourceUrl:${JSON.stringify(SOURCE_URL)},fetch:(url,options)=>fetch(url,options)})
+      updates: createSuiteUpdates({getStorage:()=>localStorage,installedVersion:'1.2.61',defaultSourceUrl:${JSON.stringify(defaultSource)},fetch:(url,options)=>fetch(url,options)})
     };
     const controls = createSettingsExtraControls(document,window,suite,dialog);
     window.fixture = { controls, suite, draftEvents:[], installEvents:[] };
@@ -121,6 +129,81 @@ test('the prefilled latest release checks without typing and clearing a custom s
   await page.locator('#ytms-updates-check').click();
   await page.locator('#ytms-updates-install').waitFor({ state: 'visible' });
   assert.equal(network.requests.length, 2);
+});
+
+for(const mode of ['current default','legacy default','legacy saved source'])test(`the known Suite owner migration checks safely from ${mode}`,async t=>{
+  const initialSource=mode==='legacy saved source'?JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2):null;
+  const expected=mode==='current default'?CURRENT_SUITE_SOURCE:LEGACY_SUITE_SOURCE;
+  const {page,network}=await pageFor(t,{initialSource,defaultSource:mode==='legacy default'?LEGACY_SUITE_SOURCE:CURRENT_SUITE_SOURCE,apiUrl:CURRENT_SUITE_API,releaseValue:suiteRelease()});
+  const mainBefore=await page.evaluate(key=>localStorage.getItem(key),SETTINGS_KEY);
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),expected);
+  assert.equal(network.requests.length,0,'Reading either known source never checks automatically');
+  await page.locator('#ytms-updates-check').click();
+  await page.locator('#ytms-updates-install').waitFor({state:'visible'});
+  assert.equal(network.requests.length,1);assert.equal(network.requests[0].url(),CURRENT_SUITE_API);
+  assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),suiteDownload('1.2.126'));
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),expected);
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),initialSource,'Saved source bytes are retained');
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),SETTINGS_KEY),mainBefore);
+  assert.deepEqual(await page.evaluate(()=>fixture.draftEvents),[]);
+});
+
+test('an unrelated repository under the former owner remains a custom source',async t=>{
+  const custom='https://github.com/noswimmingplease/synthetic-other-suite/releases/latest';
+  const customApi='https://api.github.com/repos/noswimmingplease/synthetic-other-suite/releases/latest';
+  const customDownload='https://github.com/noswimmingplease/synthetic-other-suite/releases/download/v1.2.62/youtube-master-suite.user.js';
+  const value=release();value.assets[0].browser_download_url=customDownload;
+  const raw=JSON.stringify({version:1,url:custom});
+  const {page,network}=await pageFor(t,{initialSource:raw,defaultSource:CURRENT_SUITE_SOURCE,apiUrl:customApi,releaseValue:value});
+  await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
+  assert.equal(network.requests[0].url(),customApi);
+  assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),customDownload);
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),raw);
+});
+
+test('replacing a legacy source with its alias-equivalent URL invalidates the old installation approval',async t=>{
+  const raw=JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2);
+  const {page}=await pageFor(t,{initialSource:raw,defaultSource:CURRENT_SUITE_SOURCE,apiUrl:CURRENT_SUITE_API,releaseValue:suiteRelease()});
+  await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
+  const changed=JSON.stringify({version:1,url:CURRENT_SUITE_SOURCE});
+  await page.evaluate(({key,value})=>localStorage.setItem(key,value),{key:SOURCE_KEY,value:changed});
+  await page.locator('#ytms-updates-install').click();
+  assert.deepEqual(await page.evaluate(()=>fixture.installEvents),[{type:'click',prevented:true,href:null}]);
+  assert.equal(await page.locator('#ytms-updates-install').isHidden(),true);
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),changed);
+});
+
+for(const saved of [false,true])test(`compiled Credits use the current Suite repository and retain saved source bytes (${saved?'legacy source':'default'})`,async t=>{
+  const context=await browser.newContext({serviceWorkers:'block'});t.after(()=>context.close());
+  const requests=[],url='https://www.youtube.com/watch?v=aaaaaaaaaaa';
+  const source=readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8');
+  const manifest=JSON.parse(readFileSync(new URL('../../release-manifest.json',import.meta.url),'utf8'));
+  const body=readFileSync(new URL('./watch-page.html',import.meta.url),'utf8');
+  await context.route('**/*',route=>{
+    if(route.request().url()===url)return route.fulfill({contentType:'text/html',body});
+    if(route.request().url()===CURRENT_SUITE_API){requests.push(route.request().url());return route.fulfill({contentType:'application/json',headers:{'access-control-allow-origin':'https://www.youtube.com'},body:JSON.stringify(suiteRelease('1.2.127'))});}
+    return route.abort();
+  });
+  const raw=saved?JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2):null;
+  await context.addInitScript(({key,raw})=>{
+    if(location.origin!=='https://www.youtube.com')return;
+    localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{theatreMode:false,viewerColour:'#ABCDEF'}}));
+    if(raw!==null)localStorage.setItem(key,raw);
+  },{key:SOURCE_KEY,raw});
+  await context.addInitScript({content:source});
+  const page=await context.newPage(),errors=[];page.setDefaultTimeout(7000);
+  page.on('pageerror',error=>errors.push(error.message));t.after(()=>assert.deepEqual(errors,[]));
+  await page.goto(url);await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true,errors,timeoutMs:10000});
+  const mainBefore=await page.evaluate(key=>fixtureStorage.getItem(key),SETTINGS_KEY);
+  assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SOURCE_KEY),raw);
+  await page.locator('#ytms-settings-button').click();await page.locator('#ytms-tab-credits').click();
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),saved?LEGACY_SUITE_SOURCE:CURRENT_SUITE_SOURCE);
+  assert.deepEqual(requests,[]);
+  await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
+  assert.deepEqual(requests,[CURRENT_SUITE_API]);
+  assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),suiteDownload('1.2.127'));
+  assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SOURCE_KEY),raw);
+  assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SETTINGS_KEY),mainBefore);
 });
 
 test('checking reads the saved source without writing it and exposes a newer-release install link', async t => {
