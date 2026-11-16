@@ -99,7 +99,7 @@ function runSelfTests() {
 // @namespace youtube.master-suite
 // @version 0.0.0
 // @description Synthetic installed-source fixture
-// @author Citizen
+// @author cantwalkwontrun
 // @license GNU GPLv3
 // @updateURL none
 // @downloadURL none

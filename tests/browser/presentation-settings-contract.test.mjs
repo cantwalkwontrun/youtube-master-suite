@@ -10,6 +10,11 @@ before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000
 after(async () => { await browser?.close(); }, { timeout: 10000 });
 
 const cases = [
+  ['hideHomeFeaturedBanners','/','<ytd-browse><div id="big-yoodle" data-target><ytd-statement-banner-renderer>Featured collection</ytd-statement-banner-renderer></div></ytd-browse>'],
+  ['hideHomeFeaturedBanners','/','<ytd-browse><ytd-rich-grid-renderer><div id="masthead-ad" data-target>Promotion</div></ytd-rich-grid-renderer></ytd-browse>'],
+  ['hideHomeFeaturedBanners','/','<ytd-browse><ytd-rich-section-renderer data-target><div id="content"><ytd-statement-banner-renderer>Featured collection</ytd-statement-banner-renderer></div></ytd-rich-section-renderer></ytd-browse>'],
+  ['hideHomeFeaturedBanners','/','<ytd-browse><ytd-rich-section-renderer data-target><div id="content"><yt-statement-banner-view-model>Featured collection</yt-statement-banner-view-model></div></ytd-rich-section-renderer></ytd-browse>'],
+  ['hideHomeFeaturedBanners','/','<ytd-browse><ytd-rich-section-renderer data-target><div id="content"><div class="ytStatementBannerViewModelHost">Featured collection</div></div></ytd-rich-section-renderer></ytd-browse>'],
   ['hideSubscriptionsHeaders','/feed/subscriptions','<ytd-browse><ytd-rich-grid-renderer><div id="header" data-target>Categories</div></ytd-rich-grid-renderer></ytd-browse>'],
   ['hideHomePosts','/','<ytd-browse><ytd-post-renderer data-target>Post</ytd-post-renderer></ytd-browse>'],
   ['hideAllComments','/watch?v=aaaaaaaaaaa','<ytd-watch-flexy><ytd-comments data-target>Comments</ytd-comments></ytd-watch-flexy>'],

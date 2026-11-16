@@ -75,6 +75,7 @@ export function createMenuEditor(document, layouts, options) {
     previewList.replaceChildren();
     function children(parent, target) {
       for (const node of layout.nodes.filter(item => item.parent === parent)) {
+        if (node.id === 'hype') continue;
         if (!isGroup(node) && !node.visible) continue;
         const item = el('li', label(node));
         if (isGroup(node)) {
@@ -108,7 +109,7 @@ export function createMenuEditor(document, layouts, options) {
     add.disabled = count >= layouts.limits.maxGroups || !layouts.validate(trial);
     add.title = `Up to ${layouts.limits.maxGroups} submenus and ${layouts.limits.maxDepth} nested submenu levels.`;
     list.replaceChildren();
-    const siblings = layout.nodes.filter(node => node.parent === current);
+    const siblings = layout.nodes.filter(node => node.parent === current && node.id !== 'hype');
     for (const [index, node] of siblings.entries()) {
       const item = el('li'); item.dataset.menuItem = node.id;
       const title = el('span', label(node), 'menu-editor-item-label');
@@ -119,8 +120,7 @@ export function createMenuEditor(document, layouts, options) {
       } else {
         const visible = el('input'); visible.type = 'checkbox'; visible.checked = node.visible;
         visible.setAttribute('aria-label', `Show ${label(node)}`);
-        const legacyIds = { download:'menuShowDownload', hype:'menuShowHype', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
-        visible.id = 'ytms-' + (legacyIds[node.id] || 'menu-action-' + node.id);
+        visible.id = 'ytms-' + (Object.hasOwn(layouts.actionSettings, node.id) ? layouts.actionSettings[node.id].key : 'menu-action-' + node.id);
         visible.addEventListener('change', () => {
           if (invalid) { visible.checked = node.visible; name.focus(); return; }
           const next = effective(); next.nodes.find(entry => entry.id === node.id).visible = visible.checked;

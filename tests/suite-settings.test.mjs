@@ -13,6 +13,21 @@ function fixture(seed = {}) {
   return { storage, data, settings: createSuiteSettings(() => storage, () => true) };
 }
 
+test('legacy editor Hype visibility moves to Player without changing storage or other controls', () => {
+  const layout=createMenuLayout().fromPreferences({});
+  layout.nodes.push({id:'hype',parent:'root',visible:false});
+  const raw=JSON.stringify({version:1,values:{menuLayout:layout,menuShowHype:true,hideChat:false}});
+  const {settings,storage,data}=fixture({'yt-master-suite.settings.v1':raw});
+  assert.equal(settings.initial.menuShowHype,false);
+  assert.equal(settings.initial.hideChat,false);
+  assert.ok(!settings.initial.menuLayout.nodes.some(node=>node.id==='hype'));
+  assert.equal(data.get(settings.key),raw);
+  assert.equal(settings.save({...settings.read(),menuShowHype:true}).ok,true);
+  const next=createSuiteSettings(()=>storage,()=>true);
+  assert.equal(next.initial.menuShowHype,true);
+  assert.equal(next.initial.hideChat,false);
+});
+
 test('custom submenu settings preserve legacy preferences and detached immutable running snapshots', () => {
   const { settings, storage, data } = fixture({ 'yt-master-suite.settings.v1': JSON.stringify({ version: 1,
     values: { menuItemOrder: ['share', 'playNext'], menuGroupChannelTools: false, hideChat: false } }) });

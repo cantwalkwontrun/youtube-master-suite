@@ -33,13 +33,13 @@
     },
     "suiteSettings": {
       "path": "sources/modules/youtube-suite-settings.user.js",
-      "version": "1.83",
-      "sha256": "9204abc56ed694043d48a56adbcb92da682e1acdb8fcd8c8b620ffdeee674154"
+      "version": "1.86",
+      "sha256": "315a3b04d685dc70c2ee3011c1c8afc370bfee5be498a9f986fcc0030bed55f6"
     },
     "watchLayoutCleaner": {
       "path": "sources/modules/youtube-watch-layout-cleaner.user.js",
-      "version": "1.101",
-      "sha256": "24ef99197636ce77968f3d638f1b6526a761fa69088120d4164d51c3717779c5"
+      "version": "1.105",
+      "sha256": "44584fd3e7c9e1008326d57b0de41d802d5fa9b898ceaafc8aee28545d0ba1bb"
     }
   }
 }

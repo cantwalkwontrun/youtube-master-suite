@@ -55,6 +55,25 @@ async function healthy(page, errors = []) {
 async function openPanel(page) { await page.locator("#ytms-settings-button").click(); }
 async function colour(page, selector) { return page.locator(selector).evaluate(el => getComputedStyle(el).color); }
 
+test('Hype lives under Player, is absent from context editor/search, and survives context reset', async t => {
+  const page=await openFixture(t,{theatreMode:false,menuShowHype:false});
+  await openPanel(page); await page.locator('#ytms-tab-player').click();
+  const hype=page.locator('#ytms-menuShowHype');
+  assert.equal(await hype.count(),1);
+  assert.equal(await hype.evaluate(node=>node.closest('[role="tabpanel"]').id),'ytms-section-player');
+  assert.equal(await hype.isChecked(),false);
+  await page.locator('#ytms-tab-interface').click();
+  assert.equal(await page.locator('#ytms-menu-order [data-menu-item="hype"]').count(),0);
+  await page.locator('#ytms-video-menu-settings > summary').click();
+  await page.locator('#ytms-reset-menu-layout').click();
+  await page.locator('#ytms-tab-player').click();
+  assert.equal(await hype.isChecked(),false);
+  await page.locator('#ytms-settings-search').fill('Hype');
+  const results=page.locator('.settings-search-result');
+  assert.equal(await results.count(),1);
+  assert.match(await results.first().textContent(),/Player/);
+});
+
 test('hover-preview and timer preferences are exposed, saved and restored in their own sections', async t => {
   const page = await openFixture(t, { theatreMode: false });
   await openPanel(page); await page.locator('#ytms-tab-feed').click();
@@ -644,6 +663,8 @@ test('wider settings fit all tabs and place save status between Cancel and the p
   assert.equal(await dialog.getAttribute('aria-describedby'), null);
   assert.equal(await dialog.locator('#ytms-panel-intro, .intro').count(), 0);
   assert.equal(await dialog.locator('nav').evaluate(nav => nav.scrollWidth <= nav.clientWidth), true);
+  const tabOrder = await dialog.locator('nav [role="tab"]').evaluateAll(tabs => tabs.map(tab => tab.id));
+  assert.equal(tabOrder.indexOf('ytms-tab-javascript') + 1, tabOrder.indexOf('ytms-tab-extensions'));
   assert.deepEqual(await dialog.locator('.footer-actions > *').evaluateAll(nodes => nodes.map(node => node.id)),
     ['ytms-cancel-panel', 'ytms-settings-status', 'ytms-save-preview']);
   await page.locator('#ytms-compactComments').uncheck();
@@ -1154,14 +1175,14 @@ test('all settings sections keep consistent top spacing and contain expanded con
   }
 });
 
-test("Credits uses the bundled coloured logo and generic author attribution", async t => {
+test("Credits uses the bundled coloured logo and requested author attribution", async t => {
   const page = await openFixture(t, undefined, undefined, true);
   await openPanel(page);
   await page.getByRole('tab', { name: 'Credits', exact: true }).click();
   const logo = page.locator('#ytms-credits-logo');
   await logo.evaluate(image => image.decode());
   assert.equal(await logo.getAttribute('src'), await page.locator('#ytms-settings-button img').getAttribute('src'));
-  assert.ok((await page.locator('#ytms-section-credits').innerText()).includes('Created by Citizen'));
+  assert.ok((await page.locator('#ytms-section-credits').innerText()).includes('Created by cantwalkwontrun'));
   assert.ok((await page.locator('#ytms-section-credits').innerText()).includes(`Version ${MANIFEST.version}`));
 });
 

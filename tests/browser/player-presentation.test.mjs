@@ -71,6 +71,38 @@ test('defaults leave native preview eligibility, timer nodes and playback untouc
   assert.deepEqual(await snapshot(page), { app: false, grid: false, text: '-15:04', clicks: 0,
     mediaEvents: [], sameVideo: true, sameWrapper: true, active: true });
 });
+
+for (const option of ['keepHoverPreviews', 'disableVideoPreviews']) test(`stable feed hover avoids document/style scans (${option})`, async t => {
+  const page = await open(t, { [option]: true });
+  const result = await page.evaluate(() => {
+    const styles = window.getComputedStyle, query = document.querySelectorAll;
+    let styleReads = 0, queries = 0;
+    window.getComputedStyle = function (...args) { styleReads++; return styles.apply(this, args); };
+    document.querySelectorAll = function (...args) { queries++; return query.apply(this, args); };
+    const card = document.querySelector('ytd-rich-item-renderer');
+    for (let i = 0; i < 100; i++) card.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    window.getComputedStyle = styles; document.querySelectorAll = query;
+    return { styleReads, queries };
+  });
+  assert.deepEqual(result, { styleReads: 0, queries: 0 });
+  assert.deepEqual((await snapshot(page)).mediaEvents, []);
+});
+
+test('hover discovers rebound preview hosts synchronously and respects native opt-out', async t => {
+  const page = await open(t, { keepHoverPreviews: true });
+  await page.evaluate(() => {
+    const grid = document.querySelector('ytd-rich-grid-renderer');
+    grid.polymerController = { miniplayerIsActive: true, miniplayerPlaybackState: 1, isInlinePreviewEnabled: false,
+      computeIsInlinePreviewEnabled: function (active, state) { return !active || [5,2,0].includes(state); } };
+    document.querySelector('ytd-rich-item-renderer').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+  });
+  assert.equal((await snapshot(page)).grid, true);
+  await page.evaluate(() => {
+    document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled = true;
+    document.querySelector('ytd-rich-item-renderer').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+  });
+  assert.equal((await snapshot(page)).app, false);
+});
 test('opt-in previews override only native presentation eligibility, not miniplayer identity', async t => {
   const page = await open(t, { keepHoverPreviews: true });
   const result = await snapshot(page);

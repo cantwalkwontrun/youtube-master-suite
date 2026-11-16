@@ -22,8 +22,7 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
     showRydTooltipBar: false,
     showDeArrowTitleButton: false,
     showDeArrowQueueButton: true,
-    menuShowDownload: false, menuShowHype: true, menuGroupChannelTools: true, menuShowAgeLimit: true,
-    menuShowNotInterested: true, menuShowDontRecommend: true, menuShowReport: true,
+    ...menuLayouts.visibilityDefaults, menuGroupChannelTools: true,
     menuLayout: null,
     menuItemOrder: Object.freeze(["playNext", "addToQueue", "watchLater", "savePlaylist", "download", "hype", "share",
       "notInterested", "channelAge", "dontRecommend", "report", "channelTools"]),
@@ -114,6 +113,13 @@ export function createSuiteSettings(getStorage, isDarkTheme, catalogue = createF
       } else if (name === "viewerColour" || name === "ownerColour") {
         result[name] = normaliseHex(value) || fallback;
       } else if (choices[name]?.includes(value)) result[name] = value;
+    }
+    // Preserve the formerly effective editor visibility once. The returned
+    // layout no longer contains Hype, so later Player edits take precedence.
+    // Reads do not write or replace the existing settings record.
+    if (result.menuLayout) {
+      const legacyHype = input.menuLayout.nodes.find(node => node.id === 'hype');
+      if (legacyHype) result.menuShowHype = legacyHype.visible;
     }
     // Resolve opposing presentation choices deterministically, including imports.
     if (result.relatedBelowPlayer) result.hideRelated = false;

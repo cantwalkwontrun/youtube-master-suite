@@ -90,6 +90,7 @@ test('new controls preserve old saved values and reading never rewrites the reco
   assert.equal(f.settings.initial.hideChat, false);
   assert.equal(f.settings.initial.miniplayerWidth, 997);
   assert.equal(f.settings.initial.showDeArrowQueueButton, false);
+  assert.equal(f.settings.initial.hideHomeFeaturedBanners, true);
   for (const key of ['originalAudio', 'snapshotButton', 'homeRedirect', 'hideAllComments', 'fullWindowTheatre']) assert.equal(f.settings.initial[key], false);
   assert.equal(f.storage.getItem(f.settings.key), before);
 });
