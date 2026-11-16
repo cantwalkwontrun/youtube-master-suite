@@ -134,13 +134,13 @@ test('destination highlighting clears on new searches, tab changes and reopening
 test('keyboard results mark nested menu controls and conditional controlling rows', async t => {
   const page = await pageFor(t);
   const search = page.locator('#ytms-settings-search');
-  await search.fill('Show Hype in video menus');
-  await page.locator('.settings-search-result[data-target="menuShowHype"]').focus();
+  await search.fill('Show Download in video menus');
+  await page.locator('.settings-search-result[data-target="menuShowDownload"]').focus();
   await page.keyboard.press('Enter');
-  const action = page.locator('#ytms-menuShowHype');
+  const action = page.locator('#ytms-menuShowDownload');
   assert.equal(await action.evaluate(el => el === document.activeElement), true);
-  assert.equal(await page.locator('[data-menu-item="hype"].settings-search-destination').count(), 1);
-  assert.deepEqual(await page.locator('[data-menu-item="hype"] mark').allTextContents(), ['Hype']);
+  assert.equal(await page.locator('[data-menu-item="download"].settings-search-destination').count(), 1);
+  assert.deepEqual(await page.locator('[data-menu-item="download"] mark').allTextContents(), ['Download']);
   await search.fill('viewer colour');
   await page.locator('.settings-search-result[data-target="viewer-hex"]').click();
   const target = page.locator('.settings-search-destination');

@@ -1233,6 +1233,8 @@ test("Extensions remains theme-adaptive, keyboard-accessible and contained in a 
   const dialog = page.locator('#ytms-settings-dialog'), bounds = await dialog.boundingBox();
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-javascript');
+  await page.keyboard.press('ArrowRight');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-extensions');
   assert.equal(await page.locator('#ytms-section-extensions').isVisible(), true);
   const content = page.locator('#ytms-settings-dialog .content');
@@ -1247,8 +1249,6 @@ test("Extensions remains theme-adaptive, keyboard-accessible and contained in a 
   await content.evaluate(element => element.scrollTop = element.scrollHeight);
   const footer = await dialog.locator('.panel > footer').boundingBox();
   assert.ok(footer.y >= bounds.y && footer.y + footer.height <= bounds.y + bounds.height);
-  await page.keyboard.press('ArrowRight');
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-javascript');
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-support');
   await page.keyboard.press('ArrowRight');
@@ -1578,10 +1578,11 @@ test('Interface section reset restores cloned menu order and all Interface contr
   await openPanel(page);
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
+  const visibleOrder = defaultOrder.filter(id => !['hype','channelAge','dontRecommend','report'].includes(id));
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
   await page.locator('#ytms-restore-section-defaults').click();
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
-  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), defaultOrder.filter(id => !['channelAge','dontRecommend','report'].includes(id)));
+  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), visibleOrder);
   assert.equal(await page.locator('[data-menu-item="download"] input[type="checkbox"]').isChecked(), false);
   assert.equal(await page.locator('#ytms-menu-location option').count(), 2);
   await page.locator('#ytms-video-menu-settings > summary').click();
@@ -1590,7 +1591,7 @@ test('Interface section reset restores cloned menu order and all Interface contr
   await page.locator('#ytms-menu-location').selectOption('root');
   await page.getByRole('button', { name: 'Move Download up', exact: true }).click();
   await page.locator('#ytms-restore-section-defaults').click();
-  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), defaultOrder.filter(id => !['channelAge','dontRecommend','report'].includes(id)));
+  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), visibleOrder);
   await page.getByRole('tab', { name: 'Comments', exact: true }).click();
   assert.equal(await page.locator('#ytms-colour-mode').inputValue(), 'off');
   await saveFixtureSettings(page);
