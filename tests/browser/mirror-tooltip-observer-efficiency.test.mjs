@@ -153,7 +153,8 @@ test('complete Suite batches Mirror tooltip registrations without changing nativ
   }
   const [reference, batched] = results;
   t.diagnostic(JSON.stringify({ reference, batched }));
-  assert.equal(batched.refreshes, 20, 'Each tooltip needs one registration transaction and one disconnect');
+  assert.equal(batched.replacements, 20, 'Each tooltip needs one registration transaction and one disconnect');
+  assert.ok(batched.refreshes >= batched.replacements, 'Other Suite observers may also refresh the shared observer');
   assert.ok(reference.refreshes > batched.refreshes);
   assert.ok(reference.replacements > batched.replacements);
   assert.ok(reference.nativeObserves > batched.nativeObserves);
