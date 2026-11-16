@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.83
+// @version      1.86
 // @description  Master-only native-style settings panel accessible from the header and watch player.
-// @author       Citizen
+// @author       cantwalkwontrun
 // @license      GNU GPLv3
 // @match        https://www.youtube.com/*
 // @run-at       document-start
@@ -161,7 +161,7 @@
     let channelFooterHost = null;
 
     let supportPanel = null, extraControls = null, javascriptPanel = null;
-    const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'extensions', 'javascript', 'support', 'credits'];
+    const tabIds = ['comments', 'feed', 'channels', 'player', 'layout', 'miniplayer', 'interface', 'javascript', 'extensions', 'support', 'credits'];
     const searchBar = document.createElement('div'); searchBar.className = 'settings-search';
     const searchInput = document.createElement('input');
     searchInput.id = 'ytms-settings-search'; searchInput.type = 'search'; searchInput.maxLength = 200;
@@ -337,7 +337,7 @@
       getAppliedPreferences: () => settings.initial,
       setLayout: layout => {
         if (JSON.stringify(layout) === JSON.stringify(suite.menuLayout.fromPreferences(saved))) {
-          for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+          for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu') && key !== 'menuShowHype')) {
             draft[key] = key === 'menuLayout' ? suite.menuLayout.clone(saved[key]) : Array.isArray(saved[key]) ? [...saved[key]] : saved[key];
           }
         } else draft.menuLayout = suite.menuLayout.clone(layout);
@@ -345,7 +345,7 @@
       onChange: () => markDraftChanged(),
       onRender: () => refreshSearchDestination(),
       onReset: () => {
-        for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu'))) {
+        for (const key of Object.keys(DEFAULTS).filter(key => key.startsWith('menu') && key !== 'menuShowHype')) {
           draft[key] = Array.isArray(DEFAULTS[key]) ? [...DEFAULTS[key]] : DEFAULTS[key];
         }
         markDraftChanged();
@@ -417,7 +417,7 @@
     const logo = document.createElement('img'); logo.id = 'ytms-credits-logo';
     logo.src = suite.settingsAssets.logo; logo.alt = 'YouTube Master Suite logo'; logo.width = 96; logo.height = 96;
     const heading = document.createElement('h3'); heading.textContent = 'YouTube Master Suite';
-    const author = document.createElement('p'); author.textContent = 'Created by Citizen';
+    const author = document.createElement('p'); author.textContent = 'Created by cantwalkwontrun';
     const version = document.createElement('p'); version.textContent = `Version ${suite.version} · GNU GPLv3`;
     credits.append(logo, heading, author, version); $('section-credits').append(credits);
     extraControls = suite.createSettingsExtraControls(document, window, suite, dialog);
@@ -844,9 +844,9 @@
       }
     }
     addSearchEntry('interface', 'menu-order', 'Video context menu editor', menuOrderNote.textContent,
-      Object.values(menuLabels).join(' '));
-    const menuSearchActions = { menuShowDownload:'download', menuShowHype:'hype', menuShowAgeLimit:'channelAge', menuShowNotInterested:'notInterested', menuShowDontRecommend:'dontRecommend', menuShowReport:'report' };
-    const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowHype:'Show Hype in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
+      Object.entries(menuLabels).filter(([id]) => id !== 'hype').map(([,label]) => label).join(' '));
+    const menuSearchActions = suite.menuLayout.preferenceActions;
+    const menuSearchLabels = { menuShowDownload:'Show Download in video menus', menuShowAgeLimit:'Show Filter channel uploads action', menuShowNotInterested:'Show Not interested', menuShowDontRecommend:'Show Don’t recommend channel', menuShowReport:'Show Report' };
     for (const key of Object.keys(menuSearchActions)) addSearchEntry('interface', key, menuSearchLabels[key], DESCRIPTIONS[key]);
 
     addSearchEntry('channels', 'channel-age', 'Channel upload filters', ageDescription.textContent,

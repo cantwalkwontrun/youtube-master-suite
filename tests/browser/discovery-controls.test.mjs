@@ -54,6 +54,23 @@ async function settle(page) {
 }
 async function hidden(page,id,expected=true){await page.waitForFunction(({id,expected})=>['data-ytms-discovery-hidden','data-ytms-discovery-ui-hidden'].some(name=>document.getElementById(id)?.getAttribute(name)==='1')===expected,{id,expected});await settle(page);assert.equal(await page.locator('#'+id).isVisible(),!expected);}
 
+for (const enabled of [false,true]) test(`AI disclosure filtering ${enabled} uses native badges and follows recycled cards`,async t=>{
+  const page=await open(t,{hideFeedAiContent:enabled,filmVisibility:'all'});
+  await page.evaluate(()=>{
+    addCard('ai',{badge:'AI'}); addCard('ordinary',{badge:''});
+    addCard('words',{badge:''}).querySelector('#video-title').textContent='Made with AI: a tutorial';
+    addCard('extension',{badge:''}).insertAdjacentHTML('beforeend','<span class="extension-badge">AI</span>');
+    addCard('queue',{badge:'AI'});const queue=document.createElement('ytd-playlist-panel-renderer');queue.append(document.getElementById('queue'));document.body.append(queue);
+  });
+  await hidden(page,'ai',enabled);
+  for(const id of ['ordinary','words','extension','queue'])assert.equal(await page.locator('#'+id).isVisible(),true,id);
+  await page.evaluate(()=>document.querySelector('#ai .yt-badge-shape__text').textContent='HD');
+  await hidden(page,'ai',false);
+  await page.evaluate(()=>document.querySelector('#ai .yt-badge-shape__text').textContent='Made with AI');
+  await hidden(page,'ai',enabled);
+  await page.evaluate(()=>disposeDiscovery());assert.equal(await page.locator('#ai').isVisible(),true);
+});
+
 for (const enabled of [false,true]) test(`comment GIF preference ${enabled} handles native attachments while preserving comment content`,async t=>{
   const page=await open(t,{hideCommentGifs:enabled},'/watch?v=aaaaaaaaaaa');
   await page.evaluate(()=>{
@@ -608,4 +625,66 @@ test('a restored cached page recovers from its interrupted old SPA transition',a
   const page=await open(t,{hideFeedLowViews:true,lowViewThreshold:'1000'});await page.evaluate(()=>addCard('restored'));await hidden(page,'restored');
   await page.evaluate(()=>{window.dispatchEvent(new Event('yt-navigate-start'));window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('pageshow'));});
   await hidden(page,'restored');
+});
+
+
+test('unchanged decorations avoid writes, theme queries and repeated locale formatter construction', async t => {
+  const page=await open(t,{hideViewsIcon:true,viewsSeparateLine:true});
+  await page.evaluate(()=>{
+    const Native=Intl.NumberFormat;window.formatCalls=0;
+    Intl.NumberFormat=function(...args){formatCalls++;return new Native(...args);};
+    const query=document.querySelector.bind(document);window.themeQueries=0;
+    document.querySelector=function(selector){if(selector==='style.darkreader,link.darkreader')themeQueries++;return query(selector);};
+    addCard('stable',{metadata:'1,234 views'}).querySelector('#metadata-line span').insertAdjacentHTML('afterbegin','<yt-icon></yt-icon>');
+  });
+  await settle(page);
+  await page.evaluate(()=>{
+    window.decorationWrites=0;
+    for(const method of ['setAttribute','removeAttribute']){
+      const native=Element.prototype[method];Element.prototype[method]=function(name,...args){
+        if(['data-ytms-discovery-badge-hidden','data-ytms-discovery-view-line'].includes(name))decorationWrites++;
+        return native.call(this,name,...args);
+      };
+    }
+  });
+  for(let i=0;i<5;i++){await page.locator('#stable').evaluate((node,i)=>node.className='native-'+i,i);await settle(page);}
+  assert.deepEqual(await page.evaluate(()=>({writes:decorationWrites,formats:formatCalls,queries:themeQueries})),{writes:0,formats:1,queries:0});
+  await page.evaluate(()=>{document.documentElement.lang='de-DE';document.querySelector('#stable #metadata-line span').lastChild.textContent='1.234 views';});
+  await settle(page);assert.equal(await page.evaluate(()=>formatCalls),2);
+  await page.evaluate(()=>{document.documentElement.lang='invalid_locale';document.querySelector('#stable').className='invalid';});
+  await settle(page);assert.equal(await page.locator('#stable [data-ytms-discovery-view-line]').count(),0);
+  await page.locator('#stable').evaluate(node=>node.className='invalid-again');await settle(page);
+  assert.equal(await page.evaluate(()=>formatCalls),3,'An invalid locale is cached without repeatedly constructing a formatter');
+  await page.evaluate(()=>{document.documentElement.lang='en-GB';document.querySelector('#stable #metadata-line span').lastChild.textContent='1,234 views';});
+  await settle(page);assert.equal(await page.evaluate(()=>formatCalls),4);
+  assert.equal(await page.locator('#stable [data-ytms-discovery-view-line]').count(),1);
+});
+
+test('decoration ownership tracks each attribute independently on the same recycled node',async t=>{
+  const page=await open(t,{hideViewsIcon:true,viewsSeparateLine:true});
+  await page.evaluate(()=>{addCard('dual-card').querySelector('#metadata-line').innerHTML='<span><yt-icon id="dual" class="yt-content-metadata-view-model__metadata-text">123 views</yt-icon></span>';});
+  await settle(page);
+  const state=()=>page.locator('#dual').evaluate(node=>[node.getAttribute('data-ytms-discovery-badge-hidden'),node.getAttribute('data-ytms-discovery-view-line')]);
+  assert.deepEqual(await state(),['1','1']);
+  await page.locator('#dual').evaluate(node=>node.className='native-icon');await settle(page);
+  assert.deepEqual(await state(),['1',null]);
+  await page.locator('#dual').evaluate(node=>{node.className='yt-content-metadata-view-model__metadata-text';node.parentElement.prepend('Detail ');});await settle(page);
+  assert.deepEqual(await state(),[null,'1']);
+  await page.evaluate(()=>disposeDiscovery());assert.deepEqual(await state(),[null,null]);
+});
+
+test('moved decorations retain their new card owner and release on leaving the feed',async t=>{
+  const page=await open(t,{hideViewsIcon:true,viewsSeparateLine:true});
+  await page.evaluate(()=>{
+    addCard('old-card').querySelector('#metadata-line span').insertAdjacentHTML('afterbegin','<yt-icon id="moved-icon"></yt-icon>');
+    addCard('new-card');
+  });await settle(page);
+  await page.evaluate(()=>{
+    const target=document.querySelector('#new-card');target.className='new-owner-first';
+    target.querySelector('#metadata-line').replaceChildren(document.querySelector('#old-card #metadata-line span'));
+  });await settle(page);
+  assert.equal(await page.locator('#new-card #moved-icon').getAttribute('data-ytms-discovery-badge-hidden'),'1');
+  assert.equal(await page.locator('#new-card #metadata-line span').getAttribute('data-ytms-discovery-view-line'),'1');
+  await page.evaluate(()=>{history.pushState({},'','/watch?v=aaaaaaaaaaa');window.dispatchEvent(new Event('yt-navigate-finish'));});await settle(page);
+  assert.equal(await page.locator('[data-ytms-discovery-badge-hidden],[data-ytms-discovery-view-line]').count(),0);
 });

@@ -41,8 +41,8 @@ for(const sheet of [false,true])for(const download of [false,true])for(const hyp
  await page.getByRole('button',{name:'Other action',exact:true}).click();assert.deepEqual(await page.evaluate(()=>f.calls),['Other action']);
  if(hype){await page.getByRole('button',{name:'Hype',exact:true}).click();assert.equal(await page.evaluate(()=>f.calls.at(-1)),'Hype');}
 });
-test('custom editor visibility overrides legacy flags without changing settings',async t=>{
- const page=await open(t,{layout:true});assert.equal(await page.locator('[data-action="Download"]').isVisible(),true);assert.equal(await page.locator('[data-action="Hype"]').isVisible(),false);
+test('custom Download visibility and the separate Player Hype flag remain independent',async t=>{
+ const page=await open(t,{layout:true,hype:true});assert.equal(await page.locator('[data-action="Download"]').isVisible(),true);assert.equal(await page.locator('[data-action="Hype"]').isVisible(),true);
 });
 test('disposal and suspension remove only owned visibility markers',async t=>{
  const page=await open(t,{hype:false});await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));assert.equal(await page.locator('[data-ytms-native-menu-hidden]').count(),0);

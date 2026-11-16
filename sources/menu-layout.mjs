@@ -6,6 +6,13 @@ export function createMenuLayout() {
   const labels = Object.freeze({ playNext: 'Play next in queue', addToQueue: 'Add to queue', watchLater: 'Save to Watch Later',
     savePlaylist: 'Save to playlist', download: 'Download', hype: 'Hype', share: 'Share', notInterested: 'Not interested',
     channelAge: 'Filter channel uploads', dontRecommend: 'Don’t recommend channel', report: 'Report' });
+  const actionSettings = Object.freeze(Object.fromEntries([
+    ['download', 'menuShowDownload', false],
+    ['channelAge', 'menuShowAgeLimit', true], ['notInterested', 'menuShowNotInterested', true],
+    ['dontRecommend', 'menuShowDontRecommend', true], ['report', 'menuShowReport', true],
+  ].map(([action, key, defaultVisible]) => [action, Object.freeze({ key, defaultVisible })])));
+  const preferenceActions = Object.freeze(Object.fromEntries(Object.entries(actionSettings).map(([action, item]) => [item.key, action])));
+  const visibilityDefaults = Object.freeze(Object.fromEntries(Object.values(actionSettings).map(item => [item.key, item.defaultVisible])));
   const limits = Object.freeze({ maxGroups: 8, maxDepth: 3, maxNameLength: 40 });
   const groupId = value => value === 'channelTools' || /^submenu-[a-z0-9-]{1,24}$/.test(value);
   const plain = value => value && typeof value === 'object' && !Array.isArray(value) &&
@@ -47,9 +54,6 @@ export function createMenuLayout() {
         nodes.set(node.id, node);
       }
       if (actionIds.some(id => id !== 'hype' && !nodes.has(id))) return null;
-      // Earlier layouts predate Hype. Preserve every existing node and append
-      // its previously native-visible action without resetting custom groups.
-      if (!nodes.has('hype')) nodes.set('hype', { id:'hype', parent:'root', visible:true });
       for (const node of nodes.values()) {
         const visited = new Set([node.id]);
         let parent = node.parent, depth = actionIds.includes(node.id) ? 0 : 1;
@@ -59,7 +63,9 @@ export function createMenuLayout() {
           visited.add(parent); parent = owner.parent;
         }
       }
-      return clone({ version:1, nodes:[...nodes.values()] });
+      // Accept the former Hype node on import, but exclude this watch-page
+      // action from the context-menu layout returned to callers.
+      return clone({ version:1, nodes:[...nodes.values()].filter(node => node.id !== 'hype') });
     } catch { return null; }
   }
   function fromPreferences(preferences = {}) {
@@ -70,13 +76,13 @@ export function createMenuLayout() {
     const defaultOrder = [...actionIds, 'channelTools'];
     const requested = Array.isArray(preferences.menuItemOrder) ? preferences.menuItemOrder : [];
     const order = [...new Set([...requested.filter(id => defaultOrder.includes(id)), ...defaultOrder])];
-    const visibility = { download: preferences.menuShowDownload === true, hype: preferences.menuShowHype !== false, channelAge: preferences.menuShowAgeLimit !== false,
-      notInterested: preferences.menuShowNotInterested !== false, dontRecommend: preferences.menuShowDontRecommend !== false,
-      report: preferences.menuShowReport !== false };
-    return { version: 1, nodes: order.flatMap(id => id === 'channelTools'
+    const visibility = Object.fromEntries(Object.entries(actionSettings).map(([action, item]) =>
+      [action, item.defaultVisible ? preferences[item.key] !== false : preferences[item.key] === true]));
+    visibility.hype = preferences.menuShowHype !== false;
+    return { version: 1, nodes: order.flatMap(id => id === 'hype' ? [] : id === 'channelTools'
       ? grouped ? [{ id, name: 'Channel tools', parent: 'root' }] : []
       : [{ id, parent: grouped && ['channelAge', 'dontRecommend', 'report'].includes(id) ? 'channelTools' : 'root',
         visible: Object.hasOwn(visibility, id) ? visibility[id] : true }]) };
   }
-  return Object.freeze({ actionIds, labels, limits, validate, fromPreferences, clone });
+  return Object.freeze({ actionIds, labels, actionSettings, preferenceActions, visibilityDefaults, limits, validate, fromPreferences, clone });
 }

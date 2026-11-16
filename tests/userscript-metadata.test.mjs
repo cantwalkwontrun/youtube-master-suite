@@ -8,7 +8,7 @@ const source = `// ==UserScript==
 // @namespace youtube.master-suite
 // @version 1.2.0
 // @description Synthetic metadata fixture
-// @author Citizen
+// @author cantwalkwontrun
 // @license GNU GPLv3
 // @updateURL none
 // @downloadURL none

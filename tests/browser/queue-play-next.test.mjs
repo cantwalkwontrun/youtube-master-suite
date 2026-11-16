@@ -237,6 +237,59 @@ const snapshot = page => page.evaluate(() => ({ ids: queueFixture.ids, adds: que
   playing: fixture.playerId, title: document.querySelector("h1").textContent,
   url: location.href, comments: document.querySelector("ytd-comments").textContent }));
 
+for(const suite of [false,true])test(`opening another menu cancels collapsed queue preparation (${suite?'Suite':'source'})`,async t=>{
+  const page=await open(t,{suite,sheet:true,homeMiniplayer:true,collapsed:true,stampDelay:700});
+  await choose(page,D);await page.locator('h1').click();
+  await page.evaluate(id=>queueFixture.open(id),C);
+  await page.waitForTimeout(1000);
+  const result=await snapshot(page);assert.equal(result.adds.length,0);assert.deepEqual(result.moves,[]);
+});
+for(const suite of [false,true])test(`later selection replaces collapsed queue preparation (${suite?'Suite':'source'})`,async t=>{
+  const page=await open(t,{suite,sheet:true,homeMiniplayer:true,collapsed:true,stampDelay:700});
+  await choose(page,D);await page.locator('h1').click();await choose(page,C);
+  await page.waitForFunction(()=>queueFixture.ids.join(',')==='aaaaaaaaaaa,ccccccccccc,bbbbbbbbbbb');
+  await page.waitForTimeout(800);const result=await snapshot(page);assert.equal(result.adds.length,0);assert.deepEqual(result.moves,[C]);
+});
+
+for(const suite of [false,true])for(const mini of [false,true])test(`transient queue readiness resumes the original click once (${suite?'Suite':'source'}, mini ${mini})`,async t=>{
+  const page=await open(t,{suite,homeMiniplayer:mini,sheet:true});
+  await page.evaluate(()=>{queueFixture.owner.canReorder=false;});
+  await choose(page,D);assert.equal((await snapshot(page)).adds.length,0);
+  await page.evaluate(()=>{queueFixture.owner.canReorder=true;queueFixture.render();});
+  await page.waitForFunction(()=>queueFixture.ids.join(',')==='aaaaaaaaaaa,ddddddddddd,bbbbbbbbbbb,ccccccccccc');
+  const result=await snapshot(page);assert.equal(result.adds.length,1);assert.deepEqual(result.moves,[D]);assert.equal(result.playing,A);
+});
+for(const fault of ['timeout','playback','list','order','navigation','menu'])test(`queue readiness wait makes no changes after ${fault}`,async t=>{
+  const page=await open(t,{homeMiniplayer:true,sheet:true});
+  await page.evaluate(()=>{queueFixture.owner.canReorder=false;});await choose(page,D);
+  if(fault==='menu')await page.locator('h1').click();
+  if(fault!=='timeout')await page.evaluate(fault=>{
+    const f=queueFixture,player=document.getElementById('movie_player');
+    if(fault==='playback'){fixture.playerId='bbbbbbbbbbb';f.current='bbbbbbbbbbb';}
+    if(fault==='list')player.getPlaylistId=()=> 'TLPQdifferent';
+    if(fault==='order')f.ids=['aaaaaaaaaaa','ccccccccccc','bbbbbbbbbbb'];
+    if(fault==='navigation')dispatchEvent(new Event('yt-navigate-start'));
+    if(fault==='menu')f.open('bbbbbbbbbbb');
+    f.owner.canReorder=true;f.render();
+  },fault);
+  await page.waitForTimeout(2200);const result=await snapshot(page);assert.equal(result.adds.length,0);assert.equal(result.moves.length,0);
+});
+test('a later explicit selection supersedes the unexecuted queue readiness wait',async t=>{
+  const page=await open(t,{homeMiniplayer:true,sheet:true});
+  await page.evaluate(()=>{queueFixture.owner.canReorder=false;});await choose(page,D);
+  await page.locator('h1').click();await page.evaluate(()=>{queueFixture.owner.canReorder=true;});await choose(page,C);
+  await page.waitForFunction(()=>queueFixture.ids.join(',')==='aaaaaaaaaaa,ccccccccccc,bbbbbbbbbbb');
+  await page.waitForTimeout(2100);const result=await snapshot(page);assert.equal(result.adds.length,0);assert.deepEqual(result.moves,[C]);
+});
+for(const suite of [false,true])test(`queue readiness timer observes silent native settlement (${suite?'Suite':'source'})`,async t=>{
+  const page=await open(t,{suite,homeMiniplayer:true,sheet:true});
+  await page.evaluate(()=>{queueFixture.owner.canReorder=false;});await choose(page,D);
+  // No DOM mutation or native event: the final bounded check must retry once.
+  await page.evaluate(()=>{queueFixture.owner.canReorder=true;});
+  await page.waitForFunction(()=>queueFixture.ids.join(',')==='aaaaaaaaaaa,ddddddddddd,bbbbbbbbbbb,ccccccccccc');
+  const result=await snapshot(page);assert.equal(result.adds.length,1);assert.deepEqual(result.moves,[D]);
+});
+
 for (const suite of [false, true]) for (const mini of [false, true]) for (const target of [B, D])
 test(`known queue ID refuses unproved conflicting panel order (${suite ? 'Suite' : 'source'}, mini ${mini}, target ${target})`, async t => {
   const page = await open(t, { suite, homeMiniplayer: mini });

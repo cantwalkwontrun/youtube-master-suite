@@ -7,6 +7,10 @@ lang: en-GB
 The Suite provides settings for its playback, layout, filtering and interface features, including switches for previously automatic cleanup. Queue fitting, duplicate prevention, the current-video menu and queue-header menu cleanup start on; other optional new behaviour starts off. Save and reload to apply changes. Search settings to find individual controls; related options are grouped in expandable sections.
 
 
+## Queue header buttons
+
+**Miniplayer → Native queue → Combine queue header actions** puts recognised Save queue and Clear queue actions in one three-dot dropdown, replacing the separate Save pill and overflow controls. Bookmark and outlined bin icons use YouTube's theme colours. Native action handlers and confirmations are retained, with binding checks before every activation. Saved playlists and unsupported menus remain unchanged. Turn this setting off to restore the original presentation; **Hide queue header menu** separately controls native miniplayer overflow visibility. The native queue close control is raised 4 px without shrinking its click target. Save and reload to apply. Recognition currently requires native English Save/Clear labels; other languages retain their existing presentation.
+
 ## Membership offers
 
 **Interface → Page appearance → Dismiss membership offers** starts off. When enabled and reloaded, it closes recognised native channel membership offers, including those opened by choosing Join. It uses YouTube's close controls so native backdrop and scrolling cleanup can run. Save, share, report, settings and payment dialogs remain available. Unrecognised offers or offers without a supported close method are left usable; this does not hide every popup or change memberships.
@@ -19,7 +23,7 @@ The Suite provides settings for its playback, layout, filtering and interface fe
 
 Open **Suite settings → Interface → Video context menu** to create and name submenus, nest them, choose where each recognised action appears, and adjust visibility and order. Up to eight submenus and three nested levels are supported. Delete a submenu to move its contents to its parent. Use the preview to check the arrangement; Save and reload apply it. Cancel discards edits, and Reset menu layout restores the standard arrangement in the draft. Existing saved order and visibility are carried over until you customise them. Full backups include custom menu layouts.
 
-**Download** and **Hype** each have a visibility checkbox in this editor. Hype starts visible. Existing custom layouts retain their actions, order and groups and gain the Hype control. Visibility also applies to recognised native overflow menus without a video-card binding; this filter only hides those actions and never executes or rearranges them.
+**Download** has a visibility checkbox in this editor. **Player → Watch-page controls → Show Hype in the video action menu** controls Hype in the watch-page menu beside Like and Dislike. Hype starts visible; existing visibility is preserved when moving the control out of legacy context layouts. Visibility filtering never sends an action or rearranges native watch-page menu rows.
 
 When YouTube omits the playing queue item's menu, the Suite can rebuild supported native Save and Remove action types using the independently verified current video and queue-entry identities. Other videos' endpoint targets and tracking tokens are not reused. Unsupported action types remain unavailable. Native removal controls playback advancement.
 
@@ -30,6 +34,14 @@ For handle-only cards, **Look up channel ID** makes an explicit public-channel r
 ## Native queue duplicates
 
 **Miniplayer → Native queue → Prevent duplicate queue videos** starts on. In a verified native queue, Add to queue moves an existing upcoming video to the end, and Play next moves it after the current video. The playing entry is kept; its extra copies can be removed without moving that entry. Existing duplicates are removed by their exact native queue-entry IDs, one confirmed update at a time. Saved playlists are excluded. If the player, queue or row bindings cannot be verified, the Suite waits or refuses the action instead of guessing. Save and reload to apply changes to this setting.
+
+## Home featured banners
+
+**Feed → Additional filters → Hide YouTube featured banners** starts on. It hides recognised Home-page campaign and promotional banner containers, including their reserved space. Regular video cards, the header logo, channel banners and queue content are preserved. Save and reload to apply a change to this setting.
+
+## AI disclosure filter
+
+**Feed → Additional filters → Hide AI-labelled videos** is opt-in. It filters recognised native AI-content disclosure badges in supported feeds and search results. It does not infer AI use from titles, classify an entire channel, contact an AI service or detect unlabelled content. Queue items remain available. Save and reload to apply.
 
 ## Conflicting options
 

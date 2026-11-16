@@ -189,7 +189,7 @@ test(`compiled membership-offer preference ${enabled} controls native dismissal 
 });
 
 const features = createFeatureCatalogue().definitions;
-test('Hype visibility saves in the existing editor without resetting old submenus and filters unbound overflow after reload',async t=>{
+test('Hype visibility saves in Player without resetting old submenus and filters unbound overflow after reload',async t=>{
  const old=createMenuLayout().fromPreferences({});old.nodes=old.nodes.filter(node=>node.id!=='hype');
  old.nodes.push({id:'submenu-custom',name:'My menu',parent:'root'});old.nodes.find(node=>node.id==='share').parent='submenu-custom';
  const page=await openFixture(t,{theatreMode:false,menuLayout:old,viewerColour:'#ABCDEF'});
@@ -200,7 +200,7 @@ test('Hype visibility saves in the existing editor without resetting old submenu
  await page.locator('#ytms-menuShowHype').uncheck();await saveFixtureSettings(page);
  const values=await page.evaluate(key=>JSON.parse(fixtureStorage.getItem(key)).values,KEY);
  assert.equal(values.viewerColour,'#ABCDEF');assert.deepEqual(values.menuLayout.nodes.filter(node=>node.id!=='hype'),old.nodes);
- assert.equal(values.menuLayout.nodes.find(node=>node.id==='hype').visible,false);
+ assert.equal(values.menuShowHype,false);assert.equal(values.menuLayout.nodes.some(node=>node.id==='hype'),false);
  await page.reload();await healthy(page);
  await page.evaluate(()=>{
   const container=document.createElement('ytd-popup-container'),popup=document.createElement('ytd-menu-popup-renderer');popup.id='unbound-overflow';popup.style.cssText='display:block;width:300px';container.append(popup);document.body.append(container);

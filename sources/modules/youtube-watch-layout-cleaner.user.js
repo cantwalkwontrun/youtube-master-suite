@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.101
+// @version      1.105
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -1538,7 +1538,23 @@ ${buildQueueCompatibilityCss()}
         }
         const queue = queueState(operation.anchor);
         if (pending !== operation) return;
+        if (operation.waitingForQueue) {
+          if (menuActivation !== operation.activation) {
+            finish('The menu changed while waiting. Nothing was added; choose Play next again.'); return;
+          }
+          const ids = player?.getPlaylist?.();
+          if (player !== operation.player || player?.closest('ytd-miniplayer') !== operation.mini ||
+              activeListId !== operation.listId || !Array.isArray(ids) || !sameIds(ids, operation.ids)) {
+            finish('The queue changed while waiting. Nothing was added; please try again.'); return;
+          }
+          if (!queue || queue.unavailable) return;
+          const { entry, popup, activation, mode } = operation;
+          finish(); begin(entry, popup, activation, mode, true); return;
+        }
         if (operation.preparing) {
+          if (menuActivation !== operation.activation) {
+            finish('The menu changed while waiting. Nothing was added; choose Play next again.'); return;
+          }
           const current = miniplayerQueue(player, operation.anchor);
           if (player !== operation.player || !current?.mini || current.mini !== operation.mini || !sameIds(current.ids, operation.ids)) {
             finish("The queue changed; no video was added.");
@@ -1778,7 +1794,7 @@ ${buildQueueCompatibilityCss()}
       scheduleMove();
     }
 
-    function begin(entry, popup, activation = menuActivation, mode = 'next') {
+    function begin(entry, popup, activation = menuActivation, mode = 'next', retried = false) {
       if (entry.used === activation) return;
       if (navigating || pageSuspended) {
         notify("YouTube is changing pages. Reopen the menu once it finishes.");
@@ -1794,6 +1810,9 @@ ${buildQueueCompatibilityCss()}
         notify("This menu changed. Reopen it and choose Play next again.");
         return;
       }
+      // A later explicit selection supersedes an unexecuted readiness wait.
+      // Never cancel an append/reorder that has already begun.
+      if ((pending?.waitingForQueue || pending?.preparing) && pending.activation !== activation) finish();
       if (pending) { notify("Please wait for the queue to update, then try again."); return; }
       const anchor = activeVideoId();
       if (anchor === undefined) { notify("Could not identify the playing video. Please try again."); return; }
@@ -1802,7 +1821,22 @@ ${buildQueueCompatibilityCss()}
           activePlayer(anchor)?.classList.contains('ad-interrupting'))) {
         notify('The native player is busy. Nothing was changed; please try again.'); return;
       }
-      if (queue?.unavailable) { notify("The queue is still updating. Please try again."); return; }
+      if (queue?.unavailable) {
+        const player = activePlayer(anchor), ids = player?.getPlaylist?.(), listId = player?.getPlaylistId?.();
+        if (!retried && player && Array.isArray(ids) && ids.length > 0 && ids.length <= 1000 && ids.every(validId) &&
+            (listId == null || listId === '' || typeof listId === 'string' && listId.startsWith('TLPQ')) && operationGeneration === startingGeneration) {
+          const operation = pending = { anchor, player, listId, ids:[...ids], mini:player.closest('ytd-miniplayer'),
+            entry, popup, activation, mode, waitingForQueue:true, generation:++operationGeneration,
+            observer:observeQueue(), moveQueued:false, frame:0, timer:0 };
+          operation.timer = setTimeout(() => {
+            if (pending !== operation) return;
+            tryMoveNext(); // A native getter may settle without a DOM event.
+            if (pending === operation) finish('The queue is still updating. Nothing was added; please try again.');
+          },2000);
+          notify('The queue is still updating. Waiting briefly for YouTube…'); scheduleMove(); return;
+        }
+        notify("The queue is still updating. Please try again."); return;
+      }
       if (anchor === entry.videoId && !uniqueVideos) { notify("This video is already playing."); return; }
       if (uniqueVideos && anchor === entry.videoId && !queue) { notify('This video is already playing.'); return; }
       if (uniqueVideos && anchor && !queue && activePlayer(anchor)?.getPlaylistId?.()?.startsWith('TLPQ')) {

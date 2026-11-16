@@ -2,6 +2,14 @@
 export function createFeatureCatalogue() {
  const definitions = [
   {
+    "key": "menuShowHype",
+    "tab": "player",
+    "section": "Watch-page controls",
+    "label": "Show Hype in the video action menu",
+    "description": "Show YouTube's Hype action, when available, in the watch-page menu beside Like and Dislike. Hiding it does not send a Hype action. Save and reload to apply.",
+    "default": true
+  },
+  {
     "key": "originalAudio",
     "tab": "player",
     "section": "Playback",
@@ -281,6 +289,22 @@ export function createFeatureCatalogue() {
     "description": "Choose which catalogue films and TV cards to show. Unknown price status stays visible unless all films are hidden. This choice takes priority over Hide paid video cards for catalogue titles; other filters still apply.",
     "default": "free",
     "options": [["all", "All films"], ["free", "Free films only"], ["paid", "Paid films only"], ["none", "Hide all films"]]
+  },
+  {
+    "key": "hideFeedAiContent",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide AI-labelled videos",
+    "description": "Hide cards with recognised native AI-content disclosure badges. Does not classify channels or detect unlabelled AI content. Off by default. Save and reload to apply.",
+    "default": false
+  },
+  {
+    "key": "hideHomeFeaturedBanners",
+    "tab": "feed",
+    "section": "Additional filters",
+    "label": "Hide YouTube featured banners",
+    "description": "Hide recognised featured and promotional banners on Home, including their reserved space. Save and reload to apply.",
+    "default": true
   },
   {
     "key": "hideHomePosts",
@@ -1038,6 +1062,14 @@ export function createFeatureCatalogue() {
     "section": "Native queue",
     "label": "Prevent duplicate queue videos",
     "description": "Keep one entry per video in native queues. Verified extra copies are removed and the playing entry is kept. Add to queue moves an existing upcoming entry to the end; Play next moves it after the current entry. Saved playlists are unchanged. Save and reload to apply.",
+    "default": true
+  },
+  {
+    "key": "queueHeaderActions",
+    "tab": "miniplayer",
+    "section": "Native queue",
+    "label": "Combine queue header actions",
+    "description": "Put verified Save queue and Clear queue actions in one three-dot menu, with matching icons. YouTube handles each action and any confirmation. Unsupported menus and saved playlists are unchanged. Save and reload to apply.",
     "default": true
   },
   {

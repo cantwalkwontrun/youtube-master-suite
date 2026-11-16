@@ -1,7 +1,7 @@
 // Language: en-GB. Visibility preferences do not require permission to execute menu actions.
 export function installNativeMenuVisibility({ document, window, preferences = {}, menuLayout, MutationObserver = window.MutationObserver }) {
   const shown = { download:preferences.menuShowDownload === true, hype:preferences.menuShowHype !== false };
-  try { for (const node of menuLayout?.fromPreferences(preferences)?.nodes || []) if (Object.hasOwn(shown,node.id)) shown[node.id]=node.visible; } catch { /* Retain validated scalar defaults. */ }
+  try { for (const node of menuLayout?.fromPreferences(preferences)?.nodes || []) if (node.id === 'download') shown.download=node.visible; } catch { /* Retain validated scalar defaults. */ }
   if (shown.download && shown.hype) return () => {};
   const popupSelector='ytd-menu-popup-renderer, yt-sheet-view-model';
   const rowSelector='ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, ytd-menu-service-item-download-renderer, yt-list-item-view-model, yt-download-list-item-view-model';

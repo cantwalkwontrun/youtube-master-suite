@@ -15,6 +15,7 @@ import { installCompactNativeQueue } from "./sources/compact-native-queue.mjs";
 import { installMiniplayerControls } from "./sources/miniplayer-controls.mjs";
 import { installMembershipOffers } from "./sources/membership-offers.mjs";
 import { installCurrentQueueMenu } from "./sources/current-queue-menu.mjs";
+import { installQueueHeaderActions } from "./sources/queue-header-actions.mjs";
 import { installNativeMenuVisibility } from "./sources/native-menu-visibility.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
 import { createChannelAgeService } from "./sources/channel-age.mjs";
@@ -36,7 +37,7 @@ import { createCustomJavascript } from "./sources/custom-javascript.mjs";
 import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.129";
+const MASTER_VERSION = "1.2.142";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -1622,7 +1623,7 @@ const output = normaliseNewlines(`// ==UserScript==
 // @namespace    youtube.master-suite
 // @version      ${MASTER_VERSION}
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
-// @author       Citizen
+// @author       cantwalkwontrun
 // @license      GNU GPLv3
 // @updateURL    none
 // @downloadURL  none
@@ -2475,7 +2476,7 @@ ${runtimeMutationCoverageHelpers}
     const options = { document, window, preferences: suite.settings.initial, menuLayout: suite.menuLayout, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
-    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installMiniplayerControls.toString()}, ${installMembershipOffers.toString()}, ${installCurrentQueueMenu.toString()}, ${installNativeMenuVisibility.toString()}]) {
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installMiniplayerControls.toString()}, ${installMembershipOffers.toString()}, ${installCurrentQueueMenu.toString()}, ${installQueueHeaderActions.toString()}, ${installNativeMenuVisibility.toString()}]) {
       try { install(options); } catch { options.reportError(); }
     }
   };

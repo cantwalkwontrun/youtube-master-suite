@@ -55,6 +55,25 @@ async function healthy(page, errors = []) {
 async function openPanel(page) { await page.locator("#ytms-settings-button").click(); }
 async function colour(page, selector) { return page.locator(selector).evaluate(el => getComputedStyle(el).color); }
 
+test('Hype lives under Player, is absent from context editor/search, and survives context reset', async t => {
+  const page=await openFixture(t,{theatreMode:false,menuShowHype:false});
+  await openPanel(page); await page.locator('#ytms-tab-player').click();
+  const hype=page.locator('#ytms-menuShowHype');
+  assert.equal(await hype.count(),1);
+  assert.equal(await hype.evaluate(node=>node.closest('[role="tabpanel"]').id),'ytms-section-player');
+  assert.equal(await hype.isChecked(),false);
+  await page.locator('#ytms-tab-interface').click();
+  assert.equal(await page.locator('#ytms-menu-order [data-menu-item="hype"]').count(),0);
+  await page.locator('#ytms-video-menu-settings > summary').click();
+  await page.locator('#ytms-reset-menu-layout').click();
+  await page.locator('#ytms-tab-player').click();
+  assert.equal(await hype.isChecked(),false);
+  await page.locator('#ytms-settings-search').fill('Hype');
+  const results=page.locator('.settings-search-result');
+  assert.equal(await results.count(),1);
+  assert.match(await results.first().textContent(),/Player/);
+});
+
 test('hover-preview and timer preferences are exposed, saved and restored in their own sections', async t => {
   const page = await openFixture(t, { theatreMode: false });
   await openPanel(page); await page.locator('#ytms-tab-feed').click();
@@ -644,6 +663,8 @@ test('wider settings fit all tabs and place save status between Cancel and the p
   assert.equal(await dialog.getAttribute('aria-describedby'), null);
   assert.equal(await dialog.locator('#ytms-panel-intro, .intro').count(), 0);
   assert.equal(await dialog.locator('nav').evaluate(nav => nav.scrollWidth <= nav.clientWidth), true);
+  const tabOrder = await dialog.locator('nav [role="tab"]').evaluateAll(tabs => tabs.map(tab => tab.id));
+  assert.equal(tabOrder.indexOf('ytms-tab-javascript') + 1, tabOrder.indexOf('ytms-tab-extensions'));
   assert.deepEqual(await dialog.locator('.footer-actions > *').evaluateAll(nodes => nodes.map(node => node.id)),
     ['ytms-cancel-panel', 'ytms-settings-status', 'ytms-save-preview']);
   await page.locator('#ytms-compactComments').uncheck();
@@ -1154,14 +1175,14 @@ test('all settings sections keep consistent top spacing and contain expanded con
   }
 });
 
-test("Credits uses the bundled coloured logo and generic author attribution", async t => {
+test("Credits uses the bundled coloured logo and requested author attribution", async t => {
   const page = await openFixture(t, undefined, undefined, true);
   await openPanel(page);
   await page.getByRole('tab', { name: 'Credits', exact: true }).click();
   const logo = page.locator('#ytms-credits-logo');
   await logo.evaluate(image => image.decode());
   assert.equal(await logo.getAttribute('src'), await page.locator('#ytms-settings-button img').getAttribute('src'));
-  assert.ok((await page.locator('#ytms-section-credits').innerText()).includes('Created by Citizen'));
+  assert.ok((await page.locator('#ytms-section-credits').innerText()).includes('Created by cantwalkwontrun'));
   assert.ok((await page.locator('#ytms-section-credits').innerText()).includes(`Version ${MANIFEST.version}`));
 });
 
@@ -1212,6 +1233,8 @@ test("Extensions remains theme-adaptive, keyboard-accessible and contained in a 
   const dialog = page.locator('#ytms-settings-dialog'), bounds = await dialog.boundingBox();
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-javascript');
+  await page.keyboard.press('ArrowRight');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-extensions');
   assert.equal(await page.locator('#ytms-section-extensions').isVisible(), true);
   const content = page.locator('#ytms-settings-dialog .content');
@@ -1226,8 +1249,6 @@ test("Extensions remains theme-adaptive, keyboard-accessible and contained in a 
   await content.evaluate(element => element.scrollTop = element.scrollHeight);
   const footer = await dialog.locator('.panel > footer').boundingBox();
   assert.ok(footer.y >= bounds.y && footer.y + footer.height <= bounds.y + bounds.height);
-  await page.keyboard.press('ArrowRight');
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-javascript');
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'ytms-tab-support');
   await page.keyboard.press('ArrowRight');
@@ -1557,10 +1578,11 @@ test('Interface section reset restores cloned menu order and all Interface contr
   await openPanel(page);
   await page.getByRole('tab', { name: 'Interface', exact: true }).click();
   const defaultOrder = ['playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'share', 'notInterested', 'channelAge', 'dontRecommend', 'report', 'channelTools'];
+  const visibleOrder = defaultOrder.filter(id => !['hype','channelAge','dontRecommend','report'].includes(id));
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
   await page.locator('#ytms-restore-section-defaults').click();
   assert.equal(await page.locator('#ytms-video-menu-settings').evaluate(node => node.open), false);
-  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), defaultOrder.filter(id => !['channelAge','dontRecommend','report'].includes(id)));
+  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), visibleOrder);
   assert.equal(await page.locator('[data-menu-item="download"] input[type="checkbox"]').isChecked(), false);
   assert.equal(await page.locator('#ytms-menu-location option').count(), 2);
   await page.locator('#ytms-video-menu-settings > summary').click();
@@ -1569,7 +1591,7 @@ test('Interface section reset restores cloned menu order and all Interface contr
   await page.locator('#ytms-menu-location').selectOption('root');
   await page.getByRole('button', { name: 'Move Download up', exact: true }).click();
   await page.locator('#ytms-restore-section-defaults').click();
-  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), defaultOrder.filter(id => !['channelAge','dontRecommend','report'].includes(id)));
+  assert.deepEqual(await page.locator('#ytms-menu-order li').evaluateAll(nodes => nodes.map(node => node.dataset.menuItem)), visibleOrder);
   await page.getByRole('tab', { name: 'Comments', exact: true }).click();
   assert.equal(await page.locator('#ytms-colour-mode').inputValue(), 'off');
   await saveFixtureSettings(page);

@@ -23,7 +23,7 @@ export function verifyMasterMetadata(source) {
     return values[0];
   }
   for (const [field, expected] of Object.entries({
-    name: "YouTube Master Suite", namespace: "youtube.master-suite", author: "Citizen",
+    name: "YouTube Master Suite", namespace: "youtube.master-suite", author: "cantwalkwontrun",
     license: "GNU GPLv3", updateURL: "none", downloadURL: "none",
     "run-at": "document-start", sandbox: "raw", noframes: "",
   })) assert.equal(single(field), expected, `Unexpected master @${field} metadata`);

@@ -188,7 +188,21 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
     // generated, and newly stamped/recycled cards need no polling.
     if (previewRoute() && target?.closest(disableVideoPreviews ? 'ytd-browse, ytd-search' : 'ytd-browse ytd-rich-grid-renderer')) {
       const card = target.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, yt-lockup-view-model') || target;
-      if (!card.contains(event.relatedTarget)) syncPreviews();
+      if (!card.contains(event.relatedTarget)) {
+        const app = target.closest('ytd-app');
+        const host = target.closest(disableVideoPreviews ? 'ytd-rich-grid-renderer, ytd-search' : 'ytd-rich-grid-renderer');
+        const appController = app?.polymerController || app;
+        const controller = host?.polymerController || host;
+        const current = [patches.get(appController), patches.get(controller)];
+        // Stable native hosts already own the wrappers. Hovering another card
+        // needs only their pure eligibility update, not document-wide queries
+        // and synchronous layout/style reads. New/rebound hosts still take the
+        // full discovery path before YouTube's native mouseenter runs.
+        if (appController?.isInlinePreviewDisabled === false && app?.isConnected && host?.isConnected &&
+            current.every(record => record && record.controller.computeIsInlinePreviewEnabled === record.wrapper)) {
+          for (const record of new Set(current)) { try { recompute(record); } catch { /* Native fallback remains installed. */ } }
+        } else syncPreviews();
+      }
     }
     if (timeDisplayMode !== 'native' && target?.closest('#movie_player .ytp-time-display')) syncTime();
   }

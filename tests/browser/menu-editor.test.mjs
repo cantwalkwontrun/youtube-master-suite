@@ -59,7 +59,7 @@ async function addNamed(page, name) {
 test('opening the editor preserves legacy grouping, order and visibility without creating a custom draft', async t => {
   const prefs = { menuItemOrder: ['share', 'channelTools', 'playNext'], menuShowReport: false, menuShowDownload: true };
   const page = await open(t, prefs);
-  assert.deepEqual(await currentIds(page), ['share', 'channelTools', 'playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'hype', 'notInterested']);
+  assert.deepEqual(await currentIds(page), ['share', 'channelTools', 'playNext', 'addToQueue', 'watchLater', 'savePlaylist', 'download', 'notInterested']);
   assert.equal(await page.getByLabel('Show Download', { exact: true }).isChecked(), true);
   await page.getByLabel('Editing menu', { exact: true }).selectOption('channelTools');
   assert.deepEqual(await currentIds(page), ['channelAge', 'dontRecommend', 'report']);
@@ -153,7 +153,7 @@ test('deleting a submenu promotes all children in order and retains nested desce
   assert.equal(next.nodes.some(node => node.id === 'submenu-parent'), false);
   assert.equal(next.nodes.find(node => node.id === 'submenu-child').parent, 'root');
   assert.equal(next.nodes.find(node => node.id === 'watchLater').parent, 'submenu-child');
-  assert.deepEqual(next.nodes.filter(node => createMenuLayout().actionIds.includes(node.id)).map(node => node.id).sort(), [...createMenuLayout().actionIds].sort());
+  assert.deepEqual(next.nodes.filter(node => createMenuLayout().actionIds.includes(node.id)).map(node => node.id).sort(), createMenuLayout().actionIds.filter(id=>id!=='hype').sort());
   assert.match(await page.getByRole('status').textContent(), /contents were moved to the parent menu/);
 });
 

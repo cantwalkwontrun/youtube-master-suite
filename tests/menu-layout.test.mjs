@@ -5,6 +5,21 @@ import vm from 'node:vm';
 import { createMenuLayout } from '../sources/menu-layout.mjs';
 
 const layouts = createMenuLayout();
+test('shared action metadata preserves strict legacy visibility and immutable defaults', () => {
+  const expected = { download:'menuShowDownload', channelAge:'menuShowAgeLimit', notInterested:'menuShowNotInterested', dontRecommend:'menuShowDontRecommend', report:'menuShowReport' };
+  for (const [action, key] of Object.entries(expected)) {
+    assert.equal(layouts.actionSettings[action].key,key);
+    assert.equal(layouts.preferenceActions[key],action);
+    assert.equal(layouts.visibilityDefaults[key],action!=='download');
+    assert.ok(Object.isFrozen(layouts.actionSettings[action]));
+    for (const value of [undefined,null,false,true,0,1,'false']) {
+      const node=layouts.fromPreferences({[key]:value}).nodes.find(node=>node.id===action);
+      assert.equal(node.visible,action==='download'?value===true:value!==false);
+    }
+  }
+  assert.ok(Object.isFrozen(layouts.preferenceActions));
+  assert.ok(Object.isFrozen(layouts.visibilityDefaults));
+});
 const copy = value => JSON.parse(JSON.stringify(value));
 function custom() {
   const value = layouts.fromPreferences({});
@@ -31,7 +46,7 @@ test('legacy order, grouping and visibility become an equivalent detached layout
   assert.equal(value.nodes.find(node => node.id === 'download').visible, true);
   assert.deepEqual(layouts.validate(value), value);
   const flat = layouts.fromPreferences({ menuGroupChannelTools: false });
-  assert.equal(flat.nodes.length, 11);
+  assert.equal(flat.nodes.length, 10);
   assert.ok(flat.nodes.every(node => node.parent === 'root'));
 });
 
@@ -49,13 +64,15 @@ test('validated custom menus preserve sibling order and labels without retaining
   assert.equal(layouts.clone(null), null);
 });
 
-test('older custom menus retain every node and gain only a visible Hype action', () => {
+test('Hype is excluded from context layouts without changing other custom nodes', () => {
   const original=custom();original.nodes=original.nodes.filter(node=>node.id!=='hype');
   original.nodes.find(node=>node.id==='download').visible=false;
   const migrated=layouts.validate(original);
   assert.deepEqual(migrated.nodes.filter(node=>node.id!=='hype'),original.nodes);
-  assert.deepEqual(migrated.nodes.find(node=>node.id==='hype'),{id:'hype',parent:'root',visible:true});
-  const hidden=layouts.fromPreferences({menuShowHype:false});assert.equal(hidden.nodes.find(node=>node.id==='hype').visible,false);
+  assert.equal(migrated.nodes.find(node=>node.id==='hype'),undefined);
+  const hidden=layouts.fromPreferences({menuShowHype:false});assert.equal(hidden.nodes.find(node=>node.id==='hype'),undefined);
+  const legacy={...original,nodes:[...original.nodes,{id:'hype',parent:'root',visible:false}]};
+  assert.deepEqual(layouts.validate(legacy),migrated);
   assert.equal(layouts.validate({...original,nodes:original.nodes.filter(node=>node.id!=='watchLater')}),null);
 });
 
