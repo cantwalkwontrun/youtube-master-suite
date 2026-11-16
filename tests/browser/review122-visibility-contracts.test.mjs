@@ -113,7 +113,10 @@ for(const binding of ['contradiction','inner','wrapper','opaque'])test(`full edi
   await page.evaluate(({installer,layouts,binding})=>{
     review122.dispose();
     const popup=review122.popup,parent=popup.querySelector('yt-list-view-model');
-    if(binding==='contradiction')parent.append(parent.querySelector('[data-action="Hype"]'));
+    const download=parent.querySelector('[data-action="Hype"]');
+    download.data.title.content='Download';download.data.leadingImage.sources[0].clientResource.imageName='OFFLINE_DOWNLOAD';
+    download.dataset.action='Download';download.textContent='Download';
+    if(binding==='contradiction')parent.append(download);
     else for(const row of parent.children){
       const value=JSON.parse(JSON.stringify(row.data));
       row.componentProps={data:()=>binding==='opaque'?Symbol('opaque'):binding==='wrapper'?{listItemViewModel:value}:value};
@@ -131,5 +134,5 @@ for(const binding of ['contradiction','inner','wrapper','opaque'])test(`full edi
   await settle(page);
   assert.equal(await page.locator('[data-ytms-video-menu]').count(),binding==='contradiction'?0:1);
   assert.equal(await page.locator('[data-action="Other"]').isVisible(),true);
-  assert.equal(await page.locator('[data-action="Hype"]').isVisible(),binding==='contradiction');
+  assert.equal(await page.locator('[data-action="Download"]').isVisible(),binding==='contradiction');
 });

@@ -16,22 +16,22 @@ async function open(t){
   await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
   await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true});
   await page.locator('#ytms-settings-button').click();
-  await page.locator('#ytms-settings-search').fill('Show Hype in video menus');
-  await page.locator('.settings-search-result[data-target="menuShowHype"]').click();
+  await page.locator('#ytms-settings-search').fill('Show Download in video menus');
+  await page.locator('.settings-search-result[data-target="menuShowDownload"]').click();
   return page;
 }
 test('menu search destination survives visibility edits and reordering without stale marks or writes',async t=>{
-  const page=await open(t),row=page.locator('[data-menu-item="hype"]');
-  assert.deepEqual(await row.locator('mark').allTextContents(),['Hype']);
+  const page=await open(t),row=page.locator('[data-menu-item="download"]');
+  assert.deepEqual(await row.locator('mark').allTextContents(),['Download']);
   const before=await page.evaluate(()=>GM_getValue('yt-master-suite.settings.v1',null));
-  await page.locator('#ytms-menuShowHype').uncheck();
+  await page.locator('#ytms-menuShowDownload').check();
   assert.equal(await row.evaluate(el=>el.classList.contains('settings-search-destination')),true,
     'The selected setting remains identified after its owned row is rendered again');
-  assert.deepEqual(await row.locator('mark').allTextContents(),['Hype']);
+  assert.deepEqual(await row.locator('mark').allTextContents(),['Download']);
   await row.locator('[data-direction="up"]').click();
   assert.equal(await page.locator('.settings-search-destination').count(),1);
-  assert.deepEqual(await row.locator('mark').allTextContents(),['Hype']);
-  assert.equal(await page.locator('#ytms-menuShowHype').isChecked(),false);
+  assert.deepEqual(await row.locator('mark').allTextContents(),['Download']);
+  assert.equal(await page.locator('#ytms-menuShowDownload').isChecked(),true);
   assert.equal(await page.locator('#ytms-save-preview').isEnabled(),true);
   assert.equal(await page.evaluate(()=>GM_getValue('yt-master-suite.settings.v1',null)),before);
   await page.locator('#ytms-tab-feed').click();
