@@ -17,6 +17,19 @@ const badges = {
   camel: '<badge-shape><span class="ytBadgeShapeBadgeText">Members only</span></badge-shape>',
   metadata: '<div class="yt-content-metadata-view-model__metadata-row"><span class="yt-content-metadata-view-model__metadata-text">Members only</span></div>',
 };
+for (const compiled of [false,true]) for (const route of ['/', '/results?search_query=fixture']) for (const enabled of [false,true])
+  test(`Members first badge follows membership setting (${compiled?'Suite':'source'}, ${route}, enabled ${enabled})`,async t=>{
+    const page=await open(t,{compiled,route,enabled,badge:'<yt-badge-view-model><badge-shape><span class="yt-badge-shape__text">Members first</span></badge-shape></yt-badge-view-model>'});
+    assert.equal(await page.locator('#fixture-card').getAttribute(marker),enabled?'1':null);
+  });
+test('Members first badge changes reconcile without hiding matching creator text',async t=>{
+  const page=await open(t,{badge:'<div class="yt-content-metadata-view-model__metadata-row"><span class="yt-content-metadata-view-model__metadata-text"><a href="/@FixtureCreator">Members first</a></span><badge-shape><span class="yt-badge-shape__text">Public</span></badge-shape></div>'});
+  assert.equal(await page.locator('#fixture-card').getAttribute(marker),null);
+  await page.evaluate(()=>document.querySelector('badge-shape span').textContent='Members first');
+  await page.waitForFunction(key=>document.getElementById('fixture-card').getAttribute(key)==='1',marker);
+  await page.evaluate(()=>document.querySelector('badge-shape span').textContent='Public');
+  await page.waitForFunction(key=>!document.getElementById('fixture-card').hasAttribute(key),marker);
+});
 async function settle(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function open(t, { badge = '', enabled = true, route = '/', compiled = false, preferences = {} } = {}) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, serviceWorkers: 'block' });
