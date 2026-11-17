@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.34
+// @version      2.35
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -180,7 +180,7 @@
 
   function isMembersOnlyMatch(el) {
     // Match a native label, not a channel name or prose mentioning membership.
-    const memberLabel = value => /^members(?:\s+|-)only$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
+    const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
     const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
     if (el.closest(creatorLink)) return false;
     // Native semantic badges remain authoritative before their translated

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.142
+// @version      1.2.143
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       cantwalkwontrun
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.142";
+  const MASTER_VERSION = "1.2.143";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -11439,7 +11439,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.34",
+    "Feed UI Cleaner v2.35",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -11613,7 +11613,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
         function isMembersOnlyMatch(el) {
           // Match a native label, not a channel name or prose mentioning membership.
-          const memberLabel = value => /^members(?:\s+|-)only$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
+          const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
           const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
           if (el.closest(creatorLink)) return false;
           // Native semantic badges remain authoritative before their translated

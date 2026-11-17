@@ -37,7 +37,7 @@ import { createCustomJavascript } from "./sources/custom-javascript.mjs";
 import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.142";
+const MASTER_VERSION = "1.2.143";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
