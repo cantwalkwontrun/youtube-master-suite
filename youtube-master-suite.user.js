@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.165
+// @version      1.2.166
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       cantwalkwontrun
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.165";
+  const MASTER_VERSION = "1.2.166";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -12694,7 +12694,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.42",
+    "Feed UI Cleaner v2.43",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -12867,11 +12867,16 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           return /^view full podcast$/i.test(getText(el));
         }
 
-        function isMembersOnlyMatch(el) {
+        function isMembersOnlyMatch(el, card) {
           // Match a native label, not a channel name or prose mentioning membership.
           const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
           const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
-          if (el.closest(creatorLink) || el.closest('[hidden]')) return false;
+          // A hidden badge can be stale. A hidden card still needs its filter state.
+          const isHiddenBadgePart = node => {
+            const hidden = node.closest('[hidden]');
+            return hidden && hidden !== card && card.contains(hidden);
+          };
+          if (el.closest(creatorLink) || isHiddenBadgePart(el)) return false;
           // Native semantic badges remain authoritative before their translated
           // label arrives. Generic badge hosts still require a precise label below.
           if (el.classList.contains('badge-style-type-members-only')) return true;
@@ -12881,13 +12886,13 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
             let visibleText = '';
             while (walker.nextNode()) {
-              if (!walker.currentNode.parentElement?.closest('[hidden]')) visibleText += walker.currentNode.nodeValue;
+              if (!isHiddenBadgePart(walker.currentNode.parentElement)) visibleText += walker.currentNode.nodeValue;
             }
             return memberLabel(visibleText);
           };
           return (!el.querySelector(creatorLink) && label(el)) ||
             [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
-              .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !node.closest('[hidden]') && label(node));
+              .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !isHiddenBadgePart(node) && label(node));
         }
 
         function getFilterProfileName() {
@@ -12930,7 +12935,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             key: 'channelAge',
             reason: 'Channel age',
             selector: `${OUTER_CONTAINER_SELECTORS},${INNER_CONTAINER_SELECTORS}`,
-            matches: (el) => channelAge && isChannelAgeFeedRoute() && channelAge.cardFilterReason(getCardContainer(el)),
+            matches: (_el, card) => channelAge && isChannelAgeFeedRoute() && channelAge.cardFilterReason(card),
           },
           {
             key: 'mixes',
@@ -13266,13 +13271,12 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         function addContainerMatch(matchesByContainer, el, filter) {
           if (isInsideExcludedSurface(el)) return;
           const container = getCardContainer(el);
+          if (!container || isInsideExcludedSurface(container)) return;
           // Only the originating card's channel-age reason is replaced by feedback.
           // Ad, membership, watched and other independent restrictions still win.
           if (filter.key === 'channelAge' && confirmations.has(container)) return;
-          const match = filter.matches(el);
+          const match = filter.matches(el, container);
           if (!match) return;
-
-          if (!container || isInsideExcludedSurface(container)) return;
 
           const current = matchesByContainer.get(container) || {
             permanent: false,

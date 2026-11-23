@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.42
+// @version      2.43
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -179,11 +179,16 @@
     return /^view full podcast$/i.test(getText(el));
   }
 
-  function isMembersOnlyMatch(el) {
+  function isMembersOnlyMatch(el, card) {
     // Match a native label, not a channel name or prose mentioning membership.
     const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
     const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
-    if (el.closest(creatorLink) || el.closest('[hidden]')) return false;
+    // A hidden badge can be stale. A hidden card still needs its filter state.
+    const isHiddenBadgePart = node => {
+      const hidden = node.closest('[hidden]');
+      return hidden && hidden !== card && card.contains(hidden);
+    };
+    if (el.closest(creatorLink) || isHiddenBadgePart(el)) return false;
     // Native semantic badges remain authoritative before their translated
     // label arrives. Generic badge hosts still require a precise label below.
     if (el.classList.contains('badge-style-type-members-only')) return true;
@@ -193,13 +198,13 @@
       const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
       let visibleText = '';
       while (walker.nextNode()) {
-        if (!walker.currentNode.parentElement?.closest('[hidden]')) visibleText += walker.currentNode.nodeValue;
+        if (!isHiddenBadgePart(walker.currentNode.parentElement)) visibleText += walker.currentNode.nodeValue;
       }
       return memberLabel(visibleText);
     };
     return (!el.querySelector(creatorLink) && label(el)) ||
       [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
-        .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !node.closest('[hidden]') && label(node));
+        .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !isHiddenBadgePart(node) && label(node));
   }
 
   function getFilterProfileName() {
@@ -242,7 +247,7 @@
       key: 'channelAge',
       reason: 'Channel age',
       selector: `${OUTER_CONTAINER_SELECTORS},${INNER_CONTAINER_SELECTORS}`,
-      matches: (el) => channelAge && isChannelAgeFeedRoute() && channelAge.cardFilterReason(getCardContainer(el)),
+      matches: (_el, card) => channelAge && isChannelAgeFeedRoute() && channelAge.cardFilterReason(card),
     },
     {
       key: 'mixes',
@@ -578,13 +583,12 @@
   function addContainerMatch(matchesByContainer, el, filter) {
     if (isInsideExcludedSurface(el)) return;
     const container = getCardContainer(el);
+    if (!container || isInsideExcludedSurface(container)) return;
     // Only the originating card's channel-age reason is replaced by feedback.
     // Ad, membership, watched and other independent restrictions still win.
     if (filter.key === 'channelAge' && confirmations.has(container)) return;
-    const match = filter.matches(el);
+    const match = filter.matches(el, container);
     if (!match) return;
-
-    if (!container || isInsideExcludedSurface(container)) return;
 
     const current = matchesByContainer.get(container) || {
       permanent: false,

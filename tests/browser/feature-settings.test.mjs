@@ -72,7 +72,8 @@ for (const [name, enabled] of profiles) test(`saved switch combinations survive 
   const page = await openFixture(t, seed);
   await page.locator('#next-video').evaluate(button => button.click());
   await page.waitForURL(url => url.searchParams.get('v') === 'bbbbbbbbbbb');
-  await openPanel(page);
+  // Full-window theatre can hide the masthead while leaving player settings available.
+  await page.locator('#ytms-settings-button:visible, #ytms-player-settings-button:visible').first().click();
   // These three pairs have explicit precedence when older or imported settings conflict.
   const expected = { ...seed };
   if (seed.relatedBelowPlayer) expected.hideRelated = false;
