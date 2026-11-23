@@ -16,7 +16,7 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   const canonicalCard = element => element?.closest?.(outerCardSelector) || element?.closest?.('yt-lockup-view-model') || null;
   const excluded = 'ytd-miniplayer,ytd-playlist-panel-renderer,yt-playlist-panel-renderer,ytd-playlist-video-list-renderer,ytd-popup-container,ytd-engagement-panel-section-list-renderer';
   const feedSurface = 'ytd-browse ytd-rich-grid-renderer,ytd-search ytd-section-list-renderer,ytd-two-column-search-results-renderer';
-  let frame = 0, disposed = false, suspended = false, navigationPending = false, pageSuspended = false, observerActive = false, scanAllCards = true, observedRoute = null;
+  let frame = 0, disposed = false, suspended = false, pageSuspended = false, observerActive = false, scanAllCards = true, observedRoute = null;
   const listeners = [];
   const listen = (target, type, handler) => { target.addEventListener(type, handler, true); listeners.push([target,type,handler]); };
   const text = el => el?.textContent?.replace(/\s+/g,' ').trim() || '';
@@ -384,10 +384,10 @@ export function installDiscoveryControls({ document, window, preferences = {}, c
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
   function clearAllDecorations() { for (const node of badgeNodes) { node.removeAttribute('data-ytms-discovery-badge-hidden'); decorationOwners.delete(node); } for (const node of viewNodes) { node.removeAttribute('data-ytms-discovery-view-line'); decorationOwners.delete(node); } for (const node of headings) node.remove(); badgeNodes.clear(); viewNodes.clear(); headings.clear(); }
   const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
-  const navigateStart = () => { navigationPending = true; start(); };
-  const navigateFinish = () => { navigationPending = false; if (!pageSuspended) { suspended = false; schedule(); } };
+  const navigateStart = start;
+  const navigateFinish = () => { if (!pageSuspended) { suspended = false; schedule(); } };
   const pageHide = () => { pageSuspended = true; start(); };
-  const pageShow = () => { if (!pageSuspended) return; pageSuspended = false; navigationPending = false; suspended = false; schedule(); };
+  const pageShow = () => { if (!pageSuspended) return; pageSuspended = false; suspended = false; schedule(); };
   listen(window,'yt-navigate-start',navigateStart); listen(window,'yt-navigate-finish',navigateFinish);
   listen(window,'yt-page-data-updated',schedule); listen(window,'pageshow',pageShow); listen(window,'pagehide',pageHide);
   if (p.logoToSubscriptions) listen(document,'click',event => {

@@ -1,6 +1,6 @@
 // Language: en-GB. Private, synchronous Tampermonkey persistence; no page bridge.
 export function createIsolatedStorage({ getValue, setValue, addValueChangeListener,
-  removeValueChangeListener, getLegacyStorage, enqueue = callback => queueMicrotask(callback) }) {
+  removeValueChangeListener, getLegacyStorage, beforeMigrationWrite, enqueue = callback => queueMicrotask(callback) }) {
   const keys = Object.freeze([
     'yt-master-suite.settings.v1',
     'yt-master-suite.scroll-miniplayer.corner.v1',
@@ -9,6 +9,7 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
     'yt-master-suite.update-source.v1',
   ]);
   const migrationKey = 'yt-master-suite.storage-migration.v1';
+  const emptyBaselineKey = 'yt-master-suite.storage-empty-baseline.v1';
   const allowed = new Set(keys), maxRecordLength = 262144, maxSnapshotLength = 1048576;
   const subscribers = new Set(), listenerIds = [], changed = new Set();
   let disposed = false, scheduled = false;
@@ -42,7 +43,11 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
     .some(value => typeof value !== 'function')) fail();
 
   let snapshot = read(migrationKey, undefined);
-  if (snapshot === undefined) {
+  // Explicit recovery never replaces the original protected snapshot, even
+  // when it was absent in this tab's cache. A later visible original wins.
+  const emptyBaseline = snapshot === undefined && read(emptyBaselineKey, undefined) === '1';
+  if (emptyBaseline) snapshot = read(migrationKey, undefined);
+  if (snapshot === undefined && !emptyBaseline) {
     // A single baseline commit prevents a partially copied set becoming active.
     // Never normalise these strings: older, malformed and future records remain
     // recoverable and the existing services retain their own validation rules.
@@ -53,15 +58,25 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
     if (snapshot === undefined) {
       const proposed = JSON.stringify({ version: 1, values });
       if (proposed.length > maxSnapshotLength) fail();
+      beforeMigrationWrite?.();
       write(migrationKey, proposed);
       snapshot = read(migrationKey, undefined);
       if (snapshot !== proposed) fail();
     }
   }
-  const baseline = parseSnapshot(snapshot);
+  const recovered = snapshot === undefined && emptyBaseline;
+  const baseline = recovered
+    ? Object.freeze(Object.fromEntries(keys.map(key => [key, null]))) : parseSnapshot(snapshot);
+  const namespaceKey = key => recovered ? key + ':recovered' : key;
+  function storedRecord(key) {
+    const value = read(namespaceKey(key), undefined);
+    // The recovery baseline may read surviving records, but editing recovery
+    // settings must never overwrite them or reuse their coordination receipts.
+    return recovered && value === undefined ? read(key, undefined) : value;
+  }
   // Detect incompatible protected records before settings.initial is frozen.
   for (const key of keys) {
-    const value = read(key, undefined);
+    const value = storedRecord(key);
     if (value !== undefined) raw(value);
   }
   function checkKey(key) {
@@ -69,21 +84,23 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
   }
   function getItem(key) {
     checkKey(key);
-    const value = read(key, undefined);
+    const value = storedRecord(key);
     return value === undefined ? baseline[key] : raw(value);
   }
   function setItem(key, value) {
     checkKey(key);
     if (typeof value !== 'string') fail();
     raw(value);
-    write(key, value);
-    if (read(key, undefined) !== value) fail();
+    const target = namespaceKey(key);
+    write(target, value);
+    if (read(target, undefined) !== value) fail();
   }
   function removeItem(key) {
     checkKey(key);
     // A null tombstone prevents deletion from resurrecting the migration copy.
-    write(key, null);
-    if (read(key, undefined) !== null) fail();
+    const target = namespaceKey(key);
+    write(target, null);
+    if (read(target, undefined) !== null) fail();
   }
   function notify(key, oldValue, newValue, remote) {
     if (disposed || remote !== true || !allowed.has(key)) return;
@@ -106,7 +123,8 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
   }
   try {
     for (const key of keys) {
-      const id = synchronous(addValueChangeListener(key, notify));
+      const id = synchronous(addValueChangeListener(namespaceKey(key), (_changedKey, oldValue, newValue, remote) =>
+        notify(key, oldValue, newValue, remote)));
       if (typeof id !== 'number' && typeof id !== 'string') fail();
       listenerIds.push(id);
     }
@@ -117,7 +135,7 @@ export function createIsolatedStorage({ getValue, setValue, addValueChangeListen
     fail();
   }
   return Object.freeze({
-    getItem, setItem, removeItem,
+    getItem, setItem, removeItem, namespaceKey,
     subscribe(callback) {
       if (disposed || typeof callback !== 'function') fail();
       subscribers.add(callback);

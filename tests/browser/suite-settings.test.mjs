@@ -72,6 +72,53 @@ test('Hype lives under Player, is absent from context editor/search, and survive
   const results=page.locator('.settings-search-result');
   assert.equal(await results.count(),1);
   assert.match(await results.first().textContent(),/Player/);
+  await results.first().click();
+  await hype.check();
+  assert.equal(await hype.locator('..').locator('.preference-badge').textContent(), 'Unsaved');
+  assert.equal(await page.locator('#ytms-menu-editor-heading .preference-badge').count(), 0);
+  await saveFixtureSettings(page);
+  assert.equal(await hype.locator('..').locator('.preference-badge').textContent(), 'Reload needed');
+});
+
+test('signed-out Home keeps a working header settings shortcut as the account button changes', async t => {
+  const page = await openFixture(t, { theatreMode:false, playerSettingsIcon:'off' });
+  await page.evaluate(() => {
+    const signIn = document.createElement('a');
+    signIn.href = '/signin'; signIn.textContent = 'Sign in';
+    document.querySelector('#avatar-btn').replaceWith(signIn);
+    history.pushState({}, '', '/');
+    window.dispatchEvent(new Event('yt-navigate-finish'));
+  });
+  await page.waitForFunction(() => document.querySelector('#ytms-settings-button')?.previousElementSibling?.textContent === 'Sign in');
+  await openPanel(page);
+  assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true);
+  await page.locator('#ytms-cancel-panel').click();
+  await page.evaluate(() => {
+    const avatar = document.createElement('button'); avatar.id = 'avatar-btn';
+    document.querySelector('ytd-masthead a[href="/signin"]').replaceWith(avatar);
+  });
+  await page.waitForFunction(() => document.querySelector('#ytms-settings-button')?.nextElementSibling?.id === 'avatar-btn');
+  assert.equal(await page.locator('#ytms-settings-button').count(), 1);
+});
+
+test('recreating detached settings panels does not retain additional document fullscreen listeners', async t => {
+  const page = await openFixture(t, { theatreMode:false });
+  await openPanel(page);
+  await page.locator('#ytms-cancel-panel').click();
+  await page.evaluate(() => {
+    const original = document.addEventListener.bind(document);
+    window.newFullscreenListeners = 0;
+    document.addEventListener = (type, ...args) => {
+      if (type === 'fullscreenchange') window.newFullscreenListeners++;
+      return original(type, ...args);
+    };
+  });
+  for (let n = 0; n < 2; n++) {
+    await page.locator('#ytms-settings-dialog').evaluate(dialog => dialog.remove());
+    await openPanel(page);
+    await page.locator('#ytms-cancel-panel').click();
+  }
+  assert.equal(await page.evaluate(() => window.newFullscreenListeners), 0);
 });
 
 test('hover-preview and timer preferences are exposed, saved and restored in their own sections', async t => {

@@ -30,7 +30,38 @@ test('Members first badge changes reconcile without hiding matching creator text
   await page.evaluate(()=>document.querySelector('badge-shape span').textContent='Public');
   await page.waitForFunction(key=>!document.getElementById('fixture-card').hasAttribute(key),marker);
 });
+for(const attribute of ['aria-label','title'])for(const label of ['Members only','Members first'])test(`creator row ${attribute} ${label} is not a badge`,async t=>{
+  const row=`<div class="yt-content-metadata-view-model__metadata-row" ${attribute}="${label}"><a href="/@FixtureCreator">${label}</a><badge-shape><span class="yt-badge-shape__text">Public</span></badge-shape></div>`;
+  const page=await open(t,{badge:row});assert.equal(await page.locator('#fixture-card').getAttribute(marker),null);
+  await page.evaluate(value=>document.querySelector('badge-shape span').textContent=value,label);
+  await page.waitForFunction(key=>document.getElementById('fixture-card').getAttribute(key)==='1',marker);
+});
+for(const attribute of ['aria-label','title'])test(`metadata child ${attribute} updates membership without hiding creator text`,async t=>{
+  const page=await open(t,{badge:`<div class="yt-content-metadata-view-model__metadata-row"><a href="/@FixtureCreator">Creator</a><span class="yt-content-metadata-view-model__metadata-text" ${attribute}="Public"></span></div>`});
+  assert.equal(await page.locator('#fixture-card').getAttribute(marker),null);
+  await page.locator('#badges .yt-content-metadata-view-model__metadata-text').evaluate((node,name)=>node.setAttribute(name,'Members first'),attribute);
+  await page.waitForFunction(key=>document.getElementById('fixture-card').getAttribute(key)==='1',marker);
+  await page.locator('#badges .yt-content-metadata-view-model__metadata-text').evaluate((node,name)=>node.setAttribute(name,'Public'),attribute);
+  await page.waitForFunction(key=>!document.getElementById('fixture-card').hasAttribute(key),marker);
+});
 async function settle(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
+for (const tag of ['yt-playlist-panel-renderer', 'yt-playlist-panel-video-renderer']) {
+  test(`membership filter releases a recycled card when the current queue adopts it inside the feed (${tag})`, async t => {
+    const page = await open(t, { badge: badges.modern });
+    const card = page.locator('#fixture-card');
+    assert.equal(await card.getAttribute(marker), '1');
+    await card.evaluate((card, tag) => {
+      const queue = document.createElement(tag);
+      card.after(queue);
+      queue.append(card);
+    }, tag);
+    await settle(page);
+    assert.equal(await card.getAttribute(marker), null);
+    assert.equal(await card.isVisible(), true);
+    await card.evaluate(card => card.parentElement.after(card));
+    await page.waitForFunction(key => document.getElementById('fixture-card').getAttribute(key) === '1', marker);
+  });
+}
 async function open(t, { badge = '', enabled = true, route = '/', compiled = false, preferences = {} } = {}) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, serviceWorkers: 'block' });
   const page = await context.newPage(), errors = [];
@@ -68,6 +99,16 @@ test('late native badge labels hide the card and recycling to public restores it
   await page.waitForFunction(key => document.getElementById('fixture-card').getAttribute(key) === '1', marker);
   await page.evaluate(() => document.getElementById('badges').replaceChildren());
   await page.waitForFunction(key => !document.getElementById('fixture-card').hasAttribute(key), marker);
+});
+
+for (const compiled of [false, true]) test(`an explicitly hidden stale badge does not filter a recycled public card (${compiled ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { compiled, badge: badges.camel });
+  const card = page.locator('#fixture-card');
+  assert.equal(await card.getAttribute(marker), '1');
+  await page.locator('#badges').evaluate(node => { node.hidden = true; });
+  await page.waitForFunction(attr => !document.getElementById('fixture-card').hasAttribute(attr), marker);
+  await page.locator('#badges').evaluate(node => { node.hidden = false; });
+  await page.waitForFunction(attr => document.getElementById('fixture-card').getAttribute(attr) === '1', marker);
 });
 
 test('disabled membership filtering leaves explicit members-only badges visible', async t => {

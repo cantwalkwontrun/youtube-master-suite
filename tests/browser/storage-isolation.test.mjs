@@ -44,7 +44,7 @@ async function open(t, beforeSuite = '') {
   });
   await context.addInitScript({ content: `${beforeSuite}\n${SUITE}` });
   const page = await context.newPage(), errors = [];
-  page.on('pageerror', error => errors.push(error.message)); page.setDefaultTimeout(7000);
+  page.on('pageerror', error => errors.push(error.stack || error.message)); page.setDefaultTimeout(7000);
   t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
   await page.goto(WATCH_URL);
   return page;
@@ -99,4 +99,36 @@ for (const fault of ['missing API', 'migration write failure']) test(`${fault} s
   const state = await page.evaluate(key => ({ origin: { ...localStorage }, original: isolationLegacy, migration: GM_getValue(key, null) }), MIGRATION);
   assert.deepEqual(state.origin, fault === 'missing API' ? state.original : { ...state.original, [GUARD]: '1' });
   assert.equal(state.migration, null);
+});
+
+test('a trusted stale-guard recovery prepares defaults without re-importing or changing site settings', { timeout: 30000 }, async t => {
+  const page = await open(t, `if (location.origin === 'https://www.youtube.com') {
+    localStorage.setItem(${JSON.stringify(GUARD)}, '1');
+    localStorage.setItem(${JSON.stringify(WRITE_REVISION)}, 'synthetic-orphaned-revision');
+  }`);
+  const button = page.getByRole('button', { name: 'Prepare Suite defaults' });
+  const reset = 'yt-master-suite.storage-empty-baseline.v1';
+  await button.waitFor({ timeout: 15000 });
+  await button.evaluate(node => node.click());
+  assert.equal(await page.evaluate(key => GM_getValue(key, null), reset), null);
+  await button.click();
+  await page.getByText('Storage is ready.', { exact: false }).waitFor();
+  assert.equal(await page.evaluate(key => GM_getValue(key, null), reset), '1');
+  assert.equal(await page.evaluate(key => GM_getValue(key, null), MIGRATION), null);
+  assert.equal(await page.locator('#ytms-settings-button').count(), 0);
+  await page.reload();
+  await healthy(page);
+  assert.equal(await page.evaluate(key => GM_getValue(key, null), SETTINGS), null);
+  await page.locator('#ytms-settings-button').click();
+  await page.locator('#ytms-tab-feed').click();
+  await page.locator('#ytms-hideShorts').uncheck();
+  await saveFixtureSettings(page);
+  assert.equal(await page.evaluate(key => JSON.parse(GM_getValue(key + ':recovered')).values.hideShorts, SETTINGS), false);
+  assert.equal(await page.evaluate(key => GM_getValue(key, null), SETTINGS), null);
+  const origin = await page.evaluate(() => ({ ...localStorage }));
+  for (const key of [WRITE_REVISION + ':recovered', 'yt-master-suite.corner-write.v1:recovered']) {
+    assert.match(origin[key], /^[0-9a-f-]{36}$/);
+    delete origin[key];
+  }
+  assert.deepEqual(origin, { ...(await page.evaluate(() => isolationLegacy)), [GUARD]: '1', [WRITE_REVISION]: 'synthetic-orphaned-revision' });
 });

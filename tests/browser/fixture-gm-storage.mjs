@@ -66,7 +66,7 @@ export function installFixtureGMStorage(browser) {
     await context.exposeBinding('__ytmsFixtureGM', ({ page }, request) => {
       const operation = serial.then(async () => {
         if (request.kind === 'snapshot') return [...values];
-        if (request.kind !== 'write' || ![...keys, migrationKey, 'yt-master-suite.settings-write.v1', 'yt-master-suite.corner-write.v1', 'yt-master-suite.channel-filters-write.v1', 'yt-master-suite.marker-write.v1', 'yt-master-suite.update-source-write.v1', 'yt-master-suite.custom-javascript.v1', 'yt-master-suite.custom-javascript-write.v1'].includes(request.key) ||
+        if (request.kind !== 'write' || typeof request.key !== 'string' || ![...keys, migrationKey, 'yt-master-suite.storage-empty-baseline.v1', 'yt-master-suite.settings-write.v1', 'yt-master-suite.corner-write.v1', 'yt-master-suite.channel-filters-write.v1', 'yt-master-suite.marker-write.v1', 'yt-master-suite.update-source-write.v1', 'yt-master-suite.custom-javascript.v1', 'yt-master-suite.custom-javascript-write.v1'].includes(request.key.replace(/:recovered$/, '')) ||
             !(request.value === null || typeof request.value === 'string')) throw new Error('Invalid synthetic GM operation');
         values.set(request.key, request.value);
         await Promise.all(context.pages().filter(other => other !== page && !other.isClosed()).map(async other => {

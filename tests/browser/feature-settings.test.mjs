@@ -1,6 +1,7 @@
 // Language: en-GB. Integration coverage for the expanded settings catalogue.
 import { createFeatureCatalogue } from "../../sources/feature-catalogue.mjs";
 import { createMenuLayout } from "../../sources/menu-layout.mjs";
+import { createSuiteSettings } from "../../sources/suite-settings.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
@@ -56,6 +57,37 @@ async function healthy(page, errors = []) {
 }
 async function openPanel(page) { await page.locator("#ytms-settings-button").click(); }
 async function colour(page, selector) { return page.locator(selector).evaluate(el => getComputedStyle(el).color); }
+
+// The bit patterns and their inverses exercise all four input states of every
+// pair of switches. Constant rows also cover pairs with identical bit values.
+const switchKeys = Object.entries(createSuiteSettings(() => null, () => true).defaults)
+  .filter(([, value]) => typeof value === 'boolean').map(([key]) => key);
+const profiles = [['all off', () => false], ['all on', () => true]];
+for (let bit = 0; bit < Math.ceil(Math.log2(switchKeys.length)); bit++) {
+  profiles.push([`bit ${bit}`, index => Boolean(index & (1 << bit))],
+    [`inverse bit ${bit}`, index => !(index & (1 << bit))]);
+}
+for (const [name, enabled] of profiles) test(`saved switch combinations survive a watch transition and settings Cancel: ${name}`, async t => {
+  const seed = Object.fromEntries(switchKeys.map((key, index) => [key, enabled(index)]));
+  const page = await openFixture(t, seed);
+  await page.locator('#next-video').evaluate(button => button.click());
+  await page.waitForURL(url => url.searchParams.get('v') === 'bbbbbbbbbbb');
+  // Full-window theatre can hide the masthead while leaving player settings available.
+  await page.locator('#ytms-settings-button:visible, #ytms-player-settings-button:visible').first().click();
+  // These three pairs have explicit precedence when older or imported settings conflict.
+  const expected = { ...seed };
+  if (seed.relatedBelowPlayer) expected.hideRelated = false;
+  if (seed.disableVideoPreviews) expected.keepHoverPreviews = false;
+  if (seed.hideAllComments) expected.fullscreenComments = false;
+  const scalar = Object.fromEntries(Object.entries(expected).filter(([key]) => !key.startsWith('menu') || key === 'menuShowHype'));
+  const actual = await page.evaluate(keys => Object.fromEntries(keys.map(key => [key,
+    document.getElementById('ytms-' + key)?.checked])), Object.keys(scalar));
+  assert.deepEqual(actual, scalar);
+  await page.locator('#ytms-cancel-panel').click();
+  assert.deepEqual(await page.evaluate(key => JSON.parse(fixtureStorage.getItem(key)).values, KEY), seed);
+  assert.equal(await page.locator('#movie_player video').count(), 1);
+  await healthy(page);
+});
 
 for (const enabled of [false, true])
 test(`compiled miniplayer-restorer preference ${enabled} controls fallback insertion`, async t => {

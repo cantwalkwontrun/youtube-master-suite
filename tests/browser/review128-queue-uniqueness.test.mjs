@@ -29,7 +29,7 @@ async function open(t, options = {}) {
     document.querySelectorAll('ytd-playlist-panel-renderer').forEach(panel => panel.remove());
     const f = window.uniqueFixture = { entries: (options.noQueue ? [A] : options.ids || [A, B, C]).map((videoId, i) => ({ videoId, playlistSetVideoId: 'set-' + i })),
       index: options.index || 0, adds: [], removals: [], moves: [], serial: 100, ignoreRemoval: Boolean(options.ignoreRemoval), refuseAppend: false, signalCount: 0,
-      nativeListId: options.noQueue ? null : options.savedPlaylist ? 'PLfixture' : 'TLPQfixture', panelListId: options.savedPlaylist ? 'PLfixture' : 'TLPQfixture', frames: 0, commands: [], mediaCalls: [], hidden: options.blocked === 'hidden', nativeOrder: options.nativeOrder, noQueue: Boolean(options.noQueue) };
+      nativeListId: options.noQueue || options.missingListId ? null : options.savedPlaylist ? 'PLfixture' : 'TLPQfixture', panelListId: options.savedPlaylist ? 'PLfixture' : 'TLPQfixture', frames: 0, commands: [], mediaCalls: [], hidden: options.blocked === 'hidden', nativeOrder: options.nativeOrder, noQueue: Boolean(options.noQueue) };
     if (options.oversizedSet) f.entries[0].playlistSetVideoId = 'x'.repeat(1025);
     const nativeFrame = window.requestAnimationFrame;
     window.requestAnimationFrame = callback => { f.frames++; return nativeFrame(callback); };
@@ -170,6 +170,30 @@ for (const suite of [false, true]) test('an unresolved native append cannot be r
   await choose(page, D); await choose(page, D);
   assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D]); assert.deepEqual(await ids(page), [A, B, C]);
 });
+for (const suite of [false, true]) test(`an unchanged known queue accepts an explicit native Add retry after the confirmation window (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  await page.evaluate(() => {
+    uniqueFixture.refuseAppend = true;
+    const now = Date.now.bind(Date);
+    uniqueFixture.timeShift = 0;
+    Date.now = () => now() + uniqueFixture.timeShift;
+  });
+  await choose(page, D);
+  await choose(page, D);
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D]);
+  await page.evaluate(() => { uniqueFixture.timeShift = 9000; uniqueFixture.refuseAppend = false; });
+  await choose(page, D);
+  await page.waitForFunction(() => uniqueFixture.entries.length === 4);
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D, D]);
+  assert.deepEqual(await ids(page), [A, B, C, D]);
+});
+for (const suite of [false, true]) test(`a Watch queue with no native list ID can repair a duplicate at a proven index (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite, missingListId: true, ids: [A, B, A, C], index: 2 });
+  await page.waitForFunction(() => uniqueFixture.entries.length === 3);
+  assert.deepEqual(await ids(page), [B, A, C]);
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.removals), ['set-0']);
+  assert.equal(await page.evaluate(() => uniqueFixture.entries[uniqueFixture.index].playlistSetVideoId), 'set-2');
+});
 for (const suite of [false, true]) for (const unsafe of ['missingIndex', 'savedPlaylist']) test('duplicate repair refuses ' + unsafe + ' (' + (suite ? 'Suite' : 'source') + ')', async t => {
   const page = await open(t, { suite, ids: [A, B, A], ...{ [unsafe]: true } });
   await page.evaluate(async () => { for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame); });
@@ -196,6 +220,23 @@ for (const suite of [false, true]) for (const nextId of [null, '', 'TLPQfixture'
   await page.evaluate(() => { uniqueFixture.nativeListId = uniqueFixture.panelListId = 'TLPQreplacement'; uniqueFixture.render(); });
   await choose(page, D);
   assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D, D], 'A different verified native queue has its own reservation context');
+});
+for (const suite of [false, true]) test('unconfirmed additions in earlier queues allow a later independent queue to accept videos (' + (suite ? 'Suite' : 'source') + ')', async t => {
+  const page = await open(t, { suite });
+  for (let n = 0; n < 5; n++) {
+    await page.evaluate(n => {
+      const f = uniqueFixture;
+      f.nativeListId = f.panelListId = 'TLPQsession' + n;
+      f.refuseAppend = n < 4;
+      f.render();
+    }, n);
+    await choose(page, D, 'next');
+    if (n < 4) await choose(page, D, 'next');
+  }
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D, D, D, D, D]);
+  await page.waitForFunction(() => uniqueFixture.entries[1]?.videoId === 'ddddddddddd');
+  assert.deepEqual(await ids(page), [A, D, B, C]);
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.mediaCalls), []);
 });
 for (const suite of [false, true]) test('an ignored native removal times out once without unchanged-state idle retries (' + (suite ? 'Suite' : 'source') + ')', { timeout: 15000 }, async t => {
   const page = await open(t, { suite, ids: [A, B, B, C], ignoreRemoval: true });
@@ -344,6 +385,30 @@ for (const suite of [false, true]) test('an uncertain queue creation cannot retr
   await choose(page, D); await choose(page, D);
   assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D]);
 });
+
+for (const suite of [false, true]) {
+  test(`confirmed duplicate cleanup releases its queue reservation across a long session (${suite ? 'Suite' : 'source'})`, async t => {
+    const page = await open(t, { suite });
+    const result = await page.evaluate(async () => {
+      const f = uniqueFixture;
+      const counts = [];
+      for (let queue = 1; queue <= 6; queue++) {
+        f.nativeListId = f.panelListId = 'TLPQfixture' + queue;
+        f.entries = ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'bbbbbbbbbbb'].map((videoId, i) =>
+          ({ videoId, playlistSetVideoId: 'entry-' + queue + '-' + i }));
+        f.currentSet = f.entries[0].playlistSetVideoId;
+        f.render();
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        counts.push(f.entries.length);
+      }
+      return { counts, removals: f.removals, playbackCalls: f.mediaCalls };
+    });
+    assert.deepEqual(result.counts, [2, 2, 2, 2, 2, 2]);
+    assert.deepEqual(result.removals, [1, 2, 3, 4, 5, 6].map(queue => 'entry-' + queue + '-2'));
+    assert.deepEqual(result.playbackCalls, []);
+  });
+}
 for (const suite of [false, true]) test('an ambiguous creation before any visible player cannot append the same video twice (' + (suite ? 'Suite' : 'source') + ')', async t => {
   const page = await open(t, { suite, noQueue: true, noPlayer: true }); await page.evaluate(() => { uniqueFixture.refuseAppend = true; });
   await choose(page, D); await choose(page, D);

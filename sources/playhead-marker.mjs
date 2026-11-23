@@ -157,25 +157,35 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
     } catch { return failure('The image could not be decoded. Choose a different PNG, JPEG or WebP file.'); }
     finally { bitmap?.close?.(); }
   }
+  function persistMarker(value) {
+    const desired = value === null ? null : JSON.stringify({ version: 1, ...value });
+    const apply = stored => { current = stored; unrenderableData = null; reconcileRuntime(); };
+    try {
+      const storage = getStorage(), existing = parse(storage.getItem(key));
+      if (!existing.ok) return existing;
+      try {
+        if (desired === null) storage.removeItem(key);
+        else storage.setItem(key, desired);
+      } catch {
+        // The write can succeed while its first verification fails. Reconcile
+        // with the observed record and never roll back another tab's value.
+        const actual = storage.getItem(key);
+        if (actual !== desired) {
+          const saved = parse(actual);
+          if (saved.ok) apply(saved.value);
+          return failure('The marker change did not persist. Review the saved marker before retrying.');
+        }
+      }
+      apply(value);
+      return { ok: true, value: value === null ? null : { ...value } };
+    } catch { return failure('The marker change could not be confirmed. Reopen settings to check the saved marker.'); }
+  }
   function save(value) {
     const checked = checkedValue(value);
     if (!checked) return failure('Choose a valid image and a marker size from 16 to 40 pixels.');
-    try {
-      const storage = getStorage(), existing = parse(storage.getItem(key));
-      if (!existing.ok) return existing;
-      storage.setItem(key, JSON.stringify({ version: 1, ...checked }));
-      current = checked; unrenderableData = null; reconcileRuntime();
-      return { ok: true, value: { ...checked } };
-    } catch { return failure('The marker could not be saved. Browser storage is unavailable or full.'); }
+    return persistMarker(checked);
   }
-  function remove() {
-    try {
-      const storage = getStorage(), existing = parse(storage.getItem(key));
-      if (!existing.ok) return existing;
-      storage.removeItem(key); current = null; unrenderableData = null; reconcileRuntime();
-      return { ok: true, value: null };
-    } catch { return failure('The marker could not be removed. Browser storage is unavailable.'); }
-  }
+  function remove() { return persistMarker(null); }
   function visible(node) {
     if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
     for (let current = node; current; current = current.parentElement) {
@@ -282,7 +292,7 @@ export function createPlayheadMarker({ document, window, getStorage, subscribeSt
     image.width = image.height = current.size;
     image.style.setProperty('width', `${current.size}px`, 'important');
     image.style.setProperty('height', `${current.size}px`, 'important');
-    record = { player, container, image, dataUrl: current.dataUrl };
+    record = { container, image, dataUrl: current.dataUrl };
     const thisRecord = record;
     image.addEventListener('load', () => {
       if (record === thisRecord && image.isConnected && current?.dataUrl === thisRecord.dataUrl) {

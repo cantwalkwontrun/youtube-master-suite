@@ -38,6 +38,10 @@ export function createSuiteBackup(getStorage, settings, channelAge) {
     checkObject(input, settingNames, complete ? requiredSettingNames : []);
     const values = settings.validate(input);
     for (const name of Object.keys(input)) {
+      // Before Hype moved to Player, the editor node could override its
+      // separate boolean. validate() restores that effective value.
+      if (name === 'menuShowHype' && typeof input[name] === 'boolean' && values.menuLayout &&
+          input.menuLayout.nodes.some(node => node.id === 'hype')) continue;
       // This exact earlier default is a supported preference migration, not a
       // malformed custom order. Keep all other normalisation failures rejected.
       if (name === "menuItemOrder" && settings.isPreviousDefaultMenuOrder(input[name])) continue;

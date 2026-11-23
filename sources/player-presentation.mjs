@@ -128,8 +128,18 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
     const id = new window.URLSearchParams(window.location.search).get('v');
     return /^[a-zA-Z0-9_-]{11}$/.test(id || '') ? id : '';
   }
-  function syncTime() {
+  let timeNodes = null, tickingVideo = null;
+  function syncTime(tick = null) {
     if (!['elapsed', 'remaining'].includes(timeDisplayMode) || suspended || document.hidden) return;
+    if (tick && timeNodes?.video === tick && tick.isConnected && timeNodes.current.isConnected &&
+        tick.closest('#movie_player') === timeNodes.player && timeNodes.current.closest('#movie_player') === timeNodes.player) {
+      const text = timeNodes.current.textContent.trim();
+      if (/^[-−]?\d{1,6}:\d{2}(?::\d{2})?$/.test(text) && /^[-−]/.test(text) === (timeDisplayMode === 'remaining')) {
+        attemptedTimes.delete(timeNodes.wrapper);
+        return;
+      }
+    }
+    timeNodes = null;
     const players = [...document.querySelectorAll('#movie_player')].filter(player => visible(player) &&
       !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
     if (players.length !== 1) return;
@@ -141,11 +151,13 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
     const wrappers = displays[0].querySelectorAll('.ytp-time-wrapper.ytp-time-wrapper-delhi');
     if (wrappers.length !== 1) return;
     const wrapper = wrappers[0], contents = wrapper.querySelector('.ytp-time-contents[role="button"][tabindex="0"]');
-    const current = contents?.querySelector('.ytp-time-current')?.textContent.trim();
+    const currentNode = contents?.querySelector('.ytp-time-current');
+    const current = currentNode?.textContent.trim();
     const duration = contents?.querySelector('.ytp-time-duration')?.textContent.trim();
     if (!/^[-−]?\d{1,6}:\d{2}(?::\d{2})?$/.test(current || '') ||
         !/^\d{1,6}:\d{2}(?::\d{2})?$/.test(duration || '') || !/[1-9]/.test(duration)) return;
     const remaining = /^[-−]/.test(current);
+    timeNodes = { current: currentNode, wrapper, player, video };
     if (remaining === (timeDisplayMode === 'remaining')) { attemptedTimes.delete(wrapper); return; }
     // One request per mismatched state and video. YouTube can reuse this timer
     // for another video after a blocked click. Missing identity and incidental
@@ -159,16 +171,19 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
   }
   function sync() {
     frame = 0;
+    const tick = tickingVideo; tickingVideo = null;
     if (disposed) return;
     if (previewDirty) { previewDirty = false; syncPreviews(); }
-    syncTime();
+    syncTime(tick);
   }
   function schedule(previews = true) {
     previewDirty ||= previews;
+    if (previews) tickingVideo = null;
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(sync);
   }
   function suspend() {
     suspended = true;
+    timeNodes = tickingVideo = null;
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; restorePreviews();
   }
@@ -198,7 +213,11 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
         // needs only their pure eligibility update, not document-wide queries
         // and synchronous layout/style reads. New/rebound hosts still take the
         // full discovery path before YouTube's native mouseenter runs.
-        if (appController?.isInlinePreviewDisabled === false && app?.isConnected && host?.isConnected &&
+        if (appController?.isInlinePreviewDisabled !== false) {
+          // The native opt-out or an unhydrated app makes discovery unnecessary.
+          // If this app was patched, restore it once when its preference changes.
+          if (patches.size && [...patches.values()].some(record => record.host === app)) restorePreviews();
+        } else if (app?.isConnected && host?.isConnected &&
             current.every(record => record && record.controller.computeIsInlinePreviewEnabled === record.wrapper)) {
           for (const record of new Set(current)) { try { recompute(record); } catch { /* Native fallback remains installed. */ } }
         } else syncPreviews();
@@ -208,7 +227,11 @@ export function installPlayerPresentation({ document, window, keepHoverPreviews 
   }
   function media(event) {
     if (event.target?.localName === 'video' && event.target.closest('#movie_player') &&
-        !event.target.closest('ytd-video-preview, ytd-reel-video-renderer')) schedule(false);
+        !event.target.closest('ytd-video-preview, ytd-reel-video-renderer')) {
+      tickingVideo = event.type === 'timeupdate' ? event.target : null;
+      if (!tickingVideo) timeNodes = null;
+      schedule(false);
+    }
   }
   function visibility() { if (document.hidden) suspend(); else resume(); }
   const listeners = [];

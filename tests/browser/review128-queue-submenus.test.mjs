@@ -33,7 +33,7 @@ function nestedLayout() {
   assert.ok(model.validate(layout)); return layout;
 }
 
-async function open(t, { sheet = false, optOut = false } = {}) {
+async function open(t, { sheet = false, optOut = false, eventless = false } = {}) {
   // The separate watch-action preference hides Share by default; this native
   // pass-through control needs Share enabled, independently of queue policy.
   const values = { theatreMode: false, miniplayerEnabled: false, hideShareButton: false, menuLayout: nestedLayout() };
@@ -42,7 +42,7 @@ async function open(t, { sheet = false, optOut = false } = {}) {
     JSON.stringify(JSON.stringify({ version: 1, values })) + ');\n';
   const nativeQueue = fixtureFactory({ browser, compiled: seed + compiled, manifest, html, waitForSuiteHealth, A, B, C, assert });
   const page = await nativeQueue(t, { suite: true });
-  await page.evaluate(({ sheet, B }) => {
+  await page.evaluate(({ sheet, B, eventless }) => {
     const f = uniqueFixture; f.popup.closest('tp-yt-iron-dropdown').remove();
     const card = document.createElement('ytd-video-renderer'); card.id = 'review128-queue-card';
     card.style.cssText = 'display:block;position:fixed;top:12px;left:12px;z-index:6000;background:#222;padding:12px';
@@ -108,10 +108,11 @@ async function open(t, { sheet = false, optOut = false } = {}) {
         { menuServiceItemRenderer: { text: { simpleText: 'Add to queue' }, icon: { iconType: 'ADD_TO_QUEUE_TAIL' }, serviceEndpoint: endpoint } }];
       f.command = command;
       stamp(sheet ? { content: { listViewModel: { listItems: f.originalItems } } } : { items: f.originalItems });
-      popup.style.display = 'block'; popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+      popup.style.display = 'block';
+      if (!eventless) popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
     };
     trigger.onclick = f.openNative;
-  }, { sheet, B });
+  }, { sheet, B, eventless });
   return page;
 }
 
@@ -124,6 +125,21 @@ async function openNested(page, target) {
   assert.equal(await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).isVisible(), true);
 }
 const ids = page => page.evaluate(() => uniqueFixture.entries.map(entry => entry.videoId));
+for (const sheet of [false, true]) test('native popup metadata refresh preserves the verified queue action (' + (sheet ? 'opaque sheet' : 'legacy') + ')', async t => {
+  const page = await open(t, { sheet, eventless: true });
+  await openNested(page, D);
+  await page.evaluate(() => { uniqueFixture.menuData.trackingParams = 'synthetic-refresh'; });
+  await page.getByRole('menuitem', { name: 'Add to queue', exact: true }).click();
+  await page.waitForFunction(() => uniqueFixture.entries.length === 4 ||
+    document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('This menu changed'));
+  assert.deepEqual(await ids(page), [A, B, C, D]);
+  await openNested(page, D);
+  await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).click();
+  await page.waitForFunction(() => uniqueFixture.entries[1].videoId === 'ddddddddddd');
+  assert.deepEqual(await ids(page), [A, D, B, C]);
+  assert.deepEqual(await page.evaluate(() => ({ added: uniqueFixture.adds, mediaCalls: uniqueFixture.mediaCalls })),
+    { added: [D], mediaCalls: [] });
+});
 for (const sheet of [false, true]) test('compiled default queue policy survives real nested native row layout (' + (sheet ? 'opaque sheet' : 'legacy') + ')', async t => {
   const page = await open(t, { sheet }); await openNested(page, B);
   assert.ok(await page.evaluate(() => uniqueFixture.stamps >= 2), 'The compiled Suite must stamp its own Play next record');
@@ -159,15 +175,28 @@ test('compiled opt-out retains native Add inside the actual nested menu', async 
   await page.waitForFunction(() => uniqueFixture.entries.length === 4);
   assert.deepEqual(await ids(page), [A, B, C, B]); assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [B]);
 });
-for (const sheet of [false, true]) test('a cancelled pre-dispatch copy permits a fresh valid nested queue request (' + (sheet ? 'opaque sheet' : 'legacy') + ')', async t => {
-  const page = await open(t, { sheet }); await page.evaluate(() => { uniqueFixture.cancelOnce = true; });
-  await openNested(page, D); await page.getByRole('menuitem', { name: 'Add to queue', exact: true }).click();
+for (const sheet of [false, true]) for (const tail of [false, true]) test('navigation during ' +
+  (tail ? 'native tail handoff' : 'Play next command copy') + ' permits a fresh nested request (' + (sheet ? 'opaque sheet' : 'legacy') + ')', async t => {
+  const page = await open(t, { sheet });
+  await openNested(page, D);
+  await page.evaluate(tail => {
+    uniqueFixture.cancelOnce = true;
+    if (tail) {
+      // Native Add leaves the app's command router alone. Trigger navigation
+      // during final row validation, after the Suite has read the queue.
+      const player = document.getElementById('movie_player'), read = player.getPlaylist;
+      player.getPlaylist = function () { uniqueFixture.armed = true; return read.call(this); };
+    }
+  }, tail);
+  const action = page.getByRole('menuitem', { name: tail ? 'Add to queue' : 'Play next in queue', exact: true });
+  await action.click();
   assert.equal(await page.evaluate(() => uniqueFixture.cancelled), true);
   assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), []);
   await page.evaluate(() => { uniqueFixture.cancelOnce = false; dispatchEvent(new Event('yt-navigate-finish')); });
-  await openNested(page, D); await page.getByRole('menuitem', { name: 'Add to queue', exact: true }).click();
-  await page.waitForFunction(() => uniqueFixture.entries.length === 4);
-  assert.deepEqual(await ids(page), [A, B, C, D]); assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D]);
+  await openNested(page, D); await action.click();
+  await page.waitForFunction(tail => uniqueFixture.entries[tail ? 3 : 1]?.videoId === 'ddddddddddd', tail);
+  assert.deepEqual(await ids(page), tail ? [A, B, C, D] : [A, D, B, C]);
+  assert.deepEqual(await page.evaluate(() => uniqueFixture.adds), [D]);
 });
 for (const sheet of [false, true]) for (const rebound of ['same-row', 'row-copy', 'new-popup-data']) test('a native Share action is not captured by stale queue ownership (' + (sheet ? 'opaque sheet' : 'legacy') + ', ' + rebound + ')', async t => {
   const page = await open(t, { sheet }); await openNested(page, D);

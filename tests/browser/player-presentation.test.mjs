@@ -72,8 +72,9 @@ test('defaults leave native preview eligibility, timer nodes and playback untouc
     mediaEvents: [], sameVideo: true, sameWrapper: true, active: true });
 });
 
-for (const option of ['keepHoverPreviews', 'disableVideoPreviews']) test(`stable feed hover avoids document/style scans (${option})`, async t => {
-  const page = await open(t, { [option]: true });
+for (const option of ['keepHoverPreviews', 'disableVideoPreviews']) for (const state of ['ready', 'opted out', 'unhydrated']) test(`stable feed hover avoids document/style scans (${option}, ${state})`, async t => {
+  const setup = state === 'ready' ? '' : `document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled = ${state === 'opted out' ? 'true' : 'undefined'}`;
+  const page = await open(t, { [option]: true }, setup);
   const result = await page.evaluate(() => {
     const styles = window.getComputedStyle, query = document.querySelectorAll;
     let styleReads = 0, queries = 0;
@@ -86,6 +87,13 @@ for (const option of ['keepHoverPreviews', 'disableVideoPreviews']) test(`stable
   });
   assert.deepEqual(result, { styleReads: 0, queries: 0 });
   assert.deepEqual((await snapshot(page)).mediaEvents, []);
+  if (state !== 'ready') {
+    await page.evaluate(() => {
+      document.querySelector('ytd-app').polymerController.isInlinePreviewDisabled = false;
+      document.querySelector('ytd-rich-item-renderer').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    });
+    assert.equal(await page.locator('ytd-rich-grid-renderer').evaluate(grid => grid.polymerController.computeIsInlinePreviewEnabled !== grid.originalCompute), true);
+  }
 });
 
 test('hover discovers rebound preview hosts synchronously and respects native opt-out', async t => {
@@ -120,6 +128,17 @@ test('explicit YouTube inline-playback opt-out is honoured, including after enab
   assert.equal(await page.evaluate(() => {
     const host = document.querySelector('ytd-app'); return host.originalCompute === host.polymerController.computeIsInlinePreviewEnabled;
   }), true);
+});
+
+test('a replacement app controller opting out restores the existing preview grid on its next hover', async t => {
+  const page = await open(t, { keepHoverPreviews: true });
+  const restored = await page.evaluate(() => {
+    const app = document.querySelector('ytd-app'), grid = document.querySelector('ytd-rich-grid-renderer');
+    app.polymerController = { isInlinePreviewDisabled: true };
+    grid.querySelector('ytd-rich-item-renderer').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    return grid.polymerController.computeIsInlinePreviewEnabled === grid.originalCompute;
+  });
+  assert.equal(restored, true);
 });
 test('navigation restores native eligibility and returning Home reapplies without duplicated wrappers', async t => {
   const page = await open(t, { keepHoverPreviews: true });
@@ -331,6 +350,26 @@ for (const [mode, initial, expected, clicks] of [
   assert.equal(result.sameVideo, true); assert.equal(result.sameWrapper, true); assert.deepEqual(result.mediaEvents, []);
   await page.evaluate(() => { for (let i=0;i<20;i++) document.querySelector('video').dispatchEvent(new Event('timeupdate')); });
   await settle(page); assert.equal((await snapshot(page)).clicks, clicks);
+});
+test('stable timeupdates skip document player discovery across separate frames', async t => {
+  const page = await open(t, { timeDisplayMode: 'elapsed' });
+  const result = await page.evaluate(async () => {
+    const original = document.querySelectorAll;
+    let queries = 0;
+    document.querySelectorAll = function (selector) {
+      if (selector === '#movie_player') queries++;
+      return original.call(this, selector);
+    };
+    try {
+      const video = document.querySelector('video');
+      for (let i = 0; i < 8; i++) {
+        video.dispatchEvent(new Event('timeupdate'));
+        await new Promise(requestAnimationFrame);
+      }
+      return { queries, clicks: audit.clicks };
+    } finally { document.querySelectorAll = original; }
+  });
+  assert.deepEqual(result, { queries: 0, clicks: 1 });
 });
 for (const setup of [
   `document.querySelector('#movie_player').classList.add('ad-showing')`,

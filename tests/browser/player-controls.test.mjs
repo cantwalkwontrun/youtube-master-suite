@@ -68,6 +68,19 @@ test('disabled player additions install no style, buttons or native API work', a
   { styles: 0, buttons: 0, calls: [], reads: 0 });
 });
 
+test('appearance-only preferences apply and restore without observing player or page mutations', async t => {
+  const page=await open(t,{hidePlayerWatermark:true},`() => {
+    audit.observations=0;
+    window.testMutationObserver=class extends MutationObserver {
+      observe(...args){audit.observations++;super.observe(...args);}
+    };
+  }`);
+  assert.equal(await page.locator('.ytp-watermark').isVisible(),false);
+  assert.equal(await page.evaluate(()=>audit.observations),0);
+  await page.evaluate(()=>stopPlayerControls());
+  assert.equal(await page.locator('.ytp-watermark').isVisible(),true);
+});
+
 test('native audio, autoplay and stable-volume choices apply once per video and honour later user changes', async t => {
   const page = await open(t, { originalAudio: true, disableAutoplay: true, disableStableVolume: true });
   assert.deepEqual(await page.evaluate(() => audit.calls), [['audio', true], ['autoplay', false, true], ['drc', 0]]);

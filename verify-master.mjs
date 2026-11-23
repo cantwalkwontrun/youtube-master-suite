@@ -812,7 +812,7 @@ for (const commentCleanerRequirement of [
 }
 assert.match(
   commentCleanerSource,
-  /if \(mutation\.type === "attributes"\) \{[\s\S]{0,500}?containsUploaderSource\(mutation\.target\)[\s\S]{0,160}?invalidateCachedUploaderPaths\(\);/,
+  /if \(mutation\.type === "attributes"\) \{(?:(?!\n      \})[\s\S])*?if \(containsUploaderSource\(mutation\.target\)\) \{\s*invalidateCachedUploaderPaths\(\);/,
   "Uploader href changes must invalidate Comment Cleaner's cached channel paths",
 );
 assert.match(

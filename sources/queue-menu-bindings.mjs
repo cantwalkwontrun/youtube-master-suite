@@ -74,7 +74,7 @@ export function createQueueMenuBindings() {
           model(popup) !== data || !Array.isArray(items) || !items.length || items.length > 60 ||
           (sheet ? data?.content?.listViewModel?.listItems : data?.items) !== items ||
           new Set(items).size !== items.length || !Array.isArray(rows) || rows.length !== items.length) return false;
-      const actual = nativeRows(popup), parent = rows[0]?.parentElement, stamp = signature(data);
+      const actual = nativeRows(popup), parent = rows[0]?.parentElement, stamp = signature(items);
       if (!parent || stamp === null || actual.length !== rows.length || actual.some((row, i) => row !== rows[i]) ||
           rows.some((row, i) => row.parentElement !== parent || !rowMatches(row, items[i], sheet))) return false;
       const record = { popup, data, items, sourceItems: [...items], rows: [...rows], parent, sheet, stamp };
@@ -101,7 +101,9 @@ export function createQueueMenuBindings() {
   function get(row, popup = row?.closest?.(popupSelector)) {
     try {
       const entry = bindings.get(row), record = entry?.record;
-      if (!owns(entry, popup) || signature(record.data) !== record.stamp || signature(entry.item) !== entry.stamp) return null;
+      // The popup can refresh its own metadata without restamping its actions.
+      // owns() still requires the same popup model, list, items and row hosts.
+      if (!owns(entry, popup) || signature(record.items) !== record.stamp || signature(entry.item) !== entry.stamp) return null;
       return { item: entry.item, data: record.data, items: record.items, sheet: record.sheet };
     } catch { return null; }
   }

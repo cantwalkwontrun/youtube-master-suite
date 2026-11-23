@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Player Preferences Lite
 // @namespace    Citizen.youtube.player-preferences-lite
-// @version      1.141
+// @version      1.142
 // @description  Applies small YouTube player preferences without touching Enhancer-style miniplayer, queue, autoplay, or background playback controls.
 // @author       Citizen
 // @updateURL    none
@@ -4959,7 +4959,7 @@
   function isPreviewPlaybackMutation(mutation) {
     const surface = closestElement(
       mutation.target,
-      ".ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls",
+      ".ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls, .html5-video-container, .ytp-spinner",
     );
     const player = surface?.closest(".html5-video-player");
     return Boolean(player?.closest("ytd-video-preview"));
@@ -5671,12 +5671,13 @@
     let watchDynamicRootsChanged = false;
     let videoMirrorChanged = false;
     let liveChatChanged = false;
+    const discoverCollapsibleChat = CONFIG.hideChat && liveChatOverride === null && isWatchPath();
 
     for (const mutation of mutations) {
       videoMirrorChanged ||= mutationAffectsVideoMirror(mutation);
       liveChatChanged ||= mutationAffectsLiveChat(mutation);
       if (
-        mutation.addedNodes &&
+        discoverCollapsibleChat && mutation.addedNodes &&
         mutation.addedNodes.length &&
         Array.from(mutation.addedNodes).some(nodeContainsLiveChatFrame)
       ) {

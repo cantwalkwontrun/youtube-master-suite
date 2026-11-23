@@ -58,6 +58,24 @@ function staged(f, values = { hideChat: false, corner: "bottom-right" }, rules =
   return result;
 }
 
+test('backups of an older Hype submenu preserve its effective visibility even when the old switch disagreed', () => {
+  const menuLayout = createMenuLayout().fromPreferences({});
+  menuLayout.nodes.push({id:'hype', parent:'root', visible:false});
+  const old = documentFor(fixture(), {menuLayout, menuShowHype:true});
+  const f = fixture({[SETTINGS]:JSON.stringify({version:1, values:old.settings})});
+  const exported = f.backup.exportData();
+  assert.equal(exported.ok, true, exported.error);
+  assert.equal(JSON.parse(exported.text).settings.menuShowHype, false);
+  const target = fixture();
+  const preview = target.backup.preview(JSON.stringify(old));
+  assert.equal(preview.ok, true, preview.error);
+  const restored = target.backup.restore(preview.preview);
+  assert.equal(restored.values.menuShowHype, false);
+  assert.equal(restored.values.menuLayout.nodes.some(node => node.id === 'hype'), false);
+  old.settings.menuShowHype = 'yes';
+  assert.equal(target.backup.preview(JSON.stringify(old)).ok, false);
+});
+
 test('pre-submenu backups retain their legacy menu choices and default to no custom layout', () => {
   const f = fixture();
   const old = documentFor(f, { menuGroupChannelTools: false, menuShowDownload: true });

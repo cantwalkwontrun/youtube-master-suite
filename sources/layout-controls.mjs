@@ -54,7 +54,7 @@ export function installLayoutControls({ document, window, preferences = {}, Muta
   if (flags.hideFullscreenControls) rules.push('.html5-video-player.ytp-fullscreen .ytp-chrome-bottom { display: none !important; }');
   if (flags.hideChatFullscreen) rules.push(`
     :root:fullscreen ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]),
-    :root:has(.html5-video-player.ytp-fullscreen) ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]) { display: none !important; }
+    ytd-watch-flexy:has(.html5-video-player.ytp-fullscreen:not([hidden], [inert], [aria-hidden="true"], :is([hidden], [inert], [aria-hidden="true"], ytd-miniplayer, ytd-video-preview) *)) ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]) { display: none !important; }
   `);
   const belowAttribute = 'data-ytms-related-below';
   if (flags.relatedBelowPlayer) rules.push(`

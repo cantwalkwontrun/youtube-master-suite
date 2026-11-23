@@ -60,9 +60,14 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     }
     if(!navigation && !anchors.size)observer?.disconnect();
   }
+  function playBoundary(event) {
+    const button=event.target?.closest?.('.ytp-play-button');
+    if(!button || !button.matches(playSelector))return false;
+    return !event.type.startsWith('pointer') || !event.relatedTarget?.nodeType || !button.contains(event.relatedTarget);
+  }
   function positionPlayTooltip(event) {
     if(disposed || suspended || navigating || document.hidden){restoreAnchors();return;}
-    if(event && !event.target?.closest?.(playSelector))return;
+    if(event && !playBoundary(event))return;
     // An opacity-hidden retained Play control can keep keyboard focus. Give
     // the rendered pointer owner priority over focus in another generation.
     const button=activePlayButton();
@@ -84,7 +89,7 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     }
   }
   function releaseUnusedAnchors(event) {
-    if(!event.target?.closest?.(playSelector))return;
+    if(!playBoundary(event))return;
     window.queueMicrotask(()=>{
       const active=activePlayButton();
       restoreAnchors(active?.closest('#movie_player') || null);
@@ -151,21 +156,27 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     records.clear(); for (const host of hosts) host.removeAttribute('data-ytms-mini-navigation'); hosts.clear();
     visibilityPaths.clear();
   }
-  function eligibility(player, direction) {
+  function visiblePlayers() {
+    return [...document.querySelectorAll('ytd-miniplayer #movie_player')].filter(visible);
+  }
+  function queueState(player) {
+    try {
+      const ids = player.getPlaylist?.(), current = player.getVideoData?.()?.video_id;
+      if (!Array.isArray(ids) || ids.length < 2 || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !/^[\w-]{11}$/.test(id))) return null;
+      const index = player.getPlaylistIndex?.();
+      return Number.isInteger(index) && index >= 0 && index < ids.length && ids[index] === current ? { ids: [...ids], index } : null;
+    } catch { return null; }
+  }
+  function eligibility(player, direction, candidates = visiblePlayers(), state) {
     try {
       const request=generation;
-      const candidates = [...document.querySelectorAll('ytd-miniplayer #movie_player')].filter(visible);
       if (disposed || suspended || navigating || document.hidden || candidates.length !== 1 || candidates[0] !== player ||
           player.matches('.ad-showing,.ad-interrupting')) return false;
-      const ids = player.getPlaylist?.(), current = player.getVideoData?.()?.video_id;
-      if (!Array.isArray(ids) || ids.length < 2 || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !/^[\w-]{11}$/.test(id)) ||
-          typeof player.getPlaylistIndex !== 'function') return false;
-      const index = player.getPlaylistIndex(), method = direction < 0 ? 'previousVideo' : 'nextVideo';
-      // The native index identifies the actual occurrence in duplicate queues.
-      // A first-match search would disable valid later occurrences or guess.
-      if (!Number.isInteger(index) || index < 0 || index >= ids.length || ids[index] !== current) return false;
+      const snapshot = state === undefined ? queueState(player) : state;
+      if (!snapshot) return false;
+      const {ids,index} = snapshot, method = direction < 0 ? 'previousVideo' : 'nextVideo';
       const available=index + direction >= 0 && index + direction < ids.length && typeof player[method] === 'function';
-      return available && request===generation && !disposed && !suspended && !navigating && !document.hidden;
+      return available && request===generation && !disposed && !suspended && !navigating && !document.hidden && snapshot;
     } catch { return false; }
   }
   function create(player, direction) {
@@ -181,14 +192,19 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
       if (!event.isTrusted) return;
       event.preventDefault(); event.stopPropagation();
       const request = generation;
-      if (!eligibility(player, direction) || button.disabled) return;
+      const snapshot = eligibility(player, direction);
+      if (!snapshot || button.disabled) return;
       // One native action per activation; never retry an ambiguous result.
       try {
         const navigate = player[direction < 0 ? 'previousVideo' : 'nextVideo'];
         // Native accessors can synchronously suspend navigation while returning
         // a callable. Recheck ownership before invoking that captured method.
+        const current = queueState(player), owners = visiblePlayers();
         if (request !== generation || disposed || suspended || navigating || document.hidden ||
-            !button.isConnected || button.disabled || typeof navigate !== 'function') return;
+            !button.isConnected || button.disabled || button.closest('#movie_player') !== player ||
+            owners.length !== 1 || owners[0] !== player || player.matches('.ad-showing,.ad-interrupting') ||
+            typeof navigate !== 'function' || !current || current.index !== snapshot.index ||
+            current.ids.length !== snapshot.ids.length || current.ids.some((id, i) => id !== snapshot.ids[i])) return;
         navigate.call(player);
       } catch { /* Native transition unavailable. */ }
       schedule();
@@ -212,6 +228,7 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     if(anchors.size)refreshPlayTooltip();
     const activeHosts = new Set(), activePlayers = new Set();
     const players = navigation ? [...document.querySelectorAll('ytd-miniplayer #movie_player')] : [];
+    const visibleOwners = players.filter(visible);
     visibilityPaths.clear();
     const playControls = new Map();
     for (const player of players) {
@@ -222,9 +239,9 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
       // ancestor paths; unrelated page attributes still do not trigger work.
       for (const leaf of [player, ...plays]) for (let node=leaf;node;node=node.parentElement) visibilityPaths.add(node);
     }
-    if (navigation) for (const player of players) {
+    if (navigation) for (const player of visibleOwners) {
       if(!active())return;
-      if (!visible(player) || player.matches('.ad-showing,.ad-interrupting')) continue;
+      if (player.matches('.ad-showing,.ad-interrupting')) continue;
       const host = player.closest('ytd-miniplayer');
       // Native transitions can retain the previous, hidden controls row.
       // Bind via a single visible Play button, never its hidden template. The
@@ -235,6 +252,7 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
       if (!controls || !play) continue;
       activePlayers.add(player);
       activeHosts.add(host); hosts.add(host); if (!host.hasAttribute('data-ytms-mini-navigation')) host.setAttribute('data-ytms-mini-navigation','');
+      let state;
       for (const direction of [-1, 1]) {
         if(!active())return;
         const nativeClass = direction < 0 ? '.ytp-prev-button' : '.ytp-next-button';
@@ -260,7 +278,8 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
           controls.insertBefore(button, direction < 0 ? anchor : anchor.nextSibling);
           if(focused){button.focus({preventScroll:true});if(!active())return;showTooltip(button);}
         }
-        const disabled = !eligibility(player, direction);
+        if (state === undefined && visibleOwners.length === 1) state = queueState(player);
+        const disabled = !eligibility(player, direction, visibleOwners, state);
         if(!active())return;
         if (button.disabled !== disabled) button.disabled = disabled;
         if(!active())return;
@@ -280,12 +299,59 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
     if (changes.some(change => change.type === 'attributes' ? visibilityPaths.has(change.target) || change.target.closest?.('.ytp-miniplayer-controls') || change.target.matches?.('#movie_player,ytd-miniplayer,.ytp-miniplayer-ui,.ytp-miniplayer-controls,.ytp-miniplayer-button-container,.ytp-miniplayer-play-button-container,.ytp-play-button,.ytp-prev-button,.ytp-next-button') :
       change.target.closest?.('.ytp-miniplayer-controls') || [...change.addedNodes,...change.removedNodes].some(node => node.nodeType === 1 && (node.matches(selector) || node.querySelector(selector))))) schedule();
   });
-  if(navigation)observer.observe(document.documentElement,{ childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden','aria-hidden','inert'] });
+  // A live tag collection tracks host insertion, removal and reparenting even
+  // through new native wrappers. Feed additions do not need a subtree selector
+  // scan on every card. Only miniplayer subtrees and their ancestors need
+  // attribute observers.
+  const miniHosts = document.getElementsByTagName('ytd-miniplayer');
+  const observedHosts = new Set(), observedParents = new Map();
+  function observeHosts() {
+    if (!navigation || disposed) return;
+    if (observedHosts.size === miniHosts.length &&
+        [...observedHosts].every(host => host.isConnected) &&
+        [...observedParents].every(([node,parent]) => node.parentElement === parent)) return;
+    observer.disconnect();
+    observedHosts.clear(); observedParents.clear();
+    const attributeFilter = ['class','style','hidden','aria-hidden','inert'];
+    for (const host of miniHosts) {
+      observedHosts.add(host);
+      observer.observe(host,{childList:true,subtree:true,attributes:true,attributeFilter});
+      for (let node=host;node && !observedParents.has(node);node=node.parentElement) {
+        observedParents.set(node,node.parentElement);
+      }
+    }
+    for (const node of observedParents.keys()) if (!observedHosts.has(node) && !node.closest('ytd-miniplayer')) {
+      observer.observe(node,{attributes:true,attributeFilter});
+    }
+    schedule();
+  }
+  const hostObserver = navigation ? new MutationObserver(observeHosts) : null;
+  if (hostObserver) {
+    hostObserver.observe(document.documentElement,{childList:true,subtree:true});
+    observeHosts();
+  }
   const listeners = [];
   const on = (target,type,callback) => { target.addEventListener(type,callback,true);listeners.push([target,type,callback]); };
+  // A retained player can finish fading out after the frame scheduled by its
+  // class/style mutation. Recheck ownership when its actual layout settles.
+  const layoutSettled = event => {
+    if(event.pseudoElement || (!visibilityPaths.size && !anchors.size))return;
+    const target=event.target;
+    if(visibilityPaths.has(target) || visibilityPaths.has(target.closest?.('.ytp-miniplayer-controls'))){schedule();return;}
+    for(const player of anchors.keys())if(target.contains?.(player) || player.contains(target)){schedule();return;}
+  };
+  for(const type of ['transitionend','transitioncancel','animationend','animationcancel'])on(document,type,layoutSettled);
   for (const type of ['yt-playlist-data-updated','yt-page-data-updated','loadedmetadata']) on(window,type,schedule);
   on(window,'visibilitychange',()=>{refreshPlayTooltip();schedule();});
-  for (const type of ['mouseenter','focusin']) on(window,type,event=>{ if(event.target?.closest?.('ytd-miniplayer')) schedule(); });
+  if(navigation){
+    // Native control visibility and queue readiness can settle on entry. Moving
+    // between titles and thumbnails in the queue does not change either.
+    on(window,'mouseenter',({target})=>{
+      if(target.matches?.('ytd-miniplayer') ||
+         (target.matches?.('.ytp-miniplayer-controls,.ytp-prev-button,.ytp-next-button,[data-ytms-mini-nav-button]') && target.closest('ytd-miniplayer')))schedule();
+    });
+    on(window,'focusin',({target})=>{if(target.closest?.('ytd-miniplayer .ytp-miniplayer-controls'))schedule();});
+  }
   on(window,'blur',event=>{if(event.target===window)hideTooltip();});on(document,'scroll',hideTooltip);on(window,'resize',hideTooltip);
   on(document,'keydown',event=>{if(event.key==='Escape')hideTooltip();});
   on(window,'pagehide',()=>{ suspended=true;clear(); });
@@ -293,5 +359,5 @@ export function installMiniplayerControls({ document, window, preferences = {}, 
   on(window,'yt-navigate-start',()=>{ navigating=true;clear(); });
   on(window,'yt-navigate-finish',()=>{ navigating=false;refreshPlayTooltip();schedule(); });
   positionPlayTooltip();schedule();
-  return () => { disposed=true;if(frame)window.cancelAnimationFrame(frame);observer.disconnect();clear();clearAnchors();style.remove();for(const [target,type,callback]of listeners)target.removeEventListener(type,callback,true); };
+  return () => { disposed=true;if(frame)window.cancelAnimationFrame(frame);hostObserver?.disconnect();observer.disconnect();clear();clearAnchors();style.remove();for(const [target,type,callback]of listeners)target.removeEventListener(type,callback,true); };
 }
