@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Suite Settings
 // @namespace    Citizen.youtube.suite-settings
-// @version      1.86
+// @version      1.87
 // @description  Master-only native-style settings panel accessible from the header and watch player.
 // @author       cantwalkwontrun
 // @license      GNU GPLv3
@@ -483,7 +483,7 @@
         const unsaved = dirty && !samePreference(key, checked[key], saved[key]);
         const needsReload = pendingReload && !samePreference(key, saved[key], applied[key]);
         if (!unsaved && !needsReload) continue;
-        const id = key.startsWith('menu') ? 'menu-editor-heading' : preferenceControlIds[key] || key;
+        const id = key.startsWith('menu') && key !== 'menuShowHype' ? 'menu-editor-heading' : preferenceControlIds[key] || key;
         const flags = changes.get(id) || 0;
         changes.set(id, flags | (unsaved ? 1 : 0) | (needsReload ? 2 : 0));
       }
@@ -704,7 +704,6 @@
         event.preventDefault(); clearReloadConfirmation(true);
       }
     });
-    document.addEventListener('fullscreenchange', () => clearReloadConfirmation());
     dialog.addEventListener('click', event => {
       if (event.target !== dialog) return;
       const box = dialog.getBoundingClientRect();
@@ -984,7 +983,8 @@
     dialog.addEventListener('close', () => supportPanel.close());
     populate(); selectTab('comments');
     return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
-      updateTheme: updateColours, updateChannels: renderChannelRules, reconcileSaved: reconcileStoredPreferences };
+      updateTheme: updateColours, updateChannels: renderChannelRules, reconcileSaved: reconcileStoredPreferences,
+      clearReloadConfirmation };
 
   }
 
@@ -1226,8 +1226,9 @@
     installPlayerButton(target);
     if (!masthead) { button?.remove(); return; }
     const avatar = masthead.querySelector("#avatar-btn, button[aria-label*='Account'], button[aria-label*='account']");
-    if (!avatar) { button?.remove(); return; }
-    const anchor = avatar.closest("ytd-topbar-menu-button-renderer, ytd-topbar-menu-button-view-model") || avatar;
+    const anchor = avatar?.closest("ytd-topbar-menu-button-renderer, ytd-topbar-menu-button-view-model") || avatar;
+    const parent = anchor?.parentElement || masthead.querySelector('#end #buttons');
+    if (!parent) { button?.remove(); return; }
     if (!button) {
       button = document.createElement("button");
       button.id = BUTTON_ID; button.type = "button";
@@ -1243,8 +1244,8 @@
       button.append(image);
       button.addEventListener("click", openSettings);
     }
-    if (button.parentNode !== anchor.parentNode || button.nextElementSibling !== anchor) {
-      anchor.before(button);
+    if (button.parentNode !== parent || button.nextElementSibling !== anchor) {
+      parent.insertBefore(button, anchor);
     }
   }
 
@@ -1307,7 +1308,10 @@
     if (event.key === null || event.key === suite.channelAge.key) window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));
   });
   document.addEventListener('loadedmetadata', event => { if (event.target?.matches?.('video.html5-main-video')) scheduleInstall(); }, true);
-  document.addEventListener('fullscreenchange', () => { hidePlayerTooltip(); scheduleInstall(); }, true);
+  document.addEventListener('fullscreenchange', () => {
+    panel?.clearReloadConfirmation();
+    hidePlayerTooltip(); scheduleInstall();
+  }, true);
   window.addEventListener('resize', refreshPlayerTooltip);
   window.addEventListener('blur', hidePlayerTooltip);
   start();

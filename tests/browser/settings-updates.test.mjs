@@ -9,7 +9,6 @@ import { launchFixtureBrowser, waitForSuiteHealth } from './fixture-browser.mjs'
 const PAGE_URL = 'https://www.youtube.com/fixture-settings-updates';
 const SOURCE_URL = 'https://github.com/fixture-owner/fixture-suite/releases/latest';
 const API_URL = 'https://api.github.com/repos/fixture-owner/fixture-suite/releases/latest';
-const LEGACY_SUITE_SOURCE = 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest';
 const CURRENT_SUITE_SOURCE = 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/latest';
 const CURRENT_SUITE_API = 'https://api.github.com/repos/cantwalkwontrun/youtube-master-suite/releases/latest';
 const SOURCE_KEY = 'yt-master-suite.update-source.v1';
@@ -131,27 +130,26 @@ test('the prefilled latest release checks without typing and clearing a custom s
   assert.equal(network.requests.length, 2);
 });
 
-for(const mode of ['current default','legacy default','legacy saved source'])test(`the known Suite owner migration checks safely from ${mode}`,async t=>{
-  const initialSource=mode==='legacy saved source'?JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2):null;
-  const expected=mode==='current default'?CURRENT_SUITE_SOURCE:LEGACY_SUITE_SOURCE;
-  const {page,network}=await pageFor(t,{initialSource,defaultSource:mode==='legacy default'?LEGACY_SUITE_SOURCE:CURRENT_SUITE_SOURCE,apiUrl:CURRENT_SUITE_API,releaseValue:suiteRelease()});
+for(const saved of [false,true])test(`the canonical Suite source checks safely when ${saved?'saved':'default'}`,async t=>{
+  const initialSource=saved?JSON.stringify({url:CURRENT_SUITE_SOURCE,version:1},null,2):null;
+  const {page,network}=await pageFor(t,{initialSource,defaultSource:CURRENT_SUITE_SOURCE,apiUrl:CURRENT_SUITE_API,releaseValue:suiteRelease()});
   const mainBefore=await page.evaluate(key=>localStorage.getItem(key),SETTINGS_KEY);
-  assert.equal(await page.locator('#ytms-updates-source').inputValue(),expected);
-  assert.equal(network.requests.length,0,'Reading either known source never checks automatically');
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),CURRENT_SUITE_SOURCE);
+  assert.equal(network.requests.length,0,'Reading the source never checks automatically');
   await page.locator('#ytms-updates-check').click();
   await page.locator('#ytms-updates-install').waitFor({state:'visible'});
   assert.equal(network.requests.length,1);assert.equal(network.requests[0].url(),CURRENT_SUITE_API);
   assert.equal(await page.locator('#ytms-updates-install').getAttribute('href'),suiteDownload('1.2.126'));
-  assert.equal(await page.locator('#ytms-updates-source').inputValue(),expected);
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),CURRENT_SUITE_SOURCE);
   assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),initialSource,'Saved source bytes are retained');
   assert.equal(await page.evaluate(key=>localStorage.getItem(key),SETTINGS_KEY),mainBefore);
   assert.deepEqual(await page.evaluate(()=>fixture.draftEvents),[]);
 });
 
-test('an unrelated repository under the former owner remains a custom source',async t=>{
-  const custom='https://github.com/noswimmingplease/synthetic-other-suite/releases/latest';
-  const customApi='https://api.github.com/repos/noswimmingplease/synthetic-other-suite/releases/latest';
-  const customDownload='https://github.com/noswimmingplease/synthetic-other-suite/releases/download/v1.2.62/youtube-master-suite.user.js';
+test('an unrelated repository remains a custom source',async t=>{
+  const custom='https://github.com/alternate-owner/synthetic-other-suite/releases/latest';
+  const customApi='https://api.github.com/repos/alternate-owner/synthetic-other-suite/releases/latest';
+  const customDownload='https://github.com/alternate-owner/synthetic-other-suite/releases/download/v1.2.62/youtube-master-suite.user.js';
   const value=release();value.assets[0].browser_download_url=customDownload;
   const raw=JSON.stringify({version:1,url:custom});
   const {page,network}=await pageFor(t,{initialSource:raw,defaultSource:CURRENT_SUITE_SOURCE,apiUrl:customApi,releaseValue:value});
@@ -161,11 +159,11 @@ test('an unrelated repository under the former owner remains a custom source',as
   assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),raw);
 });
 
-test('replacing a legacy source with its alias-equivalent URL invalidates the old installation approval',async t=>{
-  const raw=JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2);
+test('changing the saved source invalidates an earlier installation approval',async t=>{
+  const raw=JSON.stringify({url:CURRENT_SUITE_SOURCE,version:1},null,2);
   const {page}=await pageFor(t,{initialSource:raw,defaultSource:CURRENT_SUITE_SOURCE,apiUrl:CURRENT_SUITE_API,releaseValue:suiteRelease()});
   await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
-  const changed=JSON.stringify({version:1,url:CURRENT_SUITE_SOURCE});
+  const changed=JSON.stringify({version:1,url:SOURCE_URL});
   await page.evaluate(({key,value})=>localStorage.setItem(key,value),{key:SOURCE_KEY,value:changed});
   await page.locator('#ytms-updates-install').click();
   assert.deepEqual(await page.evaluate(()=>fixture.installEvents),[{type:'click',prevented:true,href:null}]);
@@ -173,7 +171,7 @@ test('replacing a legacy source with its alias-equivalent URL invalidates the ol
   assert.equal(await page.evaluate(key=>localStorage.getItem(key),SOURCE_KEY),changed);
 });
 
-for(const saved of [false,true])test(`compiled Credits use the current Suite repository and retain saved source bytes (${saved?'legacy source':'default'})`,async t=>{
+for(const saved of [false,true])test(`compiled Credits use the current Suite repository and retain saved source bytes (${saved?'saved source':'default'})`,async t=>{
   const context=await browser.newContext({serviceWorkers:'block'});t.after(()=>context.close());
   const requests=[],url='https://www.youtube.com/watch?v=aaaaaaaaaaa';
   const source=readFileSync(new URL('../../youtube-master-suite.user.js',import.meta.url),'utf8');
@@ -185,7 +183,7 @@ for(const saved of [false,true])test(`compiled Credits use the current Suite rep
     if(route.request().url()===CURRENT_SUITE_API){requests.push(route.request().url());return route.fulfill({contentType:'application/json',headers:{'access-control-allow-origin':'https://www.youtube.com'},body:JSON.stringify(suiteRelease(newerVersion))});}
     return route.abort();
   });
-  const raw=saved?JSON.stringify({url:LEGACY_SUITE_SOURCE,version:1},null,2):null;
+  const raw=saved?JSON.stringify({url:CURRENT_SUITE_SOURCE,version:1},null,2):null;
   await context.addInitScript(({key,raw})=>{
     if(location.origin!=='https://www.youtube.com')return;
     localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{theatreMode:false,viewerColour:'#ABCDEF'}}));
@@ -198,7 +196,7 @@ for(const saved of [false,true])test(`compiled Credits use the current Suite rep
   const mainBefore=await page.evaluate(key=>fixtureStorage.getItem(key),SETTINGS_KEY);
   assert.equal(await page.evaluate(key=>fixtureStorage.getItem(key),SOURCE_KEY),raw);
   await page.locator('#ytms-settings-button').click();await page.locator('#ytms-tab-credits').click();
-  assert.equal(await page.locator('#ytms-updates-source').inputValue(),saved?LEGACY_SUITE_SOURCE:CURRENT_SUITE_SOURCE);
+  assert.equal(await page.locator('#ytms-updates-source').inputValue(),CURRENT_SUITE_SOURCE);
   assert.deepEqual(requests,[]);
   await page.locator('#ytms-updates-check').click();await page.locator('#ytms-updates-install').waitFor({state:'visible'});
   assert.deepEqual(requests,[CURRENT_SUITE_API]);

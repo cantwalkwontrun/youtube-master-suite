@@ -240,6 +240,39 @@ test("recycled author links refresh their colour locally when only their destina
   }
 });
 
+test("recycled author links release owned styling when they become ordinary video links", async t => {
+  const page = await open(t);
+  const link = page.locator("ytd-comments a").first();
+  await link.evaluate(node => {
+    node.style.setProperty("opacity", "0.7", "important");
+    node.querySelector("span").style.color = "purple";
+  });
+  await install(page);
+  await page.waitForFunction(() => document.querySelector("ytd-comments a").dataset.iowColour);
+  await link.evaluate(node => {
+    node.style.fontWeight = "500";
+    node.href = "/watch?v=bbbbbbbbbbb";
+  });
+  await page.waitForFunction(() => !document.querySelector("ytd-comments a").dataset.iowColour);
+  assert.deepEqual(await link.evaluate(node => [
+    node.style.color, node.style.opacity, node.style.getPropertyPriority("opacity"), node.style.fontWeight,
+    node.querySelector("span").style.color, node.querySelector("span").style.fontWeight,
+  ]), ["", "0.7", "important", "500", "purple", ""]);
+});
+
+test('moving an author label out of its coloured link restores its native style', async t => {
+  const page = await open(t);
+  await page.locator('ytd-comments a span').first().evaluate(node => {
+    node.id = 'recycled-label';
+    node.style.color = 'purple';
+  });
+  await install(page);
+  await page.waitForFunction(() => document.querySelector('#recycled-label').style.color !== 'purple');
+  await page.locator('#recycled-label').evaluate(node => node.closest('a').after(node));
+  await page.waitForFunction(() => document.querySelector('#recycled-label').style.color === 'purple');
+  assert.equal(await page.locator('#recycled-label').evaluate(node => node.style.fontWeight), '');
+});
+
 test("inserted author roots are coloured and route exit prevents delayed styling", async t => {
   const page = await open(t);
   await install(page);

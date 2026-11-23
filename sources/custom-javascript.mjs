@@ -1,5 +1,5 @@
 // Language: en-GB. User-authored code stays in scoped Tampermonkey storage.
-export function createCustomJavascript({ document, window, getValue, setValue, write = callback => callback() }) {
+export function createCustomJavascript({ document, window, getValue, setValue, write = callback => callback(), coordination }) {
   const key = 'yt-master-suite.custom-javascript.v1';
   const maxLength = 65536;
   const empty = () => ({ enabled: false, code: '' });
@@ -72,6 +72,16 @@ export function createCustomJavascript({ document, window, getValue, setValue, w
     const current = read();
     if (!current.ok) { setStatus('unavailable'); return; }
     if (current.raw !== initial.raw) { setStatus('skipped'); return; }
+    if (coordination) {
+      try {
+        const { key, getRevision } = coordination;
+        const revision = getRevision();
+        const receipt = JSON.parse(getValue(key, null));
+        if (revision !== (receipt?.revision ?? null) ||
+            (receipt !== null && (typeof receipt.revision !== 'string' || receipt.value !== current.raw)) ||
+            getRevision() !== revision) { setStatus('skipped'); return; }
+      } catch { setStatus('unavailable'); return; }
+    }
     setStatus('ran');
     try {
       const result = compile(initial.value.code).call(window);

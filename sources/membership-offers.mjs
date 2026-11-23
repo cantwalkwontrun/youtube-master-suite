@@ -117,7 +117,7 @@ export function installMembershipOffers({ document, window, preferences = {}, Mu
     if (next.length !== containers.length || next.some((root, index) => root !== containers[index])) {
       popups.disconnect(); containers = next;
       for (const root of containers) popups.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ['opened', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'disabled'] });
+        attributeFilter: ['opened', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'disabled', 'aria-disabled'] });
     }
     schedule();
   }

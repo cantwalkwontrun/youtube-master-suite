@@ -71,6 +71,20 @@ async function open(t, enabled = true, install = true, compiled = false) {
 }
 async function settle(page){await page.evaluate(async()=>{for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);});}
 
+test('membership fallback follows an ARIA-only change enabling Close', async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    fixture.dialog = fixture.make({ api:'button' });
+    fixture.dialog.querySelector('#close-button').setAttribute('aria-disabled', 'true');
+    fixture.show(fixture.dialog);
+  });
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.calls), []);
+  await page.locator('#close-button').evaluate(node => node.setAttribute('aria-disabled','false'));
+  await page.waitForFunction(() => fixture.dialog.hidden);
+  assert.deepEqual(await page.evaluate(() => fixture.calls), ['button']);
+});
+
 for(const compiled of [false,true])for(const interruption of ['yt-navigate-start','pagehide',...(compiled?[]:['dispose'])])
 for(const phase of ['close','method lookup'])test(`membership ${phase} ${interruption} invalidates the remaining dismissal scan (${compiled?'Suite':'source'})`,async t=>{
   const page=await open(t,true,!compiled,compiled);

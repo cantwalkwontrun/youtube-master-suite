@@ -92,7 +92,7 @@ export function installVideoMenu(suite) {
     if (['DOWNLOAD', 'OFFLINE_DOWNLOAD', 'FILE_DOWNLOAD'].includes(icon) || item?.menuServiceItemDownloadRenderer) return 'download';
     if (['HYPE', 'HYPE_OUTLINE'].includes(icon) || title === 'Hype') return 'hype';
     if (['SHARE', 'SHARE_OUTLINE'].includes(icon)) return 'share';
-    const library = location.pathname === '/feed/history' || location.pathname === '/playlist' ||
+    const library = /^\/(?:feed\/history|playlist)\/?$/.test(location.pathname) ||
       selection.card.matches('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer');
     if (['NOT_INTERESTED', 'NOT_INTERESTED_OUTLINE'].includes(icon) || (!library && icon === 'HIDE')) return 'notInterested';
     if (icon === 'DONT_RECOMMEND_CHANNEL' || (!library && ['REMOVE', 'DO_NOT_DISTURB_ON', 'BLOCK'].includes(icon) && endpointFor(item)?.feedbackEndpoint)) return 'dontRecommend';
@@ -142,7 +142,7 @@ export function installVideoMenu(suite) {
       try {
         const url = new URL(anchor.getAttribute('href'), location.origin);
         if (url.origin !== location.origin) continue;
-        const id = url.pathname === '/watch' ? url.searchParams.get('v') : /^\/shorts\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+        const id = url.pathname === '/watch' ? url.searchParams.get('v') : /^\/(?:shorts|live)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
         if (typeof id === 'string' && /^[\w-]{11}$/.test(id)) ids.add(id);
       } catch { /* Malformed links cannot identify a menu target. */ }
     }
@@ -309,7 +309,7 @@ export function installVideoMenu(suite) {
     if (popup) pendingIconObserver.observe(popup,{childList:true});
   }
 
-  function focusable(row) {
+  function focusable(row, visibleAncestors) {
     // Current sheets can put tabindex on a presentation wrapper as well as on
     // their real button. Focus the action, not its non-activating wrapper.
     const actions = 'button, a[href], [role="menuitem"]';
@@ -317,15 +317,16 @@ export function installVideoMenu(suite) {
       ...(row.hasAttribute('tabindex') ? [row] : []), ...row.querySelectorAll('[tabindex]')];
     return candidates.find(element => element.getAttribute('role') !== 'presentation' &&
       !element.matches(':disabled, [disabled]') && !element.closest('[inert]') &&
-      (element.matches('button, a[href]') || element.hasAttribute('tabindex')) && visiblePopup(element)) || null;
+      (element.matches('button, a[href]') || element.hasAttribute('tabindex')) && visiblePopup(element, visibleAncestors)) || null;
   }
 
   function navigableRows(current) {
+    const visibleAncestors = new Set();
     return [...current.parent.children].filter(row => row === current.back ? current.stack.length > 0 :
       current.entries.some(entry => entry.row === row && entry.enabled && entry.parent === current.page) ||
       [...current.groups.values()].some(group => group.row === row && group.enabled && group.parent === current.page) ||
       (current.page === creatorPage && current.creatorRows.includes(row)))
-      .map(row => ({ row, target: focusable(row) })).filter(entry => entry.target);
+      .map(row => ({ row, target: focusable(row, visibleAncestors) })).filter(entry => entry.target);
   }
 
   function focusTarget(current, target) {
@@ -363,7 +364,7 @@ export function installVideoMenu(suite) {
 
   function pointer(event) {
     const current = active;
-    if (!current || !event.isTrusted || !current.popup.contains(event.target)) return;
+    if (!current || !event.isTrusted) return;
     current.interacted = true;
     if (current.keyboard) {
       current.keyboard = false;
@@ -479,6 +480,8 @@ export function installVideoMenu(suite) {
     if (!active) return;
     const current = active;
     active = null;
+    current.popup.removeEventListener('pointerdown', pointer, true);
+    current.popup.removeEventListener('pointermove', pointer, true);
     if (current.ownsTabIndex && current.popup.getAttribute('tabindex') === '-1') current.popup.removeAttribute('tabindex');
     cancelLookup(current);
     for (const row of current.ownedRows) row.remove();
@@ -590,43 +593,58 @@ export function installVideoMenu(suite) {
     }
   }
 
-  function decorate(popup, selection) {
+  function decorate(popup, selection, retry, pendingPreparations) {
     if (disposed || trigger !== selection || !selection.card.isConnected || !popup.isConnected ||
         performance.now() - selection.time > 5000 || videoIdFromCard(selection.card) !== selection.videoId) return diagnostic('stale-target');
     const sheet = popup.matches('yt-sheet-view-model');
     let data;
-    try { data = sheet ? popup.componentProps?.data?.() : controller(popup)?.data; } catch { return diagnostic('unavailable-model'); }
+    try { data = sheet ? popup.componentProps?.data?.() : controller(popup)?.data; } catch { return retry('unavailable-model'); }
     const items = sheet ? data?.content?.listViewModel?.listItems : data?.items;
-    if (!Array.isArray(items) || !items.length || items.length > 60) return diagnostic('unsupported-model');
+    if (!Array.isArray(items) || !items.length) return retry('unsupported-model');
+    if (items.length > 60) return diagnostic('unsupported-model');
     const queueIds = items.map(queuedVideoId).filter(Boolean);
     if (!queueIds.length && !matchesNativeMenu(items, selection)) return diagnostic('no-queue-action');
-    if (queueIds.length && !queueIds.includes(selection.videoId)) return diagnostic('queue-target-mismatch');
+    if (queueIds.some(id => id !== selection.videoId)) return diagnostic('queue-target-mismatch');
     // Native Download is an outer action host containing its own list-item row.
     // Keep that original host and handler intact; do not count or move its child.
     const rows = [...popup.querySelectorAll(rowSelector)].filter(row => {
       const downloadHost = row.closest('yt-download-list-item-view-model');
       return !downloadHost || row === downloadHost;
     });
-    if (rows.length !== items.length) return diagnostic('row-count');
+    if (rows.length !== items.length) return retry('row-count');
     if (rows.some(row => row.parentElement !== rows[0].parentElement)) return diagnostic('row-parent');
     const parent = rows[0].parentElement;
     if (sheet && rows.some((row, index) => !sheetBindingMatches(row,items[index]) || (items[index]?.downloadListItemViewModel
       ? !row.matches('yt-download-list-item-view-model')
-      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return diagnostic('row-binding');
+      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return retry('row-binding');
     if (rows.some(row => !popup.contains(row)) || rows.some((row, index) => {
       if (sheet) return false;
       const model = items[index].menuServiceItemRenderer || items[index].menuNavigationItemRenderer || items[index].menuServiceItemDownloadRenderer;
       return !model || typeof model !== 'object' || controller(row)?.data !== model;
-    })) return diagnostic('row-binding');
+    })) return retry('row-binding');
     const ids = items.map(item => identify(item, selection));
     // Ambiguous duplicate recognised actions and mismatched native lists remain untouched.
     if (ids.some((id, index) => id && ids.indexOf(id) !== index)) return diagnostic('duplicate-actions');
+    // A cold History sheet can open without the event used by the queue module.
+    // Its native model may now change. Wait for the matching rows to be stamped.
+    const addIndex = ids.indexOf('addToQueue');
+    if (addIndex >= 0 && !ids.includes('playNext') && layoutById.get('playNext')?.visible) {
+      const source = items[addIndex];
+      const pending = pendingPreparations.get(popup);
+      if (pending && pending.data === data && pending.items === items && pending.source === source) return retry('row-binding');
+      if (suite.prepareVideoQueueMenu?.(popup, selection.videoId)) {
+        pendingPreparations.set(popup, {data, items, source});
+        return retry('row-binding', true);
+      }
+    }
     const identity = channelIdentity(selection.card);
     const channel = identity.channels.length === 1 && identity.status === 'unique' ? identity.channels[0] : null;
     ensureStyle();
     const entries = rows.map((row,index) => {
       const node = layoutById.get(ids[index]);
-      return { row,id:ids[index],enabled:node ? node.visible : true,parent:node?.parent || 'root',
+      const hype = ids[index] === 'hype';
+      // Hype has its own visibility switch and keeps YouTube's native position.
+      return { row,id:hype ? null : ids[index],enabled:hype ? preferences.menuShowHype !== false : node?.visible ?? true,parent:node?.parent || 'root',
         display:{ value:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display') } };
     });
     entries.forEach((entry,index) => pendingNativeIcon(entry.row,entry.id,items[index]));
@@ -677,6 +695,8 @@ export function installVideoMenu(suite) {
       creatorRows:[],lookupStatus:null,lookupController:null,card:selection.card,videoId:selection.videoId,
       model:data,items,trigger:selection.button,page:'root',stack:[],tools:false,
       keyboard:selection.keyboard,interacted:false,redirectingFocus:false,ownsTabIndex:!popup.hasAttribute('tabindex') };
+    popup.addEventListener('pointerdown', pointer, true);
+    popup.addEventListener('pointermove', pointer, {capture:true, passive:true});
     if (active.ownsTabIndex) popup.setAttribute('tabindex','-1');
     // Opaque sheet rows lose their original slot once submenus rearrange them.
     // Share this verified native stamp before the first physical layout move.
@@ -692,7 +712,7 @@ export function installVideoMenu(suite) {
     return true;
   }
 
-  function visiblePopup(popup) {
+  function visiblePopup(popup, visibleAncestors) {
     if (!popup.isConnected || !popup.getClientRects().length) return false;
     const box = popup.getBoundingClientRect();
     // A newly stamped native popup can have no row height until refit. A
@@ -700,36 +720,101 @@ export function installVideoMenu(suite) {
     // positive even though its painted height is zero.
     if (!(box.width > 0) || (!(box.height > 0) && popup.offsetHeight > 0)) return false;
     for (let element = popup; element; element = element.parentElement) {
+      if (visibleAncestors?.has(element)) continue;
       if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true') return false;
       const css = getComputedStyle(element);
       if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
+      visibleAncestors?.add(element);
     }
     return true;
   }
 
+  // False positively identifies a different queue target. Null means the
+  // current stamp offers insufficient evidence of any target.
   function matchesSelection(popup, selection) {
     try {
       const data = popup.matches('yt-sheet-view-model') ? popup.componentProps?.data?.() : controller(popup)?.data;
       const items = popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
-      if (!Array.isArray(items) || items.length > 60) return false;
+      if (!Array.isArray(items) || items.length > 60) return null;
       const queueIds = items.map(queuedVideoId).filter(Boolean);
-      return queueIds.length ? queueIds.includes(selection.videoId) : matchesNativeMenu(items, selection);
-    } catch { return false; }
+      return queueIds.length ? queueIds.every(id => id === selection.videoId) : matchesNativeMenu(items, selection) || null;
+    } catch { return null; }
   }
 
   function startDiscovery(selection, eventPopup = null) {
     reset();
-    const containers = [...document.querySelectorAll('ytd-popup-container')];
-    const existing = eventPopup ? [eventPopup] : [...document.querySelectorAll(popupSelector)];
-    const roots = containers.length ? containers : [...new Set(existing.map(popup => popup.closest('tp-yt-iron-dropdown') || popup))];
+    const roots = new Set();
+    const ancestors = new Set();
+    const pendingPreparations = new WeakMap();
+    const attributes = ['hidden','style','class','aria-hidden','inert','opened'];
     diagnostic('waiting-for-menu');
     let request;
+    let retryTimer = 0;
+    let retryDelay = 80;
+    let needsRetry = false;
+    let mutationCheckPending = false;
+    let lastMutationRender = null;
+    let usedFrameRetry = false;
+    let checkedRestamp = false;
+    function scheduleFrame() {
+      if (waiting === request && !firstFrame && !secondFrame) secondFrame = requestAnimationFrame(() => {
+        secondFrame = 0;
+        attempt();
+      });
+    }
+    function afterNativeChange() {
+      // The native renderer can stamp rows in its own animation frame, after
+      // our first check. Let its mutation observers finish and reconcile in
+      // this render opportunity so the unconfigured rows never need a paint.
+      if (waiting !== request || firstFrame || mutationCheckPending) return;
+      mutationCheckPending = true;
+      queueMicrotask(() => {
+        mutationCheckPending = false;
+        if (waiting !== request) return;
+        const render = document.timeline?.currentTime;
+        if (render == null || render === lastMutationRender) { scheduleFrame(); return; }
+        lastMutationRender = render;
+        attempt();
+      });
+    }
+    function retry(reason, restamped = false) {
+      needsRetry = true;
+      // Play next can synchronously replace the native rows. Revalidate the
+      // selected popup and its fresh bindings once before this frame paints.
+      if (restamped && !checkedRestamp) {
+        checkedRestamp = true;
+        queueMicrotask(() => { if (waiting === request) attempt(); });
+      }
+      if (restamped || !usedFrameRetry) {
+        usedFrameRetry = true;
+        scheduleFrame();
+      }
+      // Property getters can hydrate without a DOM mutation. Back off only
+      // while the selected visible menu is incomplete, within its deadline.
+      if (!retryTimer && retryDelay <= 720) {
+        retryTimer = setTimeout(() => { retryTimer = 0; scheduleFrame(); }, retryDelay);
+        retryDelay *= 3;
+      }
+      return diagnostic(reason);
+    }
     function attempt() {
-      secondFrame = 0;
       if (waiting !== request || trigger !== selection) return;
+      needsRetry = false;
       try {
-        const visible = [...document.querySelectorAll(popupSelector)].filter(popup =>
-          roots.some(root => root === popup || root.contains(popup)) && visiblePopup(popup));
+        const popups = [...document.querySelectorAll(popupSelector)];
+        for (const popup of popups) {
+          const root = popup.closest('tp-yt-iron-dropdown') || popup;
+          if (!roots.has(root)) {
+            roots.add(root);
+            geometry.observe(root, {subtree:true, attributes:true, attributeFilter:attributes});
+          }
+          for (let node=root.parentElement;node;node=node.parentElement) {
+            if (ancestors.has(node) || roots.has(node)) continue;
+            ancestors.add(node);
+            geometry.observe(node,{attributes:true,attributeFilter:attributes});
+          }
+        }
+        const visible = popups.filter(popup => visiblePopup(popup));
         if (visible.length) request.sawPopup = true;
         const matching = visible.filter(popup => matchesSelection(popup, selection));
         if (matching.length > 1 || (visible.length > 1 && matching.length !== 1)) {
@@ -739,7 +824,7 @@ export function installVideoMenu(suite) {
         if (!popup) { diagnostic('waiting-for-visible-popup'); return; }
         // A visible old menu for another video is not owned by this request.
         request.popup = matching.length === 1 ? popup : null;
-        if (decorate(popup, selection) && waiting === request) {
+        if (decorate(popup, selection, retry, pendingPreparations) && waiting === request) {
           request.observer.disconnect();
           clearTimeout(request.timer);
           if (firstFrame) cancelAnimationFrame(firstFrame);
@@ -749,14 +834,38 @@ export function installVideoMenu(suite) {
         }
       } catch { reset(); compatibility('unsupported'); }
     }
-    // YouTube reuses cached sheets without another yt-popup-opened event. Watch
-    // only known popup containers after this trusted activation, never the page.
-    const observer = new MutationObserver(() => {
-      if (waiting === request && !firstFrame && !secondFrame) secondFrame = requestAnimationFrame(attempt);
-    });
-    for (const root of roots) observer.observe(root, { childList: true, subtree: true,
-      attributes: true, attributeFilter: ['hidden', 'style', 'aria-hidden', 'opened'] });
-    request = { popup: eventPopup && matchesSelection(eventPopup, selection) ? eventPopup : null, roots, observer, sawPopup: false, timer: setTimeout(() => {
+    // Sheets may appear outside the original container or replace it. During
+    // this activation accept structural changes anywhere, and attributes on
+    // known dropdowns. Check all visible sheets before assigning ownership.
+    function changed(records) {
+      if (waiting !== request || firstFrame || mutationCheckPending) return;
+      const relevant = records.some(record => record.type === 'attributes' ||
+        record.target.closest?.(popupSelector) || [...record.addedNodes,...record.removedNodes].some(node =>
+          node.matches?.(popupSelector) || node.querySelector?.(popupSelector)));
+      if (relevant) afterNativeChange();
+    }
+    const geometry = new MutationObserver(changed);
+    const topology = new MutationObserver(changed);
+    // A CSS animation can reveal a stamped sheet without another DOM change.
+    // Listen only during discovery; never poll every frame of the animation.
+    const motionEvents = ['animationstart', 'animationend', 'transitionstart', 'transitionend'];
+    function motion(event) {
+      if (!(roots.has(event.target) || ancestors.has(event.target) || event.target.matches?.(popupSelector))) return;
+      if (event.propertyName && !['opacity', 'transform', 'visibility', 'display'].includes(event.propertyName)) return;
+      afterNativeChange();
+      if (event.type.endsWith('start')) scheduleFrame();
+    }
+    const observer = {disconnect() {
+      topology.disconnect(); geometry.disconnect(); clearTimeout(retryTimer);
+      for (const type of motionEvents) document.removeEventListener(type, motion, true);
+    }};
+    for (const type of motionEvents) document.addEventListener(type, motion, true);
+    topology.observe(document.documentElement, {childList:true, subtree:true});
+    request = { popup: eventPopup && matchesSelection(eventPopup, selection) ? eventPopup : null, roots, observer, afterNativeChange, sawPopup: false, timer: setTimeout(() => {
+      if (needsRetry && waiting === request) {
+        if (secondFrame) cancelAnimationFrame(secondFrame);
+        attempt();
+      }
       if (waiting === request) {
         observer.disconnect(); waiting = null;
         if (trigger === selection) { trigger = null; triggerReason = 'expired-trigger'; }
@@ -780,6 +889,10 @@ export function installVideoMenu(suite) {
     const popup = event.target;
     if (!popup?.matches?.(popupSelector)) return;
     if (!trigger) { diagnostic(triggerReason); return; }
+    if (active?.popup === popup && validCurrent(active) && popup.contains(active.parent) &&
+        active.original.every(row => row.parentElement === active.parent) &&
+        active.back.parentElement === active.parent) return;
+    if (waiting) { waiting.afterNativeChange(); return; }
     startDiscovery(trigger, popup);
   }
 
@@ -858,10 +971,12 @@ export function installVideoMenu(suite) {
 
   function closed(event) {
     const popup = active?.popup || waiting?.popup;
-    if ((popup && (event.target === popup || event.target?.contains?.(popup))) ||
-        (!active && waiting?.roots.some(root => root === event.target))) {
-      reset(); trigger = null; triggerReason = 'missing-trigger';
-    }
+    const root = event.target;
+    if (!popup && waiting?.roots.size === 1 && waiting.roots.has(root)) {
+      const closedMenu = root.matches(popupSelector) ? root : root.querySelector(popupSelector);
+      if (closedMenu && trigger && matchesSelection(closedMenu, trigger) === false) return;
+    } else if (!popup || !(root === popup || root?.contains?.(popup))) return;
+    reset(); trigger = null; triggerReason = 'missing-trigger';
   }
 
   function navigated() { reset(); trigger = null; triggerReason = 'missing-trigger'; compatibility('not-checked'); }
@@ -870,8 +985,6 @@ export function installVideoMenu(suite) {
   document.addEventListener('click', activate, true);
   document.addEventListener('keydown', keyboard, true);
   document.addEventListener('focusin', focused, true);
-  document.addEventListener('pointerdown', pointer, true);
-  document.addEventListener('pointermove', pointer, { capture: true, passive: true });
   window.addEventListener('yt-popup-opened', opened, true);
   const closeEvents = ['yt-popup-closed', 'iron-overlay-closed'];
   closeEvents.forEach(type => window.addEventListener(type, closed, true));
@@ -887,8 +1000,6 @@ export function installVideoMenu(suite) {
     document.removeEventListener('click', activate, true);
     document.removeEventListener('keydown', keyboard, true);
     document.removeEventListener('focusin', focused, true);
-    document.removeEventListener('pointerdown', pointer, true);
-    document.removeEventListener('pointermove', pointer, true);
     window.removeEventListener('yt-popup-opened', opened, true);
     closeEvents.forEach(type => window.removeEventListener(type, closed, true));
     resetEvents.forEach(type => window.removeEventListener(type, navigated, true));

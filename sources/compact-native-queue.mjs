@@ -182,7 +182,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       // the selected host. Keep their size in the existing observation set.
       const basicTargets = [...hosts, panel];
       if (!panel || panel.matches('[collapsed], [loading], [is-loading]') ||
-          host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]')) {
+          host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]:not([aria-haspopup="menu"])')) {
         release(); observeSizes(basicTargets); return;
       }
       const lists = [...panel.querySelectorAll('.playlist-items')].filter(visible);
@@ -243,7 +243,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (records.some(record => {
       const node = record.target;
       if (node === host) return record.attributeName !== 'style' || signature(host) !== nativeSignature;
-      if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button')) return true;
+      if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button:not([aria-haspopup="menu"])')) return true;
       if (node.closest?.('#movie_player')) return false;
       if (node.matches?.('.ytdMiniplayerComponentContent')) return true;
       // A hidden panel releases ownership. Observe its native structure too so

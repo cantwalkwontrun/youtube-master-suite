@@ -110,6 +110,36 @@ test("dates and membership text still update hidden state and reason summaries",
   assert.equal(await title(), "Channel age: 1");
 });
 
+test('mounting thumbnail hover actions inside a card does not rescan a 500-card feed', async t => {
+  const page = await open(t, { count: 500 });
+  await page.evaluate(async () => {
+    const media = document.querySelector('#card-0 ytd-rich-grid-media');
+    for (let i = 0; i < 10; i++) {
+      const overlay = document.createElement('ytd-thumbnail-overlay-toggle-button-renderer');
+      overlay.innerHTML = '<button>Watch later</button>';
+      media.append(overlay);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      overlay.remove();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+  });
+  assert.equal(await page.evaluate(() => feedAudit.scans), 0);
+  assert.equal(await page.locator('#yt-master-filter-toggle').getAttribute('title'), 'Channel age: 250');
+});
+
+test('inserting and removing an already filtered subtree inside a card refreshes its summary', async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const wrapper = document.createElement('div');
+    wrapper.id = 'nested-wrapper';
+    wrapper.innerHTML = '<yt-lockup-view-model data-ytppl-watched-hidden="1">Filtered recommendation</yt-lockup-view-model>';
+    document.querySelector('#card-0 ytd-rich-grid-media').append(wrapper);
+  });
+  await page.waitForFunction(() => document.getElementById('yt-master-filter-toggle').title.includes('Watched: 1'));
+  await page.locator('#nested-wrapper').evaluate(node => node.remove());
+  await page.waitForFunction(() => document.getElementById('yt-master-filter-toggle').title === 'Channel age: 1');
+});
+
 test("stable hidden-card metadata changes make no redundant filter attribute writes", async t => {
   const page = await open(t);
   const writes = await page.evaluate(async () => {
@@ -164,6 +194,35 @@ test("pre-filtered inserted cards, removed cards and a removed whole feed update
   await page.waitForFunction(() => document.getElementById("yt-master-filter-toggle").title === "Channel age: 1");
   await page.evaluate(() => document.querySelector("ytd-browse").remove());
   await page.waitForFunction(() => !document.getElementById("yt-master-filter-toggle"));
+});
+
+test("appending one card to a 500-card feed classifies only the new card", async t => {
+  const page = await open(t, { count: 500 });
+  await page.evaluate(() => {
+    const card = document.getElementById("card-1").cloneNode(true);
+    card.id = "new-card";
+    document.querySelector("#contents").append(card);
+  });
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => feedAudit.cleanups), ["new-card"]);
+  assert.equal(await page.evaluate(() => feedAudit.ages), 1);
+});
+
+test("navigation releases a filtered feed card adopted by the miniplayer while observation is suspended", async t => {
+  const page = await open(t);
+  assert.equal(await page.locator("#card-1").isVisible(), false);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("yt-navigate-start"));
+    history.pushState(null, "", "/watch?v=aaaaaaaaaaa");
+    const mini = document.createElement("ytd-miniplayer");
+    document.body.append(mini);
+    const card = document.getElementById("card-1");
+    card.textContent = "Public";
+    mini.append(card);
+  });
+  assert.equal(await page.locator("#card-1").isVisible(), true);
+  await page.evaluate(() => window.dispatchEvent(new Event("yt-navigate-finish")));
+  assert.equal(await page.locator("#card-1").getAttribute("data-clean-up-youtube-hidden"), null);
 });
 
 test("reveal clicks and route reconciliation retain explicit summary refreshes", async t => {

@@ -834,3 +834,25 @@ test('the generated Suite installs one-step controls in both queue views', { tim
     await unchangedPlayback(page);
   }
 });
+
+for (const suite of [false, true]) {
+  test(`queue-step arrows follow the player through floating queue adoption (${suite ? 'Suite' : 'source'})`, async t => {
+    const page = await open(t, { suite, view: 'miniplayer' });
+    await ready(page);
+    await page.evaluate(async () => {
+      document.body.prepend(document.getElementById('movie_player'));
+      fixture.notifyQueue();
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+    });
+    assert.equal(await page.locator('#items [data-ywlc-queue-step]').count(), 0);
+    await page.evaluate(() => {
+      document.body.append(fixture.panel);
+      fixture.notifyQueue();
+    });
+    await ready(page);
+    await clickArrow(page, 'queue000001', 'up');
+    assert.equal(await page.evaluate(() => fixture.dropCalls.length), 1);
+    await unchangedPlayback(page);
+  });
+}

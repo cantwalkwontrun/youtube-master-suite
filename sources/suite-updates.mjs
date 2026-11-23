@@ -53,14 +53,8 @@ export function createSuiteUpdates({
     if (url.hostname === 'github.com' && !url.port) {
       const path = url.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/releases(?:\/latest)?\/?$/);
       if (!path || path[2] === '.' || path[2] === '..') return null;
-      let [, owner, repository] = path;
+      const [, owner, repository] = path;
       const configuredUrl = `https://github.com/${owner}/${repository}/releases/latest`;
-      // This exact Suite repository moved accounts. Route its known former
-      // address in memory, preserving saved records and every custom source.
-      // Download validation still requires the canonical repository below.
-      if (owner.toLowerCase() === 'noswimmingplease' && repository.toLowerCase() === 'youtube-master-suite') {
-        owner = 'cantwalkwontrun'; repository = 'youtube-master-suite';
-      }
       return { type: 'github', url: configuredUrl, owner, repository,
         requestUrl: `https://api.github.com/repos/${owner}/${repository}/releases/latest` };
     }
@@ -187,6 +181,20 @@ export function createSuiteUpdates({
     }
     return { version: record.tag_name.slice(1), sha256: asset.digest.slice(7), bytes: asset.size, installUrl: install.href };
   }
+  function githubReleaseOwner(source, response, record) {
+    if (!response.redirected || !response.url || defaultSource?.type !== 'github' ||
+        source.repository.toLowerCase() !== defaultSource.repository.toLowerCase()) return source;
+    // Accept only GitHub's own metadata redirect to the shipped Suite source.
+    // Saved forks keep their exact owner requirement and saved URLs stay local.
+    const endpoint = cleanUrl(response.url), release = cleanUrl(record?.url);
+    const approved = new URL(defaultSource.requestUrl);
+    const releasePrefix = approved.pathname.slice(0, -'latest'.length);
+    if (endpoint?.origin !== approved.origin || release?.origin !== approved.origin ||
+        !release.pathname.toLowerCase().startsWith(releasePrefix.toLowerCase()) ||
+        !/^\d+$/.test(release.pathname.slice(releasePrefix.length))) return source;
+    return endpoint.pathname.toLowerCase() === approved.pathname.toLowerCase() ||
+      /^\/repositories\/\d+\/releases\/latest$/.test(endpoint.pathname) ? defaultSource : source;
+  }
   async function fetchRelease(source, controller) {
     const response = await fetchRequest(source.requestUrl, { method: 'GET', credentials: 'omit', cache: 'no-store',
       referrerPolicy: 'no-referrer', redirect: 'follow', signal: controller.signal,
@@ -199,7 +207,7 @@ export function createSuiteUpdates({
     // Never store or use a CDN redirect URL as the installation target.
     if (response.url && new URL(response.url).protocol !== 'https:') fail('The update source redirected to an insecure location.');
     const record = await readJson(response, source.type === 'github' ? 128 * 1024 : 16 * 1024);
-    return source.type === 'github' ? checkedGithub(record, source) : checkedManifest(record, source);
+    return source.type === 'github' ? checkedGithub(record, githubReleaseOwner(source, response, record)) : checkedManifest(record, source);
   }
   async function check() {
     cancel();

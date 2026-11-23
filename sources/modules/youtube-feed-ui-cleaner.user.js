@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Feed UI Cleaner
 // @namespace    Citizen.youtube.feed-ui-cleaner
-// @version      2.35
+// @version      2.42
 // @description  Removes unwanted YouTube UI and filtered feed cards, reconciles recycled renderers, and offers a temporary non-ad reveal control.
 // @author       Citizen
 // @updateURL    none
@@ -127,8 +127,9 @@
     'ytd-miniplayer-ui',
     'ytd-miniplayer-bar-renderer',
     'ytd-playlist-panel-renderer',
+    'yt-playlist-panel-renderer',
     'ytd-playlist-panel-video-renderer',
-    'ytd-playlist-panel-renderer #items',
+    'yt-playlist-panel-video-renderer',
     'ytd-watch-flexy[playlist]',
     'ytd-engagement-panel-section-list-renderer',
   ].join(',');
@@ -182,14 +183,23 @@
     // Match a native label, not a channel name or prose mentioning membership.
     const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
     const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
-    if (el.closest(creatorLink)) return false;
+    if (el.closest(creatorLink) || el.closest('[hidden]')) return false;
     // Native semantic badges remain authoritative before their translated
     // label arrives. Generic badge hosts still require a precise label below.
     if (el.classList.contains('badge-style-type-members-only')) return true;
-    return (!el.querySelector(creatorLink) && memberLabel(getText(el))) || memberLabel(el.getAttribute('aria-label')) ||
-      memberLabel(el.getAttribute('title')) ||
+    const label = node => {
+      if (memberLabel(node.getAttribute('aria-label')) || memberLabel(node.getAttribute('title'))) return true;
+      if (!node.querySelector('[hidden]')) return memberLabel(getText(node));
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      let visibleText = '';
+      while (walker.nextNode()) {
+        if (!walker.currentNode.parentElement?.closest('[hidden]')) visibleText += walker.currentNode.nodeValue;
+      }
+      return memberLabel(visibleText);
+    };
+    return (!el.querySelector(creatorLink) && label(el)) ||
       [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
-        .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && memberLabel(getText(node)));
+        .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !node.closest('[hidden]') && label(node));
   }
 
   function getFilterProfileName() {
@@ -312,6 +322,8 @@
   }
 
   function buildFilteredCardCss() {
+    // A renderer can be moved during navigation while observation is suspended.
+    const eligibleCard = `:where(${FEED_SURFACE_SELECTOR}) :not(:where(${EXCLUDED_ANCESTOR_SELECTORS}) *)`;
     return `
     [${CONFIRMATION_ATTRIBUTE}="1"] > :not(.ytms-channel-filter-confirmation) {
       display: none !important;
@@ -352,11 +364,11 @@
       outline-offset: 2px;
     }
 
-    [${PERMANENT_HIDDEN_FLAG}="1"] {
+    ${eligibleCard}[${PERMANENT_HIDDEN_FLAG}="1"] {
       display: none !important;
     }
 
-    :root:not([${FILTER_REVEAL_ATTRIBUTE}="1"]) [${HIDDEN_FLAG}="1"] {
+    :root:not([${FILTER_REVEAL_ATTRIBUTE}="1"]) ${eligibleCard}[${HIDDEN_FLAG}="1"] {
       display: none !important;
     }
 
@@ -842,7 +854,7 @@
     const element = mutation.target?.nodeType === Node.ELEMENT_NODE
       ? mutation.target : mutation.target?.parentElement;
     const surface = element?.closest?.(
-      '.ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls',
+      '.ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls, .html5-video-container, .ytp-spinner',
     );
     const player = surface?.closest('.html5-video-player');
     return Boolean(player?.closest('ytd-video-preview'));
@@ -861,6 +873,10 @@
         ? mutation.target
         : mutation.target?.parentElement;
     if (!element) return false;
+    if (mutation.attributeName === 'hidden') {
+      return Boolean(getFilterProfile().membersOnly && element.closest(FEED_SURFACE_SELECTOR) &&
+        (element.closest(MEMBERS_ONLY_SELECTOR) || element.querySelector(MEMBERS_ONLY_SELECTOR)));
+    }
     if (['class', 'title', 'aria-label'].includes(mutation.attributeName)) {
       const { membersOnly, mixes } = getFilterProfile();
       if (membersOnly && element.closest(MEMBERS_ONLY_SELECTOR) || mixes && element.closest(MIX_BADGE_SELECTOR)) return true;
@@ -914,8 +930,15 @@
       }
 
       const mutationRoot = getMutationCleanUpRoot(mutation);
-      if (mutationRoot) scheduleCleanUp(mutationRoot);
-      if (mutationRoot && [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE)) toggleDirty = true;
+      // A badge change affects its enclosing card. A structural insertion
+      // into a grid affects the added subtree, not its existing siblings.
+      const inCard = mutationRoot && getCardContainer(mutationRoot);
+      if (inCard) scheduleCleanUp(mutationRoot);
+      // Card-local metadata is reclassified above. A child carrying its own
+      // filter marker can change the summary independently of the parent.
+      if (mutationRoot && !toggleDirty) toggleDirty = [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+        node.nodeType === Node.ELEMENT_NODE && (!inCard || node.matches(FILTERED_CARD_SELECTOR) ||
+          (node.firstElementChild && node.querySelector(FILTERED_CARD_SELECTOR))));
       for (const node of mutation.removedNodes) {
         if (node.nodeType !== Node.ELEMENT_NODE) continue;
         // Detached feed roots lose their contextual ancestor selectors. Match
@@ -933,7 +956,7 @@
         const cleanUpRoot = getAddedNodeCleanUpRoot(node);
         if (cleanUpRoot) {
           scheduleCleanUp(cleanUpRoot);
-          if (node.nodeType === Node.ELEMENT_NODE) toggleDirty = true;
+          if (!mutationRoot && node.nodeType === Node.ELEMENT_NODE) toggleDirty = true;
         }
       });
     }
@@ -947,6 +970,7 @@
       'href',
       'class',
       'aria-label',
+      'hidden',
       'title',
       'datetime',
       'overlay-style',
@@ -998,6 +1022,9 @@
   function reconcileRoute(event) {
     reconcileConfirmations(document);
     const nextRoute = routeKey();
+    if (currentRoute !== nextRoute || event?.type === 'pageshow') {
+      releaseRemovedFeedOwnership(document.documentElement);
+    }
     const fullRefresh = event?.type !== 'yt-page-data-updated' || !observerActive || currentRoute !== nextRoute;
     if (event?.type === 'yt-navigate-finish' || currentRoute !== nextRoute) resetTemporaryReveal();
     currentRoute = nextRoute;

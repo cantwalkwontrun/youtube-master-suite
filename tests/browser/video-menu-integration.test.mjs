@@ -12,11 +12,20 @@ let browser;
 before(async () => { browser = await launchFixtureBrowser(); }, { timeout: 30000 });
 after(async () => { await browser?.close(); });
 
+async function enterAge(field, value) {
+  // Native Firefox's BiDi fill can append to an existing number field.
+  await field.press('ControlOrMeta+a');
+  await field.pressSequentially(value);
+  assert.equal(await field.inputValue(), value);
+}
+
 for (const sheet of [false, true]) {
- for (const eventless of [false, true]) {
-  test(`complete Suite retains Play next, guarded queue actions and channel tools (${sheet ? 'current sheet' : 'legacy popup'}, ${eventless ? 'cached eventless reopen' : 'native open event'})`, { timeout: 20000 }, async t => {
+ for (const opening of ['native open event', 'cached eventless reopen', 'cold eventless History open', 'cold animation-frame History open']) {
+  test(`complete Suite retains Play next, guarded queue actions and channel tools (${sheet ? 'current sheet' : 'legacy popup'}, ${opening})`, { timeout: 20000 }, async t => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
-    await context.route('**/*', route => route.request().url() === 'https://www.youtube.com/watch?v=aaaaaaaaaaa'
+    const cold = opening.startsWith('cold ');
+    const address = 'https://www.youtube.com/' + (cold ? 'feed/history' : 'watch?v=aaaaaaaaaaa');
+    await context.route('**/*', route => route.request().url() === address
       ? route.fulfill({ contentType: 'text/html', body: FIXTURE }) : route.abort());
     await context.addInitScript({ content: SUITE });
     const page = await context.newPage();
@@ -24,9 +33,9 @@ for (const sheet of [false, true]) {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     t.after(async () => { try { assert.deepEqual(errors, []); } finally { await context.close(); } });
-    await page.goto('https://www.youtube.com/watch?v=aaaaaaaaaaa');
+    await page.goto(address);
     await waitForSuiteHealth(page, MANIFEST.registeredModules, { timeoutMs: 10000, requireReady: true });
-    await page.evaluate(({ sheet, eventless }) => {
+    await page.evaluate(({ sheet, opening }) => {
       const card = document.createElement('yt-lockup-view-model');
       card.id = 'integration-card'; card.style.cssText = 'display:block;position:fixed;top:100px;left:16px;z-index:9000;background:#222;padding:12px';
       const link = document.createElement('a'); link.href = '/watch?v=bbbbbbbbbbb'; link.textContent = 'Next video';
@@ -55,7 +64,7 @@ for (const sheet of [false, true]) {
       dropdown.hidden = true;
       const popup = document.createElement(sheet ? 'yt-sheet-view-model' : 'ytd-menu-popup-renderer');
       popup.style.display = 'block'; popup.setAttribute('role', 'menu'); dropdown.append(popup); document.body.append(dropdown);
-      const fixture = window.menuIntegration = { calls: [], refits: 0, data: null, popup };
+      const fixture = window.menuIntegration = { calls: [], nativeQueue: [], nativeAdds: 0, refits: 0, data: null, popup };
       dropdown.refit = () => { fixture.refits++; };
       dropdown.close = () => { dropdown.hidden = true; dropdown.dispatchEvent(new CustomEvent('iron-overlay-closed', { bubbles: true })); };
       const endpoint = { signalServiceEndpoint: { signal: 'CLIENT_SIGNAL', actions: [{ addToPlaylistCommand: {
@@ -97,7 +106,13 @@ for (const sheet of [false, true]) {
           if (sheet) { row.setAttribute('role', 'presentation'); target.type = 'button'; row.append(target); }
           if (sheet) { if (model.targetId) row.setAttribute('data-target-id', model.targetId); }
           else row.polymerController = { data: model };
-          target.addEventListener('click', () => { fixture.calls.push(label); dropdown.close(); });
+          target.addEventListener('click', event => {
+            if (label === 'Add to queue' && event.isTrusted) {
+              fixture.nativeAdds++;
+              fixture.nativeQueue.push(fixture.queueCommand.videoId);
+            } else fixture.calls.push(label);
+            dropdown.close();
+          });
           parent.append(host);
         }
       }
@@ -106,21 +121,47 @@ for (const sheet of [false, true]) {
         popup.setters = { data: stamp };
         Object.defineProperty(popup, 'data', { get: () => Symbol('opaque'), set: stamp });
       } else popup.polymerController = { set: (_path, data) => stamp(data), get data() { return fixture.data; } };
-      trigger.addEventListener('click', () => {
-        stamp(eventless ? fixture.cachedData : sheet ? { content: { listViewModel: { listItems: items } } } : { items });
+      function showNativeMenu() {
+        stamp(fixture.cachedData || (sheet ? { content: { listViewModel: { listItems: items } } } : { items }));
         dropdown.hidden = false;
-        if (!eventless) popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+        if (opening === 'native open event') popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+      }
+      trigger.addEventListener('click', () => {
+        if (opening !== 'cold animation-frame History open') { showNativeMenu(); return; }
+        requestAnimationFrame(showNativeMenu);
+        fixture.firstVisibleFrame = new Promise(resolve => requestAnimationFrame(() => {
+          const visibleRows = [...popup.querySelectorAll('[role="menuitem"]')].filter(row => row.getClientRects().length);
+          resolve({ ready: popup.hasAttribute('data-ytms-video-menu'),
+            visibleDownload: visibleRows.some(row => row.textContent === 'Download'),
+            visiblePlayNext: visibleRows.some(row => row.textContent === 'Play next in queue') });
+        }));
       });
-      if (eventless) {
+      if (opening === 'cached eventless reopen') {
         // Seed the native cached model once, as YouTube does on an earlier open.
         // Later trusted opens reuse the injected Play next model without an event.
         stamp(sheet ? { content: { listViewModel: { listItems: items } } } : { items });
         popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
         fixture.cachedData = fixture.data;
       }
-    }, { sheet, eventless });
+    }, { sheet, opening });
     await page.locator('#integration-trigger').click();
+    if (opening === 'cold animation-frame History open') {
+      assert.deepEqual(await page.evaluate(() => menuIntegration.firstVisibleFrame),
+        { ready: true, visibleDownload: false, visiblePlayNext: true });
+    }
     await page.locator('[data-ytms-video-menu="1"]').waitFor();
+    if (cold) {
+      const next = page.getByRole('menuitem', { name: 'Play next in queue', exact: true });
+      await next.waitFor();
+      assert.equal(await next.count(), 1);
+      assert.equal(await page.getByRole('menuitem', { name: 'Download', exact: true }).isVisible(), false);
+      assert.equal(await page.getByRole('menuitem', { name: 'Channel tools', exact: true }).isVisible(), true);
+      assert.deepEqual(await page.evaluate(() => menuIntegration.rejectedIds), []);
+      await next.click();
+      assert.deepEqual(await page.evaluate(() => menuIntegration.rejectedIds), ['bbbbbbbbbbb']);
+      assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
+      return;
+    }
     // The Suite's automatic theatre-mode helper also invokes this native button.
     // Its synthetic click must not dismiss the user's separate video menu.
     await page.evaluate(() => document.querySelector('.ytp-size-button').click());
@@ -142,16 +183,35 @@ for (const sheet of [false, true]) {
     assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     await page.locator('#ytms-age-cancel').click();
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), false, 'Context-menu Cancel dismisses its settings window');
-    await page.locator('#integration-trigger').click();
+    await page.evaluate(() => {
+      const player = document.querySelector('#movie_player');
+      player.getPlaylist = () => [...menuIntegration.nativeQueue];
+      player.getPlaylistId = () => '';
+    });
+    const keyboardAdd = sheet && opening === 'cached eventless reopen';
+    if (keyboardAdd) await page.locator('#integration-trigger').press('Enter');
+    else await page.locator('#integration-trigger').click();
     await page.locator('[data-ytms-video-menu="1"]').waitFor();
     assert.equal(await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).count(), 1);
-    await page.getByRole('menuitem', { name: 'Add to queue', exact: true }).click();
-    // The native resolver deliberately returns an unconfirmed result. The
-    // default duplicate policy owns the action and must not retry it through
-    // the toy native click handler. Successful native queue updates and the
-    // explicit opt-out are covered by review128-queue-submenus.test.mjs.
-    assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /could not accept/);
-    assert.deepEqual(await page.evaluate(() => menuIntegration.rejectedIds), ['bbbbbbbbbbb']);
+    const add = page.getByRole('menuitem', { name: 'Add to queue', exact: true });
+    if (keyboardAdd) {
+      await page.keyboard.press('Home');
+      await page.keyboard.press('ArrowDown');
+      assert.equal(await add.evaluate(button => document.activeElement === button), true);
+      await page.keyboard.press('Enter');
+    } else await add.click();
+    // An empty playlist can accept this fresh card using its own trusted
+    // menu handler even when the app's private dispatcher rejects commands.
+    assert.deepEqual(await page.evaluate(() => ({
+      order: document.querySelector('#movie_player').getPlaylist(),
+      nativeAdds: menuIntegration.nativeAdds, privateCalls: menuIntegration.rejectedIds,
+    })), { order: ['bbbbbbbbbbb'], nativeAdds: 1, privateCalls: [] });
+    assert.equal(await page.locator('[data-yt-master-queue-status]').isVisible(), false);
+    await page.evaluate(() => {
+      const player = document.querySelector('#movie_player');
+      delete player.getPlaylist;
+      delete player.getPlaylistId;
+    });
     assert.deepEqual(await page.evaluate(() => menuIntegration.calls), []);
     for (const [tag, parentTag] of [['ytd-playlist-video-renderer', 'ytd-playlist-video-list-renderer'],
       ['ytd-playlist-panel-video-renderer', 'ytd-playlist-panel-renderer']]) {
@@ -203,12 +263,13 @@ for (const sheet of [false, true]) {
       ['Back', 'Filter channel uploads', 'Don’t recommend channel', 'Report']);
     await page.getByRole('menuitem', { name: 'Filter channel uploads', exact: true }).click();
     await page.locator('#ytms-age-dialog').waitFor();
-    await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true }).fill('0');
+    const ageField = page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true });
+    await enterAge(ageField, '0');
     await page.locator('#ytms-age-save').click();
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), true, 'Validation failure keeps the contextual editor open');
     assert.equal(await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true }).inputValue(), '0');
     assert.deepEqual(await page.evaluate(() => JSON.parse(fixtureStorage.getItem('yt-master-suite.channel-age.v1')).rules), [unrelatedRule]);
-    await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age', { exact: true }).fill('1');
+    await enterAge(ageField, '1');
     await page.locator('#ytms-age-save').click();
     await page.locator('#ytms-age-dialog').waitFor({ state: 'hidden' });
     assert.equal(await page.locator('#ytms-settings-dialog').isVisible(), false, 'Successful contextual Save closes the main settings window');
@@ -232,8 +293,7 @@ for (const sheet of [false, true]) {
     // A cached injected row must remain callable after the SPA reset above,
     // including native clients that do not emit another popup-opened event.
     await page.evaluate(() => {
-      // Use a fresh target: the earlier unconfirmed B addition must remain
-      // reserved rather than being silently retried after an SPA transition.
+      // The new card after navigation has a different native command.
       menuIntegration.queueCommand.videoId = 'ddddddddddd';
       menuIntegration.queueCommand.videoIds = ['ddddddddddd'];
       document.querySelector('#integration-card > a').href = '/watch?v=ddddddddddd';
@@ -247,7 +307,7 @@ for (const sheet of [false, true]) {
     await page.locator('#integration-trigger').click();
     await page.locator('[data-ytms-video-menu="1"]').waitFor();
     await page.getByRole('menuitem', { name:'Play next in queue',exact:true }).click();
-    if (eventless) {
+    if (opening === 'cached eventless reopen') {
       // A cached placeholder cannot acquire the changed D command without a
       // fresh native binding. Refuse that stale activation, then model a real
       // native reopen/stamp before accepting the new command.
@@ -285,7 +345,7 @@ for (const sheet of [false, true]) {
     await page.getByRole('menuitem',{name:'Filter uploads from Second creator',exact:true}).click();
     await page.locator('#ytms-age-dialog').waitFor();
     assert.equal(await page.getByLabel('Channel ID or channel URL',{exact:true}).inputValue(),'UCABCDEFGHIJKLMNOPQRSTUV');
-    await page.locator('.ytms-age-fields:visible').getByLabel('Maximum age',{exact:true}).fill('3');
+    await enterAge(ageField, '3');
     await page.locator('#ytms-age-save').click();
     await page.locator('#ytms-age-dialog').waitFor({state:'hidden'});
     const collaborationConfirmation = page.locator('#integration-card > .ytms-channel-filter-confirmation');
@@ -324,7 +384,7 @@ for (const sheet of [false, true]) {
     assert.equal(await page.evaluate(()=>window.lookupScriptExecuted),undefined,'Fetched channel HTML must remain inert');
     assert.equal(await page.locator('.ytms-age-fields:visible').getByLabel('Channel ID or channel URL',{exact:true}).inputValue(),'UCabcdefghijklmnopqrstuv');
     const lookupFields=page.locator('.ytms-age-fields:visible');
-    await lookupFields.getByLabel('Maximum age',{exact:true}).fill('4');
+    await enterAge(lookupFields.getByLabel('Maximum age',{exact:true}), '4');
     await lookupFields.getByLabel('Unit',{exact:true}).selectOption('weeks');
     await page.locator('#ytms-age-save').click();
     await page.locator('#ytms-age-dialog').waitFor({state:'hidden'});

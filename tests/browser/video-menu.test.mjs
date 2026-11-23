@@ -188,6 +188,27 @@ async function open(t, options = {}) {
     nativeAutofocus: options.nativeAutofocus, presentationRows: Boolean(options.presentationRows),
     lateNativeLayout: Boolean(options.lateNativeLayout), nativeHover: Boolean(options.nativeHover), blockTube: Boolean(options.blockTube), duplicateNotInterested: Boolean(options.duplicateNotInterested),
     iconSlots:Boolean(options.iconSlots),iconLoaded:Boolean(options.iconLoaded),watchActions:Boolean(options.watchActions) });
+  if (options.tracePointer) await page.evaluate(() => {
+    const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
+    const wrappers = new WeakMap();
+    menuFixture.pointerCalls = 0;
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+      if (type === 'pointermove' && typeof listener === 'function') {
+        if (!wrappers.has(listener)) {
+          const original = listener;
+          wrappers.set(listener, function(event) {
+            menuFixture.pointerCalls++;
+            return original.call(this, event);
+          });
+        }
+        listener = wrappers.get(listener);
+      }
+      return add.call(this, type, listener, options);
+    };
+    EventTarget.prototype.removeEventListener = function(type, listener, options) {
+      return remove.call(this, type, type === 'pointermove' ? wrappers.get(listener) || listener : listener, options);
+    };
+  });
   await page.addScriptTag({ content: `window.suite.menuLayout = (${createMenuLayout.toString()})(); window.disposeVideoMenu = (${installVideoMenu.toString()})(window.suite);` });
   return page;
 }
@@ -202,6 +223,163 @@ async function visibleIds(page) {
     .filter(row => row.getClientRects().length && getComputedStyle(row).display !== 'none')
     .map(row => row.dataset.nativeId || row.dataset.ytmsMenuAction));
 }
+
+test('video menu pointer handling is confined to the currently managed popup', async t => {
+  const page = await open(t, {sheet:true, tracePointer:true});
+  const count = selector => page.evaluate(selector => {
+    const start = menuFixture.pointerCalls;
+    const target = document.querySelector(selector);
+    for (let i = 0; i < 120; i++) target.dispatchEvent(new PointerEvent('pointermove', {bubbles:true}));
+    return menuFixture.pointerCalls - start;
+  }, selector);
+  const closed = await count('#outside');
+  await show(page);
+  const outside = await count('#outside');
+  const inside = await count('[data-ytms-video-menu]');
+  await page.evaluate(() => menuFixture.dropdown.close());
+  const dismissed = await count('yt-sheet-view-model');
+  assert.deepEqual({closed, outside, inside, dismissed}, {closed:0, outside:0, inside:120, dismissed:0});
+});
+
+test('one keyboard move reads shared menu ancestor styles once', async t => {
+  const page = await open(t, {sheet:true});
+  await show(page);
+  await page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const styled = window.getComputedStyle;
+    menuFixture.rootStyleReads = 0;
+    window.getComputedStyle = function(el, ...args) {
+      if (el === document.documentElement) menuFixture.rootStyleReads++;
+      return styled.call(window, el, ...args);
+    };
+  });
+  await page.keyboard.press('ArrowDown');
+  const measured = await page.evaluate(() => ({
+    reads:menuFixture.rootStyleReads, focus:document.activeElement.closest('[data-native-id]')?.dataset.nativeId,
+  }));
+  assert.deepEqual(measured, {reads:1, focus:'playNext'});
+});
+
+test('first eventless menu is discovered when its popup container is created after activation', async t => {
+  const page = await open(t, { sheet:true, eventless:true, route:'/feed/history', nativeContract:true, libraryActions:true });
+  await page.evaluate(() => {
+    const {dropdown} = menuFixture;
+    dropdown.remove();
+    document.getElementById('trigger').addEventListener('click', () => {
+      setTimeout(() => {
+        const container = document.createElement('ytd-popup-container');
+        document.body.append(container);
+        container.append(dropdown);
+      }, 50);
+    }, {once:true});
+  });
+  await page.locator('#trigger').click();
+  await page.locator('[data-ytms-video-menu="1"]').waitFor({timeout:2200});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(), false);
+  assert.equal(await page.getByRole('menuitem',{name:'Remove native item',exact:true}).isVisible(), true);
+});
+
+test('first History menu recovers when only its model getter hydrates after paint', async t => {
+  const page = await open(t, {sheet:true, eventless:true, route:'/feed/history'});
+  await page.evaluate(() => {
+    const props = menuFixture.popup.componentProps;
+    const read = props.data;
+    props.data = () => undefined;
+    document.getElementById('trigger').addEventListener('click', () => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        setTimeout(() => { props.data = read; }, 50);
+      }));
+    }, {once:true});
+  });
+  await page.locator('#trigger').click();
+  await page.locator('[data-ytms-video-menu="1"]').waitFor({timeout:2000});
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(), false);
+});
+
+test('a delayed native History model replacement receives a single Play next preparation', async t => {
+  const page = await open(t, {sheet:true, eventless:true, route:'/feed/history'});
+  await page.evaluate(() => {
+    document.getElementById('trigger').addEventListener('click', () => {
+      const popup = menuFixture.popup;
+      const full = popup.componentProps.data();
+      const old = {content:{listViewModel:{listItems:menuFixture.items.slice(1)}}};
+      const row = popup.querySelector('[data-native-id="playNext"]');
+      const list = row.parentElement;
+      row.remove();
+      popup.componentProps.data = () => old;
+      menuFixture.prepareCount = 0;
+      suite.prepareVideoQueueMenu = (target, id) => {
+        if (target !== popup || id !== 'bbbbbbbbbbb') throw new Error('Unexpected queue target');
+        if (++menuFixture.prepareCount === 1) setTimeout(() => {
+          popup.componentProps.data = () => full;
+          list.prepend(row);
+        }, 180);
+        return true;
+      };
+    }, {once:true});
+  });
+  await page.locator('#trigger').click();
+  await page.locator('[data-ytms-video-menu="1"]').waitFor({timeout:2200});
+  assert.equal(await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).count(), 1);
+  assert.equal(await page.evaluate(() => menuFixture.prepareCount), 1);
+});
+
+test('repeated native opened notification preserves the active submenu and its focus', async t => {
+  const page = await open(t, {sheet:true, route:'/feed/history'});
+  await show(page);
+  await page.keyboard.press('End');
+  await page.getByRole('menuitem', {name:'Channel tools'}).press('ArrowRight');
+  const back = page.getByRole('menuitem', {name:'Back',exact:true});
+  assert.equal(await back.evaluate(row => row === document.activeElement), true);
+  await page.evaluate(async () => {
+    menuFixture.popup.dispatchEvent(new CustomEvent('yt-popup-opened', {bubbles:true}));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert.equal(await back.isVisible(), true);
+  assert.equal(await back.evaluate(row => row === document.activeElement), true);
+});
+
+for (const replaced of [false,true]) test(`History discovers its opened menu with an unrelated or replaced popup host (replaced=${replaced})`, async t => {
+  const page=await open(t,{sheet:true,route:'/feed/history',eventless:replaced});
+  await page.evaluate(replaced=>{
+    const old=document.createElement('ytd-popup-container');
+    document.body.append(old);
+    if (!replaced) return;
+    const {dropdown}=menuFixture;
+    dropdown.remove();
+    document.getElementById('trigger').addEventListener('click',()=>setTimeout(()=>{
+      const replacement=document.createElement('ytd-popup-container');
+      replacement.append(dropdown);
+      old.replaceWith(replacement);
+    },50),{once:true});
+  },replaced);
+  await show(page);
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),false);
+});
+
+test('History trailing slash preserves its native feedback and recognises live-video permalinks',async t=>{
+  const page=await open(t,{sheet:true,route:'/feed/history/',nativeContract:true,libraryActions:true,settings:{menuShowNotInterested:false}});
+  await page.locator('#card a').evaluate(a=>a.href='/live/bbbbbbbbbbb');
+  await show(page);
+  await page.getByRole('menuitem',{name:'Hide native record',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['hideRecord']);
+});
+
+test('a matching Add to queue command cannot vouch for a conflicting Play next target',async t=>{
+  const page=await open(t,{sheet:true});
+  await page.evaluate(()=>{
+    const [playNext,addToQueue]=menuFixture.items;
+    const tap=structuredClone(addToQueue.listItemViewModel.rendererContext.commandContext.onTap);
+    const command=tap.innertubeCommand.signalServiceEndpoint.actions[0].addToPlaylistCommand;
+    command.videoId='ccccccccccc';
+    command.videoIds=[command.videoId];
+    playNext.listItemViewModel.rendererContext.commandContext.onTap=tap;
+  });
+  await page.locator('#trigger').click();
+  await page.waitForFunction(()=>document.documentElement.dataset.ytmsVideoMenuStatus==='queue-target-mismatch');
+  assert.equal(await page.locator('[data-ytms-video-menu]').count(),0);
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),[]);
+});
 
 test('compatibility distinguishes an unchecked page, a non-video menu and a recognised video menu', async t => {
   const page = await open(t, { sheet: true });
@@ -408,8 +586,19 @@ for(const sheet of [false,true])test(`watch overflow Save Download Hype Report r
   assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),false);
   assert.equal(await page.getByRole('menuitem',{name:'Save to playlist',exact:true}).isVisible(),true);
   assert.equal(await page.getByRole('menuitem',{name:'Hype',exact:true}).isVisible(),true);
+  const visible=await visibleIds(page);
+  assert.ok(visible.indexOf('savePlaylist')<visible.indexOf('hype'));
   await page.getByRole('menuitem',{name:'Hype',exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['hype']);
+});
+
+for(const sheet of [false,true])test(`disabled Hype stays hidden in a decorated watch menu (${sheet?'sheet':'legacy'})`,async t=>{
+  const page=await open(t,{sheet,cardTag:'ytd-watch-metadata',containerTag:'ytd-watch-flexy',route:'/watch?v=bbbbbbbbbbb',
+    nativeBinding:true,nativeContract:true,watchActions:true,settings:{menuShowHype:false}});
+  await makeWatchMenuOwner(page);
+  await show(page);
+  assert.equal(await page.getByRole('menuitem',{name:'Hype',exact:true}).isVisible(),false);
+  assert.equal(await page.getByRole('menuitem',{name:'Save to playlist',exact:true}).isVisible(),true);
 });
 
 test('legacy watch information menus honour enabled Download and its native handler',async t=>{
@@ -1172,6 +1361,18 @@ test('eventless discovery fails open when two visible native sheets match the se
   assert.deepEqual(await page.evaluate(() => menuFixture.nativeCalls), []);
 });
 
+test('discovery also rejects equally matching sheets in separate popup hosts',async t=>{
+  const page=await open(t,{sheet:true,modernTrigger:true,eventless:true});
+  await addCachedPopup(page,'matching');
+  await page.evaluate(()=>{
+    const host=document.createElement('ytd-popup-container');
+    document.body.append(host);host.append(menuFixture.dropdown);
+  });
+  await page.locator('#trigger').click();
+  await page.waitForFunction(()=>document.documentElement.dataset.ytmsVideoMenuStatus==='ambiguous-popup');
+  assert.equal(await page.locator('[data-ytms-video-menu]').count(),0);
+});
+
 test('pending eventless discovery cancels on outside click, new trigger, navigation, pagehide and disposal before delayed stamping', async t => {
   for (const action of ['outside', 'new-trigger', 'navigation', 'pagehide', 'dispose']) {
     const page = await open(t, { sheet: true, modernTrigger: true, eventless: true, delayed: true });
@@ -1219,6 +1420,24 @@ test('closing an unrelated old sheet inside the shared popup container does not 
   assert.equal(await page.locator('[data-cloned-popup]').getAttribute('data-ytms-video-menu'), null);
 });
 
+test('closing the sole retained wrong-video sheet before the first History sheet attaches preserves the activation', async t => {
+  const page = await open(t, {sheet:true, route:'/feed/history', modernTrigger:true, eventless:true});
+  await addCachedPopup(page, 'wrong');
+  await page.evaluate(() => {
+    const old = document.querySelector('[data-cloned-popup]').parentElement;
+    menuFixture.dropdown.remove();
+    document.getElementById('trigger').addEventListener('click', () => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        old.dispatchEvent(new CustomEvent('iron-overlay-closed', {bubbles:true}));
+        old.remove();
+        document.body.append(menuFixture.dropdown);
+      }));
+    }, {once:true});
+  });
+  await page.locator('#trigger').click();
+  await page.locator('[data-ytms-video-menu="1"]').waitFor({timeout:2000});
+});
+
 test('expired trusted activation cannot restart discovery when a late native popup-opened event arrives', async t => {
   const page = await open(t, { sheet: true, modernTrigger: true, eventless: true, delayed: true, delayMs: 1700 });
   await page.locator('#trigger').click();
@@ -1242,6 +1461,56 @@ for(const sheet of [false,true])test(`video menu settles before its first paint 
   }));
   await page.locator('#trigger').click();
   assert.deepEqual(await page.evaluate(()=>menuFixture.firstPaint),{ready:true,moves:0,notInterested:1});
+});
+
+for (const sheet of [false, true]) test(`menu stamped by the native animation frame uses its configured layout before paint (${sheet ? 'eventless sheet' : 'legacy popup'})`, async t => {
+  const page = await open(t, { sheet, eventless: sheet });
+  await page.evaluate(() => {
+    const button = document.getElementById('trigger');
+    button.removeEventListener('click', menuFixture.open);
+    button.addEventListener('click', () => {
+      requestAnimationFrame(menuFixture.open);
+      menuFixture.firstVisibleFrame = new Promise(resolve => requestAnimationFrame(() => {
+        const download = menuFixture.popup.querySelector('[data-native-id="download"]');
+        resolve({ open: !menuFixture.dropdown.hidden, ready: menuFixture.popup.hasAttribute('data-ytms-video-menu'),
+          downloadVisible: download.getClientRects().length > 0 });
+      }));
+    }, { once: true });
+  });
+  await page.locator('#trigger').click();
+  assert.deepEqual(await page.evaluate(() => menuFixture.firstVisibleFrame), { open: true, ready: true, downloadVisible: false });
+});
+
+test('an eventless native opening animation can reveal its sheet without a second DOM mutation', async t => {
+  const page = await open(t, { sheet: true, eventless: true });
+  await page.addStyleTag({ content: '@keyframes nativeMenuReveal {from {opacity:0} to {opacity:1}} tp-yt-iron-dropdown:not([hidden]) {animation:nativeMenuReveal 180ms step-end both}' });
+  await page.locator('#trigger').click();
+  await page.waitForFunction(() => getComputedStyle(menuFixture.dropdown).opacity === '1');
+  await page.locator('[data-ytms-video-menu]').waitFor({ timeout: 1400 });
+  assert.equal(await page.getByRole('menuitem', {name:'Download', exact:true}).isVisible(), false);
+});
+
+test('rapid mutations on an unready retained sheet keep discovery work bounded within one render', async t => {
+  const page = await open(t, { sheet: true, eventless: true });
+  await page.evaluate(() => { menuFixture.popup.componentProps.data = () => null; });
+  await page.locator('#trigger').click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-ytms-video-menu-status') === 'unsupported-model');
+  const scans = await page.evaluate(async () => {
+    let count = 0;
+    const original = document.querySelectorAll;
+    document.querySelectorAll = function(selector) {
+      if (selector === 'ytd-menu-popup-renderer, yt-sheet-view-model') count++;
+      return original.call(this, selector);
+    };
+    try {
+      for (let i = 0; i < 30; i++) {
+        menuFixture.popup.classList.toggle('native-pending');
+        await new Promise(done => queueMicrotask(() => queueMicrotask(done)));
+      }
+      return count;
+    } finally { document.querySelectorAll = original; }
+  });
+  assert.ok(scans <= 1, `Observed ${scans} full menu discoveries in one render`);
 });
 
 test('Not interested cold-icon fallback preserves native and extension icons and releases its scoped observer',async t=>{
@@ -1321,6 +1590,26 @@ function nestedLayout({empty = false} = {}) {
   }
   assert.ok(model.validate(result)); return result;
 }
+for (const [surface,cardTag,containerTag,route] of [
+  ['Home','ytd-video-renderer',null,'/'],
+  ['History legacy','ytd-video-renderer',null,'/feed/history'],
+  ['History current','yt-lockup-view-model',null,'/feed/history'],
+  ['Search','ytd-video-renderer',null,'/results?search_query=fixture'],
+  ['Subscriptions','yt-lockup-view-model',null,'/feed/subscriptions'],
+  ['Playlist','ytd-playlist-video-renderer','ytd-playlist-video-list-renderer','/playlist?list=WL'],
+  ['Queue','ytd-playlist-panel-video-renderer','ytd-playlist-panel-renderer','/watch?v=aaaaaaaaaaa'],
+]) for (const sheet of [false,true]) test(`saved custom video menu is consistent on ${surface} (${sheet?'sheet':'legacy'})`,async t=>{
+  const page=await open(t,{cardTag,containerTag,route,sheet,nativeContract:true,libraryActions:surface==='History legacy'||surface==='History current'||surface==='Playlist'||surface==='Queue',settings:{menuLayout:nestedLayout()}});
+  await show(page);
+  assert.equal(await page.getByRole('menuitem',{name:'Download',exact:true}).isVisible(),false);
+  if(surface.startsWith('History')||surface==='Playlist'||surface==='Queue') assert.equal(await page.getByRole('menuitem',{name:'Remove native item',exact:true}).isVisible(),true);
+  await page.getByRole('menuitem',{name:'My tools',exact:true}).click();
+  await page.getByRole('menuitem',{name:'Queue actions',exact:true}).click();
+  await page.getByRole('menuitem',{name:'Next videos',exact:true}).click();
+  assert.deepEqual(await visibleIds(page),['back','playNext','addToQueue']);
+  await page.getByRole('menuitem',{name:'Play next in queue',exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>menuFixture.nativeCalls),['playNext']);
+});
 async function creatorFixture(page,{status = 'multiple',channels = [{channelId:'UCabcdefghijklmnopqrstuv',name:'Alpha creator'},
   {channelId:'UCABCDEFGHIJKLMNOPQRSTUV',name:'Beta creator'}],handles = []} = {}) {
   await page.evaluate(({status,channels,handles}) => {

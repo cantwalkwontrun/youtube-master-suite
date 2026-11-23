@@ -55,6 +55,8 @@ async function open(t, { knownHost = true, nativePlayer = true } = {}) {
       <div id="metadata-line"><span>1 hour ago</span></div>
       <ytd-thumbnail-overlay-resume-playback-renderer><div id="progress" style="width:10%"></div></ytd-thumbnail-overlay-resume-playback-renderer>
       <${knownHost ? "ytd-video-preview" : "div"} id="preview-host"><div class="${nativePlayer ? "html5-video-player" : "ordinary-container"}">
+        <div class="html5-video-container"><video></video></div>
+        <div class="ytp-spinner"><span></span></div>
         <div class="ytp-progress-bar-container"><div id="preview-progress" class="ytp-play-progress"></div></div>
         <div id="preview-captions" class="ytp-caption-window-container"><span class="ytp-caption-segment">Initial caption</span></div>
         <div id="preview-controls" class="ytp-chrome-controls"><button>Preview control</button></div>
@@ -86,6 +88,8 @@ test("30 native preview playback updates do no feed filtering or whole-feed togg
       document.querySelector("#preview-captions .ytp-caption-segment").textContent = `Caption ${index}`;
       document.getElementById("preview-controls").setAttribute("aria-label", `Preview controls ${index}`);
       document.querySelector("#preview-controls button").textContent = `Control ${index}`;
+      document.querySelector('#preview-host video').style.transform = `translateX(${index}px)`;
+      document.querySelector('#preview-host .ytp-spinner span').textContent = `State ${index}`;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     }
   });
@@ -105,6 +109,29 @@ test("real thumbnail resume progress still filters and reveals the feed card in 
   await page.waitForFunction(() => !document.getElementById("fixture-card").hasAttribute("data-ytppl-watched-hidden"));
   assert.equal(await page.locator("#fixture-card").isVisible(), true);
   assert.ok(await page.evaluate(() => window.previewAudit.watched > 0));
+});
+
+test('a batch of new Home cards does not search each subtree for a watch-page live chat', async t => {
+  const page = await open(t);
+  const searches = await page.evaluate(async () => {
+    const grid = document.getElementById('contents');
+    const sample = document.createElement('ytd-rich-item-renderer');
+    sample.innerHTML = '<yt-lockup-view-model><a href="/watch?v=bbbbbbbbbbb">Fixture recommendation</a></yt-lockup-view-model>';
+    const cards = Array.from({ length: 30 }, () => sample.cloneNode(true));
+    const batch = new Set(cards);
+    const query = Element.prototype.querySelector;
+    let searches = 0;
+    Element.prototype.querySelector = function (selector) {
+      if (batch.has(this) && selector === 'ytd-watch-flexy ytd-live-chat-frame#chat') searches++;
+      return query.call(this, selector);
+    };
+    try {
+      grid.append(...cards);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return searches;
+    } finally { Element.prototype.querySelector = query; }
+  });
+  assert.equal(searches, 0);
 });
 
 test("channel, date and membership changes outside preview playback still reconcile", async t => {

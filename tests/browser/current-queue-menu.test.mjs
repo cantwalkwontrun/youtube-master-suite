@@ -15,6 +15,27 @@ ytd-menu-renderer{display:block} [selected] ytd-menu-renderer{display:none}
 tp-yt-iron-dropdown,ytd-menu-popup-renderer,ytd-menu-service-item-renderer{display:block} [hidden]{display:none!important}
 </style><body><ytd-app><ytd-miniplayer><div id="movie_player"><video></video></div>
 <ytd-playlist-panel-renderer></ytd-playlist-panel-renderer></ytd-miniplayer><ytd-popup-container><tp-yt-iron-dropdown hidden></tp-yt-iron-dropdown></ytd-popup-container></ytd-app></body></html>`;
+for (const suite of [false, true]) test(`queue advance invalidates the open popup for the previous video (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite });
+  const dots = page.locator('[selected] ytd-menu-renderer button');
+  await dots.click();
+  const oldAction = await page.getByRole('button', { name: 'Save to Watch Later' }).elementHandle();
+  await page.evaluate(() => {
+    f.panel.data.currentIndex = 1;
+    f.rows.forEach((row, index) => {
+      row.data.selected = index === 1;
+      row.toggleAttribute('selected', row.data.selected);
+    });
+    // Attempt activation before the next frame installs the new row menu.
+    document.querySelector('#native-popup button').click();
+    window.dispatchEvent(new Event('yt-playlist-data-updated'));
+  });
+  await oldAction.waitForElementState('hidden');
+  assert.deepEqual(await page.evaluate(() => f.calls), []);
+  await dots.click();
+  await page.getByRole('button', { name: 'Save to Watch Later' }).click();
+  assert.deepEqual(await page.evaluate(() => f.calls.map(call => call.videoId)), ['bbbbbbbbbbb']);
+});
 async function open(t, { suite = false, enabled = true, existing = false, define = true, fault = '', nativeSyntheticKey = false, modelVariant = '' } = {}) {
   const context = await browser.newContext({ viewport: { width: 1000, height: 900 }, serviceWorkers: 'block' });
   await context.route('**/*', route => route.request().isNavigationRequest() ? route.fulfill({ contentType: 'text/html', body: HTML }) : route.abort());

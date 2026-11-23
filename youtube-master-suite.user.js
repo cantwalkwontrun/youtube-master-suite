@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.143
+// @version      1.2.165
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       cantwalkwontrun
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.143";
+  const MASTER_VERSION = "1.2.165";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -3215,6 +3215,273 @@
 };
   let storage;
   let storageApis;
+  const openSuiteStorage = recoverEmpty => (async function initialiseIsolatedStorage({ createAdapter, adapterOptions = {}, locks,
+  getLegacyStorage = adapterOptions.getLegacyStorage, timeoutMs = 10000, recoverEmpty = false,
+  setTimeout: scheduleTimeout = globalThis.setTimeout,
+  clearTimeout: cancelTimeout = globalThis.clearTimeout }) {
+  const migrationKey = 'yt-master-suite.storage-migration.v1';
+  const guardKey = 'yt-master-suite.storage-migration-started.v1';
+  const emptyBaselineKey = 'yt-master-suite.storage-empty-baseline.v1';
+  const fail = () => { throw new Error('Tampermonkey storage migration could not complete. Existing site settings were left unchanged.'); };
+  const { getValue, setValue, addValueChangeListener, removeValueChangeListener } = adapterOptions;
+  if ([createAdapter, getValue, setValue, addValueChangeListener, removeValueChangeListener,
+    getLegacyStorage].some(value => typeof value !== 'function')) fail();
+  function synchronous(value) {
+    if (value && typeof value.then === 'function') {
+      value.catch?.(() => {});
+      fail();
+    }
+    return value;
+  }
+  const readSnapshot = () => synchronous(getValue(migrationKey, undefined));
+  const baselineAvailable = () => readSnapshot() !== undefined || synchronous(getValue(emptyBaselineKey, undefined)) === '1';
+  const openAdapter = (beforeMigrationWrite = fail) => synchronous(createAdapter({
+    ...adapterOptions, getLegacyStorage, beforeMigrationWrite,
+  }));
+  // A committed private baseline needs neither page storage nor a new lock.
+  if (baselineAvailable()) return openAdapter();
+  if (!locks || typeof locks.request !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) fail();
+
+  const controller = new AbortController();
+  const timer = scheduleTimeout(() => controller.abort(), timeoutMs);
+  function waitForSnapshot() {
+    return new Promise((resolve, reject) => {
+      let listenerId, settled = false;
+      const cleanup = () => {
+        controller.signal.removeEventListener('abort', abort);
+        if (listenerId !== undefined) {
+          const id = listenerId; listenerId = undefined;
+          try { removeValueChangeListener(id); } catch { /* Preserve the startup result. */ }
+        }
+      };
+      const finish = error => {
+        if (settled) return;
+        settled = true; cleanup();
+        if (error) reject(error); else resolve();
+      };
+      const abort = () => {
+        try {
+          if (baselineAvailable()) { finish(); return; }
+          const error = new Error('Tampermonkey storage migration could not complete. The protected storage snapshot did not arrive.');
+          error.code = 'storage-snapshot-missing';
+          finish(error);
+        } catch (error) { finish(error); }
+      };
+      const check = () => {
+        if (settled) return;
+        try { if (readSnapshot() !== undefined) finish(); } catch (error) { finish(error); }
+      };
+      controller.signal.addEventListener('abort', abort, { once: true });
+      try {
+        // Register first, then read: a delivery during registration must not be lost.
+        listenerId = synchronous(addValueChangeListener(migrationKey, check));
+        if (typeof listenerId !== 'number' && typeof listenerId !== 'string') fail();
+        if (settled) cleanup();
+        else if (controller.signal.aborted) abort();
+        else check();
+      } catch (error) { finish(error); }
+    });
+  }
+  try {
+    const outcome = await locks.request(migrationKey, { mode: 'exclusive', signal: controller.signal }, async () => {
+      try {
+        if (controller.signal.aborted) fail();
+        if (baselineAvailable()) return { ok: true, value: openAdapter() };
+        const legacy = getLegacyStorage();
+        if (!legacy || typeof legacy.getItem !== 'function' || typeof legacy.setItem !== 'function') fail();
+        if (recoverEmpty) {
+          if (legacy.getItem(guardKey) !== '1' || controller.signal.aborted) fail();
+          // Commit a separate, protected default baseline. Do not clear the
+          // guard, re-import site data, or overwrite an unread original.
+          synchronous(setValue(emptyBaselineKey, '1'));
+          if (!baselineAvailable()) fail();
+          return { ok: true, value: openAdapter() };
+        }
+        if (legacy.getItem(guardKey) === null) {
+          // Legacy validation can fail before a private write is attempted. Set
+          // the cross-tab guard only once the adapter has a complete snapshot.
+          const value = openAdapter(() => {
+            if (legacy.getItem(guardKey) !== null) fail();
+            try {
+              legacy.setItem(guardKey, '1');
+              if (legacy.getItem(guardKey) !== '1') fail();
+            } catch (error) {
+              // Still under the exclusive lock, and the private write has not
+              // started. A public write that threw after taking effect is ours.
+              if (legacy.getItem(guardKey) === '1') legacy.removeItem(guardKey);
+              throw error;
+            }
+          });
+          return { ok: true, value };
+        }
+        // A previous writer may have committed while our GM cache was still stale.
+        // The lock alone cannot make that cache fresh; wait without migrating again.
+        await waitForSnapshot();
+        return { ok: true, value: openAdapter() };
+      } catch (error) {
+        // Firefox can report a rejected lock callback as an uncaught page error
+        // even when the request is caught. Propagate only after releasing the lock.
+        return { ok: false, error };
+      }
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  } finally { cancelTimeout(timer); }
+})({
+    createAdapter: function createIsolatedStorage({ getValue, setValue, addValueChangeListener,
+  removeValueChangeListener, getLegacyStorage, beforeMigrationWrite, enqueue = callback => queueMicrotask(callback) }) {
+  const keys = Object.freeze([
+    'yt-master-suite.settings.v1',
+    'yt-master-suite.scroll-miniplayer.corner.v1',
+    'yt-master-suite.channel-age.v1',
+    'yt-master-suite.playhead-image.v1',
+    'yt-master-suite.update-source.v1',
+  ]);
+  const migrationKey = 'yt-master-suite.storage-migration.v1';
+  const emptyBaselineKey = 'yt-master-suite.storage-empty-baseline.v1';
+  const allowed = new Set(keys), maxRecordLength = 262144, maxSnapshotLength = 1048576;
+  const subscribers = new Set(), listenerIds = [], changed = new Set();
+  let disposed = false, scheduled = false;
+  const fail = () => { throw new Error('Tampermonkey storage is unavailable or incompatible. Existing site settings were left unchanged.'); };
+  const synchronous = value => {
+    if (value && typeof value.then === 'function') {
+      value.catch?.(() => {});
+      fail();
+    }
+    return value;
+  };
+  function raw(value) {
+    if (value !== null && (typeof value !== 'string' || value.length > maxRecordLength)) fail();
+    return value;
+  }
+  function read(name, fallback) { return synchronous(getValue(name, fallback)); }
+  function write(name, value) { synchronous(setValue(name, value)); }
+  function parseSnapshot(value) {
+    if (typeof value !== 'string' || value.length > maxSnapshotLength) fail();
+    let record;
+    try { record = JSON.parse(value); } catch { fail(); }
+    if (!record || Array.isArray(record) || record.version !== 1 ||
+        Object.keys(record).length !== 2 || !Object.hasOwn(record, 'values') ||
+        !record.values || Array.isArray(record.values) || typeof record.values !== 'object' ||
+        Object.keys(record.values).length !== keys.length ||
+        keys.some(key => !Object.hasOwn(record.values, key))) fail();
+    for (const key of keys) raw(record.values[key]);
+    return Object.freeze(record.values);
+  }
+  if ([getValue, setValue, addValueChangeListener, removeValueChangeListener, getLegacyStorage]
+    .some(value => typeof value !== 'function')) fail();
+
+  let snapshot = read(migrationKey, undefined);
+  // Explicit recovery never replaces the original protected snapshot, even
+  // when it was absent in this tab's cache. A later visible original wins.
+  const emptyBaseline = snapshot === undefined && read(emptyBaselineKey, undefined) === '1';
+  if (emptyBaseline) snapshot = read(migrationKey, undefined);
+  if (snapshot === undefined && !emptyBaseline) {
+    // A single baseline commit prevents a partially copied set becoming active.
+    // Never normalise these strings: older, malformed and future records remain
+    // recoverable and the existing services retain their own validation rules.
+    const legacy = getLegacyStorage();
+    const values = Object.fromEntries(keys.map(key => [key, raw(legacy.getItem(key))]));
+    if (keys.some(key => legacy.getItem(key) !== values[key])) fail();
+    snapshot = read(migrationKey, undefined);
+    if (snapshot === undefined) {
+      const proposed = JSON.stringify({ version: 1, values });
+      if (proposed.length > maxSnapshotLength) fail();
+      beforeMigrationWrite?.();
+      write(migrationKey, proposed);
+      snapshot = read(migrationKey, undefined);
+      if (snapshot !== proposed) fail();
+    }
+  }
+  const recovered = snapshot === undefined && emptyBaseline;
+  const baseline = recovered
+    ? Object.freeze(Object.fromEntries(keys.map(key => [key, null]))) : parseSnapshot(snapshot);
+  const namespaceKey = key => recovered ? key + ':recovered' : key;
+  function storedRecord(key) {
+    const value = read(namespaceKey(key), undefined);
+    // The recovery baseline may read surviving records, but editing recovery
+    // settings must never overwrite them or reuse their coordination receipts.
+    return recovered && value === undefined ? read(key, undefined) : value;
+  }
+  // Detect incompatible protected records before settings.initial is frozen.
+  for (const key of keys) {
+    const value = storedRecord(key);
+    if (value !== undefined) raw(value);
+  }
+  function checkKey(key) {
+    if (disposed || !allowed.has(key)) fail();
+  }
+  function getItem(key) {
+    checkKey(key);
+    const value = storedRecord(key);
+    return value === undefined ? baseline[key] : raw(value);
+  }
+  function setItem(key, value) {
+    checkKey(key);
+    if (typeof value !== 'string') fail();
+    raw(value);
+    const target = namespaceKey(key);
+    write(target, value);
+    if (read(target, undefined) !== value) fail();
+  }
+  function removeItem(key) {
+    checkKey(key);
+    // A null tombstone prevents deletion from resurrecting the migration copy.
+    const target = namespaceKey(key);
+    write(target, null);
+    if (read(target, undefined) !== null) fail();
+  }
+  function notify(key, oldValue, newValue, remote) {
+    if (disposed || remote !== true || !allowed.has(key)) return;
+    changed.add(key);
+    if (scheduled) return;
+    scheduled = true;
+    enqueue(() => {
+      scheduled = false;
+      const pending = [...changed]; changed.clear();
+      if (disposed) return;
+      for (const key of pending) {
+        let value;
+        try { value = getItem(key); } catch { continue; }
+        const event = Object.freeze({ key, newValue: value });
+        for (const subscriber of [...subscribers]) {
+          try { subscriber(event); } catch { /* One consumer cannot stop the others. */ }
+        }
+      }
+    });
+  }
+  try {
+    for (const key of keys) {
+      const id = synchronous(addValueChangeListener(namespaceKey(key), (_changedKey, oldValue, newValue, remote) =>
+        notify(key, oldValue, newValue, remote)));
+      if (typeof id !== 'number' && typeof id !== 'string') fail();
+      listenerIds.push(id);
+    }
+  } catch {
+    for (const id of listenerIds) {
+      try { removeValueChangeListener(id); } catch { /* Preserve the startup error. */ }
+    }
+    fail();
+  }
+  return Object.freeze({
+    getItem, setItem, removeItem, namespaceKey,
+    subscribe(callback) {
+      if (disposed || typeof callback !== 'function') fail();
+      subscribers.add(callback);
+      return () => subscribers.delete(callback);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true; subscribers.clear(); changed.clear();
+      for (const id of listenerIds) {
+        try { removeValueChangeListener(id); } catch { /* No page state is exposed. */ }
+      }
+    },
+  });
+},
+    adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
+    locks: navigator.locks, recoverEmpty,
+  });
   try {
     storageApis = (function scopeStorageApis({ info, getValue, setValue, addValueChangeListener, removeValueChangeListener }) {
   const fail = () => { throw new Error('Tampermonkey browsing context is unavailable or incompatible. Existing settings were left unchanged.'); };
@@ -3260,229 +3527,8 @@
       addValueChangeListener: typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null,
       removeValueChangeListener: typeof GM_removeValueChangeListener === 'function' ? GM_removeValueChangeListener : null,
     });
-    storage = await (async function initialiseIsolatedStorage({ createAdapter, adapterOptions = {}, locks,
-  getLegacyStorage = adapterOptions.getLegacyStorage, timeoutMs = 10000,
-  setTimeout: scheduleTimeout = globalThis.setTimeout,
-  clearTimeout: cancelTimeout = globalThis.clearTimeout }) {
-  const migrationKey = 'yt-master-suite.storage-migration.v1';
-  const guardKey = 'yt-master-suite.storage-migration-started.v1';
-  const fail = () => { throw new Error('Tampermonkey storage migration could not complete. Existing site settings were left unchanged.'); };
-  const { getValue, setValue, addValueChangeListener, removeValueChangeListener } = adapterOptions;
-  if ([createAdapter, getValue, setValue, addValueChangeListener, removeValueChangeListener,
-    getLegacyStorage].some(value => typeof value !== 'function')) fail();
-  function synchronous(value) {
-    if (value && typeof value.then === 'function') {
-      value.catch?.(() => {});
-      fail();
-    }
-    return value;
-  }
-  const readSnapshot = () => synchronous(getValue(migrationKey, undefined));
-  const openAdapter = () => synchronous(createAdapter({ ...adapterOptions, getLegacyStorage }));
-  // A committed private baseline needs neither page storage nor a new lock.
-  if (readSnapshot() !== undefined) return openAdapter();
-  if (!locks || typeof locks.request !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) fail();
-
-  const controller = new AbortController();
-  const timer = scheduleTimeout(() => controller.abort(), timeoutMs);
-  function waitForSnapshot() {
-    return new Promise((resolve, reject) => {
-      let listenerId, settled = false;
-      const cleanup = () => {
-        controller.signal.removeEventListener('abort', abort);
-        if (listenerId !== undefined) {
-          const id = listenerId; listenerId = undefined;
-          try { removeValueChangeListener(id); } catch { /* Preserve the startup result. */ }
-        }
-      };
-      const finish = error => {
-        if (settled) return;
-        settled = true; cleanup();
-        if (error) reject(error); else resolve();
-      };
-      const abort = () => {
-        try { fail(); } catch (error) { finish(error); }
-      };
-      const check = () => {
-        if (settled) return;
-        try { if (readSnapshot() !== undefined) finish(); } catch (error) { finish(error); }
-      };
-      controller.signal.addEventListener('abort', abort, { once: true });
-      try {
-        // Register first, then read: a delivery during registration must not be lost.
-        listenerId = synchronous(addValueChangeListener(migrationKey, check));
-        if (typeof listenerId !== 'number' && typeof listenerId !== 'string') fail();
-        if (settled) cleanup();
-        else if (controller.signal.aborted) abort();
-        else check();
-      } catch (error) { finish(error); }
-    });
-  }
-  try {
-    const outcome = await locks.request(migrationKey, { mode: 'exclusive', signal: controller.signal }, async () => {
-      try {
-        if (controller.signal.aborted) fail();
-        if (readSnapshot() !== undefined) return { ok: true, value: openAdapter() };
-        const legacy = getLegacyStorage();
-        if (!legacy || typeof legacy.getItem !== 'function' || typeof legacy.setItem !== 'function') fail();
-        if (legacy.getItem(guardKey) === null) {
-          // The fixed flag contains no saved data. Never clear it after an ambiguous
-          // write: GM readback sees this instance's cache, not a durable write ACK.
-          legacy.setItem(guardKey, '1');
-          if (legacy.getItem(guardKey) !== '1') fail();
-          return { ok: true, value: openAdapter() };
-        }
-        // A previous writer may have committed while our GM cache was still stale.
-        // The lock alone cannot make that cache fresh; wait without migrating again.
-        await waitForSnapshot();
-        return { ok: true, value: openAdapter() };
-      } catch (error) {
-        // Firefox can report a rejected lock callback as an uncaught page error
-        // even when the request is caught. Propagate only after releasing the lock.
-        return { ok: false, error };
-      }
-    });
-    if (!outcome.ok) throw outcome.error;
-    return outcome.value;
-  } finally { cancelTimeout(timer); }
-})({
-      createAdapter: function createIsolatedStorage({ getValue, setValue, addValueChangeListener,
-  removeValueChangeListener, getLegacyStorage, enqueue = callback => queueMicrotask(callback) }) {
-  const keys = Object.freeze([
-    'yt-master-suite.settings.v1',
-    'yt-master-suite.scroll-miniplayer.corner.v1',
-    'yt-master-suite.channel-age.v1',
-    'yt-master-suite.playhead-image.v1',
-    'yt-master-suite.update-source.v1',
-  ]);
-  const migrationKey = 'yt-master-suite.storage-migration.v1';
-  const allowed = new Set(keys), maxRecordLength = 262144, maxSnapshotLength = 1048576;
-  const subscribers = new Set(), listenerIds = [], changed = new Set();
-  let disposed = false, scheduled = false;
-  const fail = () => { throw new Error('Tampermonkey storage is unavailable or incompatible. Existing site settings were left unchanged.'); };
-  const synchronous = value => {
-    if (value && typeof value.then === 'function') {
-      value.catch?.(() => {});
-      fail();
-    }
-    return value;
-  };
-  function raw(value) {
-    if (value !== null && (typeof value !== 'string' || value.length > maxRecordLength)) fail();
-    return value;
-  }
-  function read(name, fallback) { return synchronous(getValue(name, fallback)); }
-  function write(name, value) { synchronous(setValue(name, value)); }
-  function parseSnapshot(value) {
-    if (typeof value !== 'string' || value.length > maxSnapshotLength) fail();
-    let record;
-    try { record = JSON.parse(value); } catch { fail(); }
-    if (!record || Array.isArray(record) || record.version !== 1 ||
-        Object.keys(record).length !== 2 || !Object.hasOwn(record, 'values') ||
-        !record.values || Array.isArray(record.values) || typeof record.values !== 'object' ||
-        Object.keys(record.values).length !== keys.length ||
-        keys.some(key => !Object.hasOwn(record.values, key))) fail();
-    for (const key of keys) raw(record.values[key]);
-    return Object.freeze(record.values);
-  }
-  if ([getValue, setValue, addValueChangeListener, removeValueChangeListener, getLegacyStorage]
-    .some(value => typeof value !== 'function')) fail();
-
-  let snapshot = read(migrationKey, undefined);
-  if (snapshot === undefined) {
-    // A single baseline commit prevents a partially copied set becoming active.
-    // Never normalise these strings: older, malformed and future records remain
-    // recoverable and the existing services retain their own validation rules.
-    const legacy = getLegacyStorage();
-    const values = Object.fromEntries(keys.map(key => [key, raw(legacy.getItem(key))]));
-    if (keys.some(key => legacy.getItem(key) !== values[key])) fail();
-    snapshot = read(migrationKey, undefined);
-    if (snapshot === undefined) {
-      const proposed = JSON.stringify({ version: 1, values });
-      if (proposed.length > maxSnapshotLength) fail();
-      write(migrationKey, proposed);
-      snapshot = read(migrationKey, undefined);
-      if (snapshot !== proposed) fail();
-    }
-  }
-  const baseline = parseSnapshot(snapshot);
-  // Detect incompatible protected records before settings.initial is frozen.
-  for (const key of keys) {
-    const value = read(key, undefined);
-    if (value !== undefined) raw(value);
-  }
-  function checkKey(key) {
-    if (disposed || !allowed.has(key)) fail();
-  }
-  function getItem(key) {
-    checkKey(key);
-    const value = read(key, undefined);
-    return value === undefined ? baseline[key] : raw(value);
-  }
-  function setItem(key, value) {
-    checkKey(key);
-    if (typeof value !== 'string') fail();
-    raw(value);
-    write(key, value);
-    if (read(key, undefined) !== value) fail();
-  }
-  function removeItem(key) {
-    checkKey(key);
-    // A null tombstone prevents deletion from resurrecting the migration copy.
-    write(key, null);
-    if (read(key, undefined) !== null) fail();
-  }
-  function notify(key, oldValue, newValue, remote) {
-    if (disposed || remote !== true || !allowed.has(key)) return;
-    changed.add(key);
-    if (scheduled) return;
-    scheduled = true;
-    enqueue(() => {
-      scheduled = false;
-      const pending = [...changed]; changed.clear();
-      if (disposed) return;
-      for (const key of pending) {
-        let value;
-        try { value = getItem(key); } catch { continue; }
-        const event = Object.freeze({ key, newValue: value });
-        for (const subscriber of [...subscribers]) {
-          try { subscriber(event); } catch { /* One consumer cannot stop the others. */ }
-        }
-      }
-    });
-  }
-  try {
-    for (const key of keys) {
-      const id = synchronous(addValueChangeListener(key, notify));
-      if (typeof id !== 'number' && typeof id !== 'string') fail();
-      listenerIds.push(id);
-    }
-  } catch {
-    for (const id of listenerIds) {
-      try { removeValueChangeListener(id); } catch { /* Preserve the startup error. */ }
-    }
-    fail();
-  }
-  return Object.freeze({
-    getItem, setItem, removeItem,
-    subscribe(callback) {
-      if (disposed || typeof callback !== 'function') fail();
-      subscribers.add(callback);
-      return () => subscribers.delete(callback);
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true; subscribers.clear(); changed.clear();
-      for (const id of listenerIds) {
-        try { removeValueChangeListener(id); } catch { /* No page state is exposed. */ }
-      }
-    },
-  });
-},
-      adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
-      locks: navigator.locks,
-    });
-  } catch {
+    storage = await openSuiteStorage(false);
+  } catch (error) {
     // Never initialise with defaults or silently revert to page persistence.
     // A generic notice contains no saved values, keys, URLs or account details.
     const showStorageFailure = () => {
@@ -3491,6 +3537,26 @@
       notice.id = 'ytms-storage-error'; notice.setAttribute('role', 'alert');
       notice.textContent = 'YouTube Master Suite could not access Tampermonkey storage. Existing site settings were left unchanged. Check the script permissions or reinstall the saved rollback version.';
       notice.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;padding:12px;background:#321b1b;color:#fff;font:14px sans-serif;border:1px solid #b55;border-radius:6px';
+      if (error?.code === 'storage-snapshot-missing') {
+        const message = document.createElement('p');
+        message.textContent = 'If you cleared this script’s Tampermonkey storage, you can start from defaults. Any protected settings that still exist take precedence.';
+        const recover = document.createElement('button');
+        recover.type = 'button'; recover.textContent = 'Prepare Suite defaults';
+        recover.addEventListener('click', async event => {
+          if (!event.isTrusted || recover.disabled) return;
+          recover.disabled = true;
+          try {
+            const recovered = await openSuiteStorage(true);
+            recovered.dispose();
+            message.textContent = 'Storage is ready. The Suite will start the next time you load YouTube.';
+            recover.remove();
+          } catch {
+            message.textContent = 'Storage recovery could not be confirmed. Check Tampermonkey storage and try again.';
+            recover.disabled = false;
+          }
+        });
+        notice.append(message, recover);
+      }
       document.body.append(notice);
     };
     if (document.body) showStorageFailure();
@@ -4291,7 +4357,7 @@
     if (['DOWNLOAD', 'OFFLINE_DOWNLOAD', 'FILE_DOWNLOAD'].includes(icon) || item?.menuServiceItemDownloadRenderer) return 'download';
     if (['HYPE', 'HYPE_OUTLINE'].includes(icon) || title === 'Hype') return 'hype';
     if (['SHARE', 'SHARE_OUTLINE'].includes(icon)) return 'share';
-    const library = location.pathname === '/feed/history' || location.pathname === '/playlist' ||
+    const library = /^\/(?:feed\/history|playlist)\/?$/.test(location.pathname) ||
       selection.card.matches('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer');
     if (['NOT_INTERESTED', 'NOT_INTERESTED_OUTLINE'].includes(icon) || (!library && icon === 'HIDE')) return 'notInterested';
     if (icon === 'DONT_RECOMMEND_CHANNEL' || (!library && ['REMOVE', 'DO_NOT_DISTURB_ON', 'BLOCK'].includes(icon) && endpointFor(item)?.feedbackEndpoint)) return 'dontRecommend';
@@ -4341,7 +4407,7 @@
       try {
         const url = new URL(anchor.getAttribute('href'), location.origin);
         if (url.origin !== location.origin) continue;
-        const id = url.pathname === '/watch' ? url.searchParams.get('v') : /^\/shorts\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+        const id = url.pathname === '/watch' ? url.searchParams.get('v') : /^\/(?:shorts|live)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
         if (typeof id === 'string' && /^[\w-]{11}$/.test(id)) ids.add(id);
       } catch { /* Malformed links cannot identify a menu target. */ }
     }
@@ -4508,7 +4574,7 @@
     if (popup) pendingIconObserver.observe(popup,{childList:true});
   }
 
-  function focusable(row) {
+  function focusable(row, visibleAncestors) {
     // Current sheets can put tabindex on a presentation wrapper as well as on
     // their real button. Focus the action, not its non-activating wrapper.
     const actions = 'button, a[href], [role="menuitem"]';
@@ -4516,15 +4582,16 @@
       ...(row.hasAttribute('tabindex') ? [row] : []), ...row.querySelectorAll('[tabindex]')];
     return candidates.find(element => element.getAttribute('role') !== 'presentation' &&
       !element.matches(':disabled, [disabled]') && !element.closest('[inert]') &&
-      (element.matches('button, a[href]') || element.hasAttribute('tabindex')) && visiblePopup(element)) || null;
+      (element.matches('button, a[href]') || element.hasAttribute('tabindex')) && visiblePopup(element, visibleAncestors)) || null;
   }
 
   function navigableRows(current) {
+    const visibleAncestors = new Set();
     return [...current.parent.children].filter(row => row === current.back ? current.stack.length > 0 :
       current.entries.some(entry => entry.row === row && entry.enabled && entry.parent === current.page) ||
       [...current.groups.values()].some(group => group.row === row && group.enabled && group.parent === current.page) ||
       (current.page === creatorPage && current.creatorRows.includes(row)))
-      .map(row => ({ row, target: focusable(row) })).filter(entry => entry.target);
+      .map(row => ({ row, target: focusable(row, visibleAncestors) })).filter(entry => entry.target);
   }
 
   function focusTarget(current, target) {
@@ -4562,7 +4629,7 @@
 
   function pointer(event) {
     const current = active;
-    if (!current || !event.isTrusted || !current.popup.contains(event.target)) return;
+    if (!current || !event.isTrusted) return;
     current.interacted = true;
     if (current.keyboard) {
       current.keyboard = false;
@@ -4678,6 +4745,8 @@
     if (!active) return;
     const current = active;
     active = null;
+    current.popup.removeEventListener('pointerdown', pointer, true);
+    current.popup.removeEventListener('pointermove', pointer, true);
     if (current.ownsTabIndex && current.popup.getAttribute('tabindex') === '-1') current.popup.removeAttribute('tabindex');
     cancelLookup(current);
     for (const row of current.ownedRows) row.remove();
@@ -4789,43 +4858,58 @@
     }
   }
 
-  function decorate(popup, selection) {
+  function decorate(popup, selection, retry, pendingPreparations) {
     if (disposed || trigger !== selection || !selection.card.isConnected || !popup.isConnected ||
         performance.now() - selection.time > 5000 || videoIdFromCard(selection.card) !== selection.videoId) return diagnostic('stale-target');
     const sheet = popup.matches('yt-sheet-view-model');
     let data;
-    try { data = sheet ? popup.componentProps?.data?.() : controller(popup)?.data; } catch { return diagnostic('unavailable-model'); }
+    try { data = sheet ? popup.componentProps?.data?.() : controller(popup)?.data; } catch { return retry('unavailable-model'); }
     const items = sheet ? data?.content?.listViewModel?.listItems : data?.items;
-    if (!Array.isArray(items) || !items.length || items.length > 60) return diagnostic('unsupported-model');
+    if (!Array.isArray(items) || !items.length) return retry('unsupported-model');
+    if (items.length > 60) return diagnostic('unsupported-model');
     const queueIds = items.map(queuedVideoId).filter(Boolean);
     if (!queueIds.length && !matchesNativeMenu(items, selection)) return diagnostic('no-queue-action');
-    if (queueIds.length && !queueIds.includes(selection.videoId)) return diagnostic('queue-target-mismatch');
+    if (queueIds.some(id => id !== selection.videoId)) return diagnostic('queue-target-mismatch');
     // Native Download is an outer action host containing its own list-item row.
     // Keep that original host and handler intact; do not count or move its child.
     const rows = [...popup.querySelectorAll(rowSelector)].filter(row => {
       const downloadHost = row.closest('yt-download-list-item-view-model');
       return !downloadHost || row === downloadHost;
     });
-    if (rows.length !== items.length) return diagnostic('row-count');
+    if (rows.length !== items.length) return retry('row-count');
     if (rows.some(row => row.parentElement !== rows[0].parentElement)) return diagnostic('row-parent');
     const parent = rows[0].parentElement;
     if (sheet && rows.some((row, index) => !sheetBindingMatches(row,items[index]) || (items[index]?.downloadListItemViewModel
       ? !row.matches('yt-download-list-item-view-model')
-      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return diagnostic('row-binding');
+      : !items[index]?.listItemViewModel || !row.matches('yt-list-item-view-model')))) return retry('row-binding');
     if (rows.some(row => !popup.contains(row)) || rows.some((row, index) => {
       if (sheet) return false;
       const model = items[index].menuServiceItemRenderer || items[index].menuNavigationItemRenderer || items[index].menuServiceItemDownloadRenderer;
       return !model || typeof model !== 'object' || controller(row)?.data !== model;
-    })) return diagnostic('row-binding');
+    })) return retry('row-binding');
     const ids = items.map(item => identify(item, selection));
     // Ambiguous duplicate recognised actions and mismatched native lists remain untouched.
     if (ids.some((id, index) => id && ids.indexOf(id) !== index)) return diagnostic('duplicate-actions');
+    // A cold History sheet can open without the event used by the queue module.
+    // Its native model may now change. Wait for the matching rows to be stamped.
+    const addIndex = ids.indexOf('addToQueue');
+    if (addIndex >= 0 && !ids.includes('playNext') && layoutById.get('playNext')?.visible) {
+      const source = items[addIndex];
+      const pending = pendingPreparations.get(popup);
+      if (pending && pending.data === data && pending.items === items && pending.source === source) return retry('row-binding');
+      if (suite.prepareVideoQueueMenu?.(popup, selection.videoId)) {
+        pendingPreparations.set(popup, {data, items, source});
+        return retry('row-binding', true);
+      }
+    }
     const identity = channelIdentity(selection.card);
     const channel = identity.channels.length === 1 && identity.status === 'unique' ? identity.channels[0] : null;
     ensureStyle();
     const entries = rows.map((row,index) => {
       const node = layoutById.get(ids[index]);
-      return { row,id:ids[index],enabled:node ? node.visible : true,parent:node?.parent || 'root',
+      const hype = ids[index] === 'hype';
+      // Hype has its own visibility switch and keeps YouTube's native position.
+      return { row,id:hype ? null : ids[index],enabled:hype ? preferences.menuShowHype !== false : node?.visible ?? true,parent:node?.parent || 'root',
         display:{ value:row.style.getPropertyValue('display'),priority:row.style.getPropertyPriority('display') } };
     });
     entries.forEach((entry,index) => pendingNativeIcon(entry.row,entry.id,items[index]));
@@ -4876,6 +4960,8 @@
       creatorRows:[],lookupStatus:null,lookupController:null,card:selection.card,videoId:selection.videoId,
       model:data,items,trigger:selection.button,page:'root',stack:[],tools:false,
       keyboard:selection.keyboard,interacted:false,redirectingFocus:false,ownsTabIndex:!popup.hasAttribute('tabindex') };
+    popup.addEventListener('pointerdown', pointer, true);
+    popup.addEventListener('pointermove', pointer, {capture:true, passive:true});
     if (active.ownsTabIndex) popup.setAttribute('tabindex','-1');
     // Opaque sheet rows lose their original slot once submenus rearrange them.
     // Share this verified native stamp before the first physical layout move.
@@ -4891,7 +4977,7 @@
     return true;
   }
 
-  function visiblePopup(popup) {
+  function visiblePopup(popup, visibleAncestors) {
     if (!popup.isConnected || !popup.getClientRects().length) return false;
     const box = popup.getBoundingClientRect();
     // A newly stamped native popup can have no row height until refit. A
@@ -4899,36 +4985,101 @@
     // positive even though its painted height is zero.
     if (!(box.width > 0) || (!(box.height > 0) && popup.offsetHeight > 0)) return false;
     for (let element = popup; element; element = element.parentElement) {
+      if (visibleAncestors?.has(element)) continue;
       if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true') return false;
       const css = getComputedStyle(element);
       if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
+      visibleAncestors?.add(element);
     }
     return true;
   }
 
+  // False positively identifies a different queue target. Null means the
+  // current stamp offers insufficient evidence of any target.
   function matchesSelection(popup, selection) {
     try {
       const data = popup.matches('yt-sheet-view-model') ? popup.componentProps?.data?.() : controller(popup)?.data;
       const items = popup.matches('yt-sheet-view-model') ? data?.content?.listViewModel?.listItems : data?.items;
-      if (!Array.isArray(items) || items.length > 60) return false;
+      if (!Array.isArray(items) || items.length > 60) return null;
       const queueIds = items.map(queuedVideoId).filter(Boolean);
-      return queueIds.length ? queueIds.includes(selection.videoId) : matchesNativeMenu(items, selection);
-    } catch { return false; }
+      return queueIds.length ? queueIds.every(id => id === selection.videoId) : matchesNativeMenu(items, selection) || null;
+    } catch { return null; }
   }
 
   function startDiscovery(selection, eventPopup = null) {
     reset();
-    const containers = [...document.querySelectorAll('ytd-popup-container')];
-    const existing = eventPopup ? [eventPopup] : [...document.querySelectorAll(popupSelector)];
-    const roots = containers.length ? containers : [...new Set(existing.map(popup => popup.closest('tp-yt-iron-dropdown') || popup))];
+    const roots = new Set();
+    const ancestors = new Set();
+    const pendingPreparations = new WeakMap();
+    const attributes = ['hidden','style','class','aria-hidden','inert','opened'];
     diagnostic('waiting-for-menu');
     let request;
+    let retryTimer = 0;
+    let retryDelay = 80;
+    let needsRetry = false;
+    let mutationCheckPending = false;
+    let lastMutationRender = null;
+    let usedFrameRetry = false;
+    let checkedRestamp = false;
+    function scheduleFrame() {
+      if (waiting === request && !firstFrame && !secondFrame) secondFrame = requestAnimationFrame(() => {
+        secondFrame = 0;
+        attempt();
+      });
+    }
+    function afterNativeChange() {
+      // The native renderer can stamp rows in its own animation frame, after
+      // our first check. Let its mutation observers finish and reconcile in
+      // this render opportunity so the unconfigured rows never need a paint.
+      if (waiting !== request || firstFrame || mutationCheckPending) return;
+      mutationCheckPending = true;
+      queueMicrotask(() => {
+        mutationCheckPending = false;
+        if (waiting !== request) return;
+        const render = document.timeline?.currentTime;
+        if (render == null || render === lastMutationRender) { scheduleFrame(); return; }
+        lastMutationRender = render;
+        attempt();
+      });
+    }
+    function retry(reason, restamped = false) {
+      needsRetry = true;
+      // Play next can synchronously replace the native rows. Revalidate the
+      // selected popup and its fresh bindings once before this frame paints.
+      if (restamped && !checkedRestamp) {
+        checkedRestamp = true;
+        queueMicrotask(() => { if (waiting === request) attempt(); });
+      }
+      if (restamped || !usedFrameRetry) {
+        usedFrameRetry = true;
+        scheduleFrame();
+      }
+      // Property getters can hydrate without a DOM mutation. Back off only
+      // while the selected visible menu is incomplete, within its deadline.
+      if (!retryTimer && retryDelay <= 720) {
+        retryTimer = setTimeout(() => { retryTimer = 0; scheduleFrame(); }, retryDelay);
+        retryDelay *= 3;
+      }
+      return diagnostic(reason);
+    }
     function attempt() {
-      secondFrame = 0;
       if (waiting !== request || trigger !== selection) return;
+      needsRetry = false;
       try {
-        const visible = [...document.querySelectorAll(popupSelector)].filter(popup =>
-          roots.some(root => root === popup || root.contains(popup)) && visiblePopup(popup));
+        const popups = [...document.querySelectorAll(popupSelector)];
+        for (const popup of popups) {
+          const root = popup.closest('tp-yt-iron-dropdown') || popup;
+          if (!roots.has(root)) {
+            roots.add(root);
+            geometry.observe(root, {subtree:true, attributes:true, attributeFilter:attributes});
+          }
+          for (let node=root.parentElement;node;node=node.parentElement) {
+            if (ancestors.has(node) || roots.has(node)) continue;
+            ancestors.add(node);
+            geometry.observe(node,{attributes:true,attributeFilter:attributes});
+          }
+        }
+        const visible = popups.filter(popup => visiblePopup(popup));
         if (visible.length) request.sawPopup = true;
         const matching = visible.filter(popup => matchesSelection(popup, selection));
         if (matching.length > 1 || (visible.length > 1 && matching.length !== 1)) {
@@ -4938,7 +5089,7 @@
         if (!popup) { diagnostic('waiting-for-visible-popup'); return; }
         // A visible old menu for another video is not owned by this request.
         request.popup = matching.length === 1 ? popup : null;
-        if (decorate(popup, selection) && waiting === request) {
+        if (decorate(popup, selection, retry, pendingPreparations) && waiting === request) {
           request.observer.disconnect();
           clearTimeout(request.timer);
           if (firstFrame) cancelAnimationFrame(firstFrame);
@@ -4948,14 +5099,38 @@
         }
       } catch { reset(); compatibility('unsupported'); }
     }
-    // YouTube reuses cached sheets without another yt-popup-opened event. Watch
-    // only known popup containers after this trusted activation, never the page.
-    const observer = new MutationObserver(() => {
-      if (waiting === request && !firstFrame && !secondFrame) secondFrame = requestAnimationFrame(attempt);
-    });
-    for (const root of roots) observer.observe(root, { childList: true, subtree: true,
-      attributes: true, attributeFilter: ['hidden', 'style', 'aria-hidden', 'opened'] });
-    request = { popup: eventPopup && matchesSelection(eventPopup, selection) ? eventPopup : null, roots, observer, sawPopup: false, timer: setTimeout(() => {
+    // Sheets may appear outside the original container or replace it. During
+    // this activation accept structural changes anywhere, and attributes on
+    // known dropdowns. Check all visible sheets before assigning ownership.
+    function changed(records) {
+      if (waiting !== request || firstFrame || mutationCheckPending) return;
+      const relevant = records.some(record => record.type === 'attributes' ||
+        record.target.closest?.(popupSelector) || [...record.addedNodes,...record.removedNodes].some(node =>
+          node.matches?.(popupSelector) || node.querySelector?.(popupSelector)));
+      if (relevant) afterNativeChange();
+    }
+    const geometry = new MutationObserver(changed);
+    const topology = new MutationObserver(changed);
+    // A CSS animation can reveal a stamped sheet without another DOM change.
+    // Listen only during discovery; never poll every frame of the animation.
+    const motionEvents = ['animationstart', 'animationend', 'transitionstart', 'transitionend'];
+    function motion(event) {
+      if (!(roots.has(event.target) || ancestors.has(event.target) || event.target.matches?.(popupSelector))) return;
+      if (event.propertyName && !['opacity', 'transform', 'visibility', 'display'].includes(event.propertyName)) return;
+      afterNativeChange();
+      if (event.type.endsWith('start')) scheduleFrame();
+    }
+    const observer = {disconnect() {
+      topology.disconnect(); geometry.disconnect(); clearTimeout(retryTimer);
+      for (const type of motionEvents) document.removeEventListener(type, motion, true);
+    }};
+    for (const type of motionEvents) document.addEventListener(type, motion, true);
+    topology.observe(document.documentElement, {childList:true, subtree:true});
+    request = { popup: eventPopup && matchesSelection(eventPopup, selection) ? eventPopup : null, roots, observer, afterNativeChange, sawPopup: false, timer: setTimeout(() => {
+      if (needsRetry && waiting === request) {
+        if (secondFrame) cancelAnimationFrame(secondFrame);
+        attempt();
+      }
       if (waiting === request) {
         observer.disconnect(); waiting = null;
         if (trigger === selection) { trigger = null; triggerReason = 'expired-trigger'; }
@@ -4979,6 +5154,10 @@
     const popup = event.target;
     if (!popup?.matches?.(popupSelector)) return;
     if (!trigger) { diagnostic(triggerReason); return; }
+    if (active?.popup === popup && validCurrent(active) && popup.contains(active.parent) &&
+        active.original.every(row => row.parentElement === active.parent) &&
+        active.back.parentElement === active.parent) return;
+    if (waiting) { waiting.afterNativeChange(); return; }
     startDiscovery(trigger, popup);
   }
 
@@ -5057,10 +5236,12 @@
 
   function closed(event) {
     const popup = active?.popup || waiting?.popup;
-    if ((popup && (event.target === popup || event.target?.contains?.(popup))) ||
-        (!active && waiting?.roots.some(root => root === event.target))) {
-      reset(); trigger = null; triggerReason = 'missing-trigger';
-    }
+    const root = event.target;
+    if (!popup && waiting?.roots.size === 1 && waiting.roots.has(root)) {
+      const closedMenu = root.matches(popupSelector) ? root : root.querySelector(popupSelector);
+      if (closedMenu && trigger && matchesSelection(closedMenu, trigger) === false) return;
+    } else if (!popup || !(root === popup || root?.contains?.(popup))) return;
+    reset(); trigger = null; triggerReason = 'missing-trigger';
   }
 
   function navigated() { reset(); trigger = null; triggerReason = 'missing-trigger'; compatibility('not-checked'); }
@@ -5069,8 +5250,6 @@
   document.addEventListener('click', activate, true);
   document.addEventListener('keydown', keyboard, true);
   document.addEventListener('focusin', focused, true);
-  document.addEventListener('pointerdown', pointer, true);
-  document.addEventListener('pointermove', pointer, { capture: true, passive: true });
   window.addEventListener('yt-popup-opened', opened, true);
   const closeEvents = ['yt-popup-closed', 'iron-overlay-closed'];
   closeEvents.forEach(type => window.addEventListener(type, closed, true));
@@ -5086,8 +5265,6 @@
     document.removeEventListener('click', activate, true);
     document.removeEventListener('keydown', keyboard, true);
     document.removeEventListener('focusin', focused, true);
-    document.removeEventListener('pointerdown', pointer, true);
-    document.removeEventListener('pointermove', pointer, true);
     window.removeEventListener('yt-popup-opened', opened, true);
     closeEvents.forEach(type => window.removeEventListener(type, closed, true));
     resetEvents.forEach(type => window.removeEventListener(type, navigated, true));
@@ -5222,8 +5399,18 @@
     const id = new window.URLSearchParams(window.location.search).get('v');
     return /^[a-zA-Z0-9_-]{11}$/.test(id || '') ? id : '';
   }
-  function syncTime() {
+  let timeNodes = null, tickingVideo = null;
+  function syncTime(tick = null) {
     if (!['elapsed', 'remaining'].includes(timeDisplayMode) || suspended || document.hidden) return;
+    if (tick && timeNodes?.video === tick && tick.isConnected && timeNodes.current.isConnected &&
+        tick.closest('#movie_player') === timeNodes.player && timeNodes.current.closest('#movie_player') === timeNodes.player) {
+      const text = timeNodes.current.textContent.trim();
+      if (/^[-−]?\d{1,6}:\d{2}(?::\d{2})?$/.test(text) && /^[-−]/.test(text) === (timeDisplayMode === 'remaining')) {
+        attemptedTimes.delete(timeNodes.wrapper);
+        return;
+      }
+    }
+    timeNodes = null;
     const players = [...document.querySelectorAll('#movie_player')].filter(player => visible(player) &&
       !player.closest('ytd-video-preview, ytd-reel-video-renderer'));
     if (players.length !== 1) return;
@@ -5235,11 +5422,13 @@
     const wrappers = displays[0].querySelectorAll('.ytp-time-wrapper.ytp-time-wrapper-delhi');
     if (wrappers.length !== 1) return;
     const wrapper = wrappers[0], contents = wrapper.querySelector('.ytp-time-contents[role="button"][tabindex="0"]');
-    const current = contents?.querySelector('.ytp-time-current')?.textContent.trim();
+    const currentNode = contents?.querySelector('.ytp-time-current');
+    const current = currentNode?.textContent.trim();
     const duration = contents?.querySelector('.ytp-time-duration')?.textContent.trim();
     if (!/^[-−]?\d{1,6}:\d{2}(?::\d{2})?$/.test(current || '') ||
         !/^\d{1,6}:\d{2}(?::\d{2})?$/.test(duration || '') || !/[1-9]/.test(duration)) return;
     const remaining = /^[-−]/.test(current);
+    timeNodes = { current: currentNode, wrapper, player, video };
     if (remaining === (timeDisplayMode === 'remaining')) { attemptedTimes.delete(wrapper); return; }
     // One request per mismatched state and video. YouTube can reuse this timer
     // for another video after a blocked click. Missing identity and incidental
@@ -5253,16 +5442,19 @@
   }
   function sync() {
     frame = 0;
+    const tick = tickingVideo; tickingVideo = null;
     if (disposed) return;
     if (previewDirty) { previewDirty = false; syncPreviews(); }
-    syncTime();
+    syncTime(tick);
   }
   function schedule(previews = true) {
     previewDirty ||= previews;
+    if (previews) tickingVideo = null;
     if (!disposed && !suspended && !frame) frame = window.requestAnimationFrame(sync);
   }
   function suspend() {
     suspended = true;
+    timeNodes = tickingVideo = null;
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; restorePreviews();
   }
@@ -5292,7 +5484,11 @@
         // needs only their pure eligibility update, not document-wide queries
         // and synchronous layout/style reads. New/rebound hosts still take the
         // full discovery path before YouTube's native mouseenter runs.
-        if (appController?.isInlinePreviewDisabled === false && app?.isConnected && host?.isConnected &&
+        if (appController?.isInlinePreviewDisabled !== false) {
+          // The native opt-out or an unhydrated app makes discovery unnecessary.
+          // If this app was patched, restore it once when its preference changes.
+          if (patches.size && [...patches.values()].some(record => record.host === app)) restorePreviews();
+        } else if (app?.isConnected && host?.isConnected &&
             current.every(record => record && record.controller.computeIsInlinePreviewEnabled === record.wrapper)) {
           for (const record of new Set(current)) { try { recompute(record); } catch { /* Native fallback remains installed. */ } }
         } else syncPreviews();
@@ -5302,7 +5498,11 @@
   }
   function media(event) {
     if (event.target?.localName === 'video' && event.target.closest('#movie_player') &&
-        !event.target.closest('ytd-video-preview, ytd-reel-video-renderer')) schedule(false);
+        !event.target.closest('ytd-video-preview, ytd-reel-video-renderer')) {
+      tickingVideo = event.type === 'timeupdate' ? event.target : null;
+      if (!tickingVideo) timeNodes = null;
+      schedule(false);
+    }
   }
   function visibility() { if (document.hidden) suspend(); else resume(); }
   const listeners = [];
@@ -6013,7 +6213,7 @@
           model(popup) !== data || !Array.isArray(items) || !items.length || items.length > 60 ||
           (sheet ? data?.content?.listViewModel?.listItems : data?.items) !== items ||
           new Set(items).size !== items.length || !Array.isArray(rows) || rows.length !== items.length) return false;
-      const actual = nativeRows(popup), parent = rows[0]?.parentElement, stamp = signature(data);
+      const actual = nativeRows(popup), parent = rows[0]?.parentElement, stamp = signature(items);
       if (!parent || stamp === null || actual.length !== rows.length || actual.some((row, i) => row !== rows[i]) ||
           rows.some((row, i) => row.parentElement !== parent || !rowMatches(row, items[i], sheet))) return false;
       const record = { popup, data, items, sourceItems: [...items], rows: [...rows], parent, sheet, stamp };
@@ -6040,7 +6240,9 @@
   function get(row, popup = row?.closest?.(popupSelector)) {
     try {
       const entry = bindings.get(row), record = entry?.record;
-      if (!owns(entry, popup) || signature(record.data) !== record.stamp || signature(entry.item) !== entry.stamp) return null;
+      // The popup can refresh its own metadata without restamping its actions.
+      // owns() still requires the same popup model, list, items and row hosts.
+      if (!owns(entry, popup) || signature(record.items) !== record.stamp || signature(entry.item) !== entry.stamp) return null;
       return { item: entry.item, data: record.data, items: record.items, sheet: record.sheet };
     } catch { return null; }
   }
@@ -6056,7 +6258,10 @@
   return Object.freeze({ capture, get, forget, isStaleQueueAction });
 })({ document, window });
   }
-  suite.customJavascript = (function createCustomJavascript({ document, window, getValue, setValue, write = callback => callback() }) {
+  const coordinationKey = storage.namespaceKey;
+  const customJavascriptWriteKey = coordinationKey('yt-master-suite.custom-javascript-write.v1');
+  const customJavascriptKey = 'yt-master-suite.custom-javascript.v1';
+  suite.customJavascript = (function createCustomJavascript({ document, window, getValue, setValue, write = callback => callback(), coordination }) {
   const key = 'yt-master-suite.custom-javascript.v1';
   const maxLength = 65536;
   const empty = () => ({ enabled: false, code: '' });
@@ -6129,6 +6334,16 @@
     const current = read();
     if (!current.ok) { setStatus('unavailable'); return; }
     if (current.raw !== initial.raw) { setStatus('skipped'); return; }
+    if (coordination) {
+      try {
+        const { key, getRevision } = coordination;
+        const revision = getRevision();
+        const receipt = JSON.parse(getValue(key, null));
+        if (revision !== (receipt?.revision ?? null) ||
+            (receipt !== null && (typeof receipt.revision !== 'string' || receipt.value !== current.raw)) ||
+            getRevision() !== revision) { setStatus('skipped'); return; }
+      } catch { setStatus('unavailable'); return; }
+    }
     setStatus('ran');
     try {
       const result = compile(initial.value.code).call(window);
@@ -6164,21 +6379,23 @@
     },
     get status() { return status; } });
 })({ document, window,
-    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getValue: (key, fallback) => storageApis.getValue(key === customJavascriptKey ? coordinationKey(key) : key, fallback),
+    setValue: (key, value) => storageApis.setValue(coordinationKey(key), value),
+    coordination: { key: customJavascriptWriteKey, getRevision: () => window.localStorage.getItem(customJavascriptWriteKey) },
     write: createSettingsWriteGuard({
-      key: 'yt-master-suite.custom-javascript-write.v1', locks: navigator.locks,
+      key: customJavascriptWriteKey, locks: navigator.locks,
       getCoordinationStorage: () => window.localStorage, getValue: storageApis.getValue, setValue: storageApis.setValue,
-      getMainRecord: () => storageApis.getValue('yt-master-suite.custom-javascript.v1', null),
+      getMainRecord: () => storageApis.getValue(coordinationKey(customJavascriptKey), null),
       newRevision: () => window.crypto.randomUUID(),
     }),
   });
   const writeMainSettings = createSettingsWriteGuard({
-    locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
+    key: coordinationKey('yt-master-suite.settings-write.v1'), locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.settings.key), newRevision: () => window.crypto.randomUUID(),
   });
   suite.writeCorner = createSettingsWriteGuard({
-    key: 'yt-master-suite.corner-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.corner-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.settings.cornerKey), newRevision: () => window.crypto.randomUUID(),
@@ -6188,7 +6405,7 @@
   suite.writeSettings = (write, coordinate) => writeMainSettings(write,
     callback => suite.writeCorner(callback, coordinate));
   suite.writeChannelFilters = createSettingsWriteGuard({
-    key: 'yt-master-suite.channel-filters-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.channel-filters-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.channelAge.key), newRevision: () => window.crypto.randomUUID(),
@@ -6479,6 +6696,10 @@
     checkObject(input, settingNames, complete ? requiredSettingNames : []);
     const values = settings.validate(input);
     for (const name of Object.keys(input)) {
+      // Before Hype moved to Player, the editor node could override its
+      // separate boolean. validate() restores that effective value.
+      if (name === 'menuShowHype' && typeof input[name] === 'boolean' && values.menuLayout &&
+          input.menuLayout.nodes.some(node => node.id === 'hype')) continue;
       // This exact earlier default is a supported preference migration, not a
       // malformed custom order. Keep all other normalisation failures rejected.
       if (name === "menuItemOrder" && settings.isPreviousDefaultMenuOrder(input[name])) continue;
@@ -6995,25 +7216,35 @@
     } catch { return failure('The image could not be decoded. Choose a different PNG, JPEG or WebP file.'); }
     finally { bitmap?.close?.(); }
   }
+  function persistMarker(value) {
+    const desired = value === null ? null : JSON.stringify({ version: 1, ...value });
+    const apply = stored => { current = stored; unrenderableData = null; reconcileRuntime(); };
+    try {
+      const storage = getStorage(), existing = parse(storage.getItem(key));
+      if (!existing.ok) return existing;
+      try {
+        if (desired === null) storage.removeItem(key);
+        else storage.setItem(key, desired);
+      } catch {
+        // The write can succeed while its first verification fails. Reconcile
+        // with the observed record and never roll back another tab's value.
+        const actual = storage.getItem(key);
+        if (actual !== desired) {
+          const saved = parse(actual);
+          if (saved.ok) apply(saved.value);
+          return failure('The marker change did not persist. Review the saved marker before retrying.');
+        }
+      }
+      apply(value);
+      return { ok: true, value: value === null ? null : { ...value } };
+    } catch { return failure('The marker change could not be confirmed. Reopen settings to check the saved marker.'); }
+  }
   function save(value) {
     const checked = checkedValue(value);
     if (!checked) return failure('Choose a valid image and a marker size from 16 to 40 pixels.');
-    try {
-      const storage = getStorage(), existing = parse(storage.getItem(key));
-      if (!existing.ok) return existing;
-      storage.setItem(key, JSON.stringify({ version: 1, ...checked }));
-      current = checked; unrenderableData = null; reconcileRuntime();
-      return { ok: true, value: { ...checked } };
-    } catch { return failure('The marker could not be saved. Browser storage is unavailable or full.'); }
+    return persistMarker(checked);
   }
-  function remove() {
-    try {
-      const storage = getStorage(), existing = parse(storage.getItem(key));
-      if (!existing.ok) return existing;
-      storage.removeItem(key); current = null; unrenderableData = null; reconcileRuntime();
-      return { ok: true, value: null };
-    } catch { return failure('The marker could not be removed. Browser storage is unavailable.'); }
-  }
+  function remove() { return persistMarker(null); }
   function visible(node) {
     if (!node?.isConnected || node.closest('[hidden], [inert], [aria-hidden="true"]') || !node.getClientRects().length) return false;
     for (let current = node; current; current = current.parentElement) {
@@ -7120,7 +7351,7 @@
     image.width = image.height = current.size;
     image.style.setProperty('width', `${current.size}px`, 'important');
     image.style.setProperty('height', `${current.size}px`, 'important');
-    record = { player, container, image, dataUrl: current.dataUrl };
+    record = { container, image, dataUrl: current.dataUrl };
     const thisRecord = record;
     image.addEventListener('load', () => {
       if (record === thisRecord && image.isConnected && current?.dataUrl === thisRecord.dataUrl) {
@@ -7237,14 +7468,8 @@
     if (url.hostname === 'github.com' && !url.port) {
       const path = url.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/releases(?:\/latest)?\/?$/);
       if (!path || path[2] === '.' || path[2] === '..') return null;
-      let [, owner, repository] = path;
+      const [, owner, repository] = path;
       const configuredUrl = `https://github.com/${owner}/${repository}/releases/latest`;
-      // This exact Suite repository moved accounts. Route its known former
-      // address in memory, preserving saved records and every custom source.
-      // Download validation still requires the canonical repository below.
-      if (owner.toLowerCase() === 'noswimmingplease' && repository.toLowerCase() === 'youtube-master-suite') {
-        owner = 'cantwalkwontrun'; repository = 'youtube-master-suite';
-      }
       return { type: 'github', url: configuredUrl, owner, repository,
         requestUrl: `https://api.github.com/repos/${owner}/${repository}/releases/latest` };
     }
@@ -7371,6 +7596,20 @@
     }
     return { version: record.tag_name.slice(1), sha256: asset.digest.slice(7), bytes: asset.size, installUrl: install.href };
   }
+  function githubReleaseOwner(source, response, record) {
+    if (!response.redirected || !response.url || defaultSource?.type !== 'github' ||
+        source.repository.toLowerCase() !== defaultSource.repository.toLowerCase()) return source;
+    // Accept only GitHub's own metadata redirect to the shipped Suite source.
+    // Saved forks keep their exact owner requirement and saved URLs stay local.
+    const endpoint = cleanUrl(response.url), release = cleanUrl(record?.url);
+    const approved = new URL(defaultSource.requestUrl);
+    const releasePrefix = approved.pathname.slice(0, -'latest'.length);
+    if (endpoint?.origin !== approved.origin || release?.origin !== approved.origin ||
+        !release.pathname.toLowerCase().startsWith(releasePrefix.toLowerCase()) ||
+        !/^\d+$/.test(release.pathname.slice(releasePrefix.length))) return source;
+    return endpoint.pathname.toLowerCase() === approved.pathname.toLowerCase() ||
+      /^\/repositories\/\d+\/releases\/latest$/.test(endpoint.pathname) ? defaultSource : source;
+  }
   async function fetchRelease(source, controller) {
     const response = await fetchRequest(source.requestUrl, { method: 'GET', credentials: 'omit', cache: 'no-store',
       referrerPolicy: 'no-referrer', redirect: 'follow', signal: controller.signal,
@@ -7383,7 +7622,7 @@
     // Never store or use a CDN redirect URL as the installation target.
     if (response.url && new URL(response.url).protocol !== 'https:') fail('The update source redirected to an insecure location.');
     const record = await readJson(response, source.type === 'github' ? 128 * 1024 : 16 * 1024);
-    return source.type === 'github' ? checkedGithub(record, source) : checkedManifest(record, source);
+    return source.type === 'github' ? checkedGithub(record, githubReleaseOwner(source, response, record)) : checkedManifest(record, source);
   }
   async function check() {
     cancel();
@@ -7446,13 +7685,13 @@
     fetch: (...args) => window.fetch(...args),
   });
   suite.writeMarker = createSettingsWriteGuard({
-    key: 'yt-master-suite.marker-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.marker-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.playheadMarker.key), newRevision: () => window.crypto.randomUUID(),
   });
   suite.writeUpdateSource = createSettingsWriteGuard({
-    key: 'yt-master-suite.update-source-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.update-source-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.updates.key), newRevision: () => window.crypto.randomUUID(),
@@ -7646,7 +7885,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       // the selected host. Keep their size in the existing observation set.
       const basicTargets = [...hosts, panel];
       if (!panel || panel.matches('[collapsed], [loading], [is-loading]') ||
-          host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]')) {
+          host.querySelector('ytd-miniplayer-info-bar button[aria-expanded="false"]:not([aria-haspopup="menu"])')) {
         release(); observeSizes(basicTargets); return;
       }
       const lists = [...panel.querySelectorAll('.playlist-items')].filter(visible);
@@ -7707,7 +7946,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (records.some(record => {
       const node = record.target;
       if (node === host) return record.attributeName !== 'style' || signature(host) !== nativeSignature;
-      if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button')) return true;
+      if (record.attributeName === 'aria-expanded' && node.matches?.('ytd-miniplayer-info-bar button:not([aria-haspopup="menu"])')) return true;
       if (node.closest?.('#movie_player')) return false;
       if (node.matches?.('.ytdMiniplayerComponentContent')) return true;
       // A hidden panel releases ownership. Observe its native structure too so
@@ -7873,9 +8112,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (p.embedHideShare) css.push('#movie_player .ytp-share-button, #movie_player .ytp-share-panel { display:none !important; }');
     if (p.embedHidePauseOverlay) css.push('#movie_player .ytp-pause-overlay, #movie_player .ytp-pause-overlay-container { display:none !important; }');
   }
-  const active = css.length || p.originalAudio || p.disableAutoplay || p.disableStableVolume ||
+  const needsRuntime = p.originalAudio || p.disableAutoplay || p.disableStableVolume ||
     p.disableNumberKeySeeking || p.snapshotButton || p.transcriptDownload;
-  if (!active) return () => {};
+  if (!css.length && !needsRuntime) return () => {};
 
   const style = document.createElement('style');
   style.id = 'ytms-player-controls-style';
@@ -7886,6 +8125,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     .ytp-delhi-modern #ytms-export-tooltip { border-radius:8px; background:var(--yt-sys-color-baseline--overlay-background-medium-light,rgba(0,0,0,.3)); -webkit-backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); text-shadow:0 0 2px #000; }
   `;
   (document.head || document.documentElement).appendChild(style);
+  if (!needsRuntime) return () => style.remove();
   let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, observing = false, snapshotPending = false, captureGeneration = 0, frame = 0, statusTimer = 0, status = null, owner = null;
   const buttons = new Set(), attempts = new WeakMap(), downloads = new Map();
   let manualIdentityGeneration = 0;
@@ -8274,7 +8514,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const canonicalCard = element => element?.closest?.(outerCardSelector) || element?.closest?.('yt-lockup-view-model') || null;
   const excluded = 'ytd-miniplayer,ytd-playlist-panel-renderer,yt-playlist-panel-renderer,ytd-playlist-video-list-renderer,ytd-popup-container,ytd-engagement-panel-section-list-renderer';
   const feedSurface = 'ytd-browse ytd-rich-grid-renderer,ytd-search ytd-section-list-renderer,ytd-two-column-search-results-renderer';
-  let frame = 0, disposed = false, suspended = false, navigationPending = false, pageSuspended = false, observerActive = false, scanAllCards = true, observedRoute = null;
+  let frame = 0, disposed = false, suspended = false, pageSuspended = false, observerActive = false, scanAllCards = true, observedRoute = null;
   const listeners = [];
   const listen = (target, type, handler) => { target.addEventListener(type, handler, true); listeners.push([target,type,handler]); };
   const text = el => el?.textContent?.replace(/\s+/g,' ').trim() || '';
@@ -8642,10 +8882,10 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const cancel = () => { if (frame) window.cancelAnimationFrame(frame); frame = 0; observer.disconnect(); observerActive = false; };
   function clearAllDecorations() { for (const node of badgeNodes) { node.removeAttribute('data-ytms-discovery-badge-hidden'); decorationOwners.delete(node); } for (const node of viewNodes) { node.removeAttribute('data-ytms-discovery-view-line'); decorationOwners.delete(node); } for (const node of headings) node.remove(); badgeNodes.clear(); viewNodes.clear(); headings.clear(); }
   const start = () => { suspended = true; cancel(); restoreLogos(); for (const el of [...owned,...filteredCards]) { el.removeAttribute(attr); el.removeAttribute(uiAttr); el.removeAttribute(reasonAttr); } owned.clear(); filteredCards.clear(); pendingCards.clear(); clearAllDecorations(); scanAllCards = true; };
-  const navigateStart = () => { navigationPending = true; start(); };
-  const navigateFinish = () => { navigationPending = false; if (!pageSuspended) { suspended = false; schedule(); } };
+  const navigateStart = start;
+  const navigateFinish = () => { if (!pageSuspended) { suspended = false; schedule(); } };
   const pageHide = () => { pageSuspended = true; start(); };
-  const pageShow = () => { if (!pageSuspended) return; pageSuspended = false; navigationPending = false; suspended = false; schedule(); };
+  const pageShow = () => { if (!pageSuspended) return; pageSuspended = false; suspended = false; schedule(); };
   listen(window,'yt-navigate-start',navigateStart); listen(window,'yt-navigate-finish',navigateFinish);
   listen(window,'yt-page-data-updated',schedule); listen(window,'pageshow',pageShow); listen(window,'pagehide',pageHide);
   if (p.logoToSubscriptions) listen(document,'click',event => {
@@ -8725,7 +8965,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   if (flags.hideFullscreenControls) rules.push('.html5-video-player.ytp-fullscreen .ytp-chrome-bottom { display: none !important; }');
   if (flags.hideChatFullscreen) rules.push(`
     :root:fullscreen ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]),
-    :root:has(.html5-video-player.ytp-fullscreen) ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]) { display: none !important; }
+    ytd-watch-flexy:has(.html5-video-player.ytp-fullscreen:not([hidden], [inert], [aria-hidden="true"], :is([hidden], [inert], [aria-hidden="true"], ytd-miniplayer, ytd-video-preview) *)) ytd-live-chat-frame#chat:not([data-ytppl-live-chat-panel="1"]) { display: none !important; }
   `);
   const belowAttribute = 'data-ytms-related-below';
   if (flags.relatedBelowPlayer) rules.push(`
@@ -8951,9 +9191,14 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     }
     if(!navigation && !anchors.size)observer?.disconnect();
   }
+  function playBoundary(event) {
+    const button=event.target?.closest?.('.ytp-play-button');
+    if(!button || !button.matches(playSelector))return false;
+    return !event.type.startsWith('pointer') || !event.relatedTarget?.nodeType || !button.contains(event.relatedTarget);
+  }
   function positionPlayTooltip(event) {
     if(disposed || suspended || navigating || document.hidden){restoreAnchors();return;}
-    if(event && !event.target?.closest?.(playSelector))return;
+    if(event && !playBoundary(event))return;
     // An opacity-hidden retained Play control can keep keyboard focus. Give
     // the rendered pointer owner priority over focus in another generation.
     const button=activePlayButton();
@@ -8975,7 +9220,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     }
   }
   function releaseUnusedAnchors(event) {
-    if(!event.target?.closest?.(playSelector))return;
+    if(!playBoundary(event))return;
     window.queueMicrotask(()=>{
       const active=activePlayButton();
       restoreAnchors(active?.closest('#movie_player') || null);
@@ -9042,21 +9287,27 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     records.clear(); for (const host of hosts) host.removeAttribute('data-ytms-mini-navigation'); hosts.clear();
     visibilityPaths.clear();
   }
-  function eligibility(player, direction) {
+  function visiblePlayers() {
+    return [...document.querySelectorAll('ytd-miniplayer #movie_player')].filter(visible);
+  }
+  function queueState(player) {
+    try {
+      const ids = player.getPlaylist?.(), current = player.getVideoData?.()?.video_id;
+      if (!Array.isArray(ids) || ids.length < 2 || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !/^[\w-]{11}$/.test(id))) return null;
+      const index = player.getPlaylistIndex?.();
+      return Number.isInteger(index) && index >= 0 && index < ids.length && ids[index] === current ? { ids: [...ids], index } : null;
+    } catch { return null; }
+  }
+  function eligibility(player, direction, candidates = visiblePlayers(), state) {
     try {
       const request=generation;
-      const candidates = [...document.querySelectorAll('ytd-miniplayer #movie_player')].filter(visible);
       if (disposed || suspended || navigating || document.hidden || candidates.length !== 1 || candidates[0] !== player ||
           player.matches('.ad-showing,.ad-interrupting')) return false;
-      const ids = player.getPlaylist?.(), current = player.getVideoData?.()?.video_id;
-      if (!Array.isArray(ids) || ids.length < 2 || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !/^[\w-]{11}$/.test(id)) ||
-          typeof player.getPlaylistIndex !== 'function') return false;
-      const index = player.getPlaylistIndex(), method = direction < 0 ? 'previousVideo' : 'nextVideo';
-      // The native index identifies the actual occurrence in duplicate queues.
-      // A first-match search would disable valid later occurrences or guess.
-      if (!Number.isInteger(index) || index < 0 || index >= ids.length || ids[index] !== current) return false;
+      const snapshot = state === undefined ? queueState(player) : state;
+      if (!snapshot) return false;
+      const {ids,index} = snapshot, method = direction < 0 ? 'previousVideo' : 'nextVideo';
       const available=index + direction >= 0 && index + direction < ids.length && typeof player[method] === 'function';
-      return available && request===generation && !disposed && !suspended && !navigating && !document.hidden;
+      return available && request===generation && !disposed && !suspended && !navigating && !document.hidden && snapshot;
     } catch { return false; }
   }
   function create(player, direction) {
@@ -9072,14 +9323,19 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       if (!event.isTrusted) return;
       event.preventDefault(); event.stopPropagation();
       const request = generation;
-      if (!eligibility(player, direction) || button.disabled) return;
+      const snapshot = eligibility(player, direction);
+      if (!snapshot || button.disabled) return;
       // One native action per activation; never retry an ambiguous result.
       try {
         const navigate = player[direction < 0 ? 'previousVideo' : 'nextVideo'];
         // Native accessors can synchronously suspend navigation while returning
         // a callable. Recheck ownership before invoking that captured method.
+        const current = queueState(player), owners = visiblePlayers();
         if (request !== generation || disposed || suspended || navigating || document.hidden ||
-            !button.isConnected || button.disabled || typeof navigate !== 'function') return;
+            !button.isConnected || button.disabled || button.closest('#movie_player') !== player ||
+            owners.length !== 1 || owners[0] !== player || player.matches('.ad-showing,.ad-interrupting') ||
+            typeof navigate !== 'function' || !current || current.index !== snapshot.index ||
+            current.ids.length !== snapshot.ids.length || current.ids.some((id, i) => id !== snapshot.ids[i])) return;
         navigate.call(player);
       } catch { /* Native transition unavailable. */ }
       schedule();
@@ -9103,6 +9359,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if(anchors.size)refreshPlayTooltip();
     const activeHosts = new Set(), activePlayers = new Set();
     const players = navigation ? [...document.querySelectorAll('ytd-miniplayer #movie_player')] : [];
+    const visibleOwners = players.filter(visible);
     visibilityPaths.clear();
     const playControls = new Map();
     for (const player of players) {
@@ -9113,9 +9370,9 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       // ancestor paths; unrelated page attributes still do not trigger work.
       for (const leaf of [player, ...plays]) for (let node=leaf;node;node=node.parentElement) visibilityPaths.add(node);
     }
-    if (navigation) for (const player of players) {
+    if (navigation) for (const player of visibleOwners) {
       if(!active())return;
-      if (!visible(player) || player.matches('.ad-showing,.ad-interrupting')) continue;
+      if (player.matches('.ad-showing,.ad-interrupting')) continue;
       const host = player.closest('ytd-miniplayer');
       // Native transitions can retain the previous, hidden controls row.
       // Bind via a single visible Play button, never its hidden template. The
@@ -9126,6 +9383,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
       if (!controls || !play) continue;
       activePlayers.add(player);
       activeHosts.add(host); hosts.add(host); if (!host.hasAttribute('data-ytms-mini-navigation')) host.setAttribute('data-ytms-mini-navigation','');
+      let state;
       for (const direction of [-1, 1]) {
         if(!active())return;
         const nativeClass = direction < 0 ? '.ytp-prev-button' : '.ytp-next-button';
@@ -9151,7 +9409,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
           controls.insertBefore(button, direction < 0 ? anchor : anchor.nextSibling);
           if(focused){button.focus({preventScroll:true});if(!active())return;showTooltip(button);}
         }
-        const disabled = !eligibility(player, direction);
+        if (state === undefined && visibleOwners.length === 1) state = queueState(player);
+        const disabled = !eligibility(player, direction, visibleOwners, state);
         if(!active())return;
         if (button.disabled !== disabled) button.disabled = disabled;
         if(!active())return;
@@ -9171,12 +9430,59 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (changes.some(change => change.type === 'attributes' ? visibilityPaths.has(change.target) || change.target.closest?.('.ytp-miniplayer-controls') || change.target.matches?.('#movie_player,ytd-miniplayer,.ytp-miniplayer-ui,.ytp-miniplayer-controls,.ytp-miniplayer-button-container,.ytp-miniplayer-play-button-container,.ytp-play-button,.ytp-prev-button,.ytp-next-button') :
       change.target.closest?.('.ytp-miniplayer-controls') || [...change.addedNodes,...change.removedNodes].some(node => node.nodeType === 1 && (node.matches(selector) || node.querySelector(selector))))) schedule();
   });
-  if(navigation)observer.observe(document.documentElement,{ childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden','aria-hidden','inert'] });
+  // A live tag collection tracks host insertion, removal and reparenting even
+  // through new native wrappers. Feed additions do not need a subtree selector
+  // scan on every card. Only miniplayer subtrees and their ancestors need
+  // attribute observers.
+  const miniHosts = document.getElementsByTagName('ytd-miniplayer');
+  const observedHosts = new Set(), observedParents = new Map();
+  function observeHosts() {
+    if (!navigation || disposed) return;
+    if (observedHosts.size === miniHosts.length &&
+        [...observedHosts].every(host => host.isConnected) &&
+        [...observedParents].every(([node,parent]) => node.parentElement === parent)) return;
+    observer.disconnect();
+    observedHosts.clear(); observedParents.clear();
+    const attributeFilter = ['class','style','hidden','aria-hidden','inert'];
+    for (const host of miniHosts) {
+      observedHosts.add(host);
+      observer.observe(host,{childList:true,subtree:true,attributes:true,attributeFilter});
+      for (let node=host;node && !observedParents.has(node);node=node.parentElement) {
+        observedParents.set(node,node.parentElement);
+      }
+    }
+    for (const node of observedParents.keys()) if (!observedHosts.has(node) && !node.closest('ytd-miniplayer')) {
+      observer.observe(node,{attributes:true,attributeFilter});
+    }
+    schedule();
+  }
+  const hostObserver = navigation ? new MutationObserver(observeHosts) : null;
+  if (hostObserver) {
+    hostObserver.observe(document.documentElement,{childList:true,subtree:true});
+    observeHosts();
+  }
   const listeners = [];
   const on = (target,type,callback) => { target.addEventListener(type,callback,true);listeners.push([target,type,callback]); };
+  // A retained player can finish fading out after the frame scheduled by its
+  // class/style mutation. Recheck ownership when its actual layout settles.
+  const layoutSettled = event => {
+    if(event.pseudoElement || (!visibilityPaths.size && !anchors.size))return;
+    const target=event.target;
+    if(visibilityPaths.has(target) || visibilityPaths.has(target.closest?.('.ytp-miniplayer-controls'))){schedule();return;}
+    for(const player of anchors.keys())if(target.contains?.(player) || player.contains(target)){schedule();return;}
+  };
+  for(const type of ['transitionend','transitioncancel','animationend','animationcancel'])on(document,type,layoutSettled);
   for (const type of ['yt-playlist-data-updated','yt-page-data-updated','loadedmetadata']) on(window,type,schedule);
   on(window,'visibilitychange',()=>{refreshPlayTooltip();schedule();});
-  for (const type of ['mouseenter','focusin']) on(window,type,event=>{ if(event.target?.closest?.('ytd-miniplayer')) schedule(); });
+  if(navigation){
+    // Native control visibility and queue readiness can settle on entry. Moving
+    // between titles and thumbnails in the queue does not change either.
+    on(window,'mouseenter',({target})=>{
+      if(target.matches?.('ytd-miniplayer') ||
+         (target.matches?.('.ytp-miniplayer-controls,.ytp-prev-button,.ytp-next-button,[data-ytms-mini-nav-button]') && target.closest('ytd-miniplayer')))schedule();
+    });
+    on(window,'focusin',({target})=>{if(target.closest?.('ytd-miniplayer .ytp-miniplayer-controls'))schedule();});
+  }
   on(window,'blur',event=>{if(event.target===window)hideTooltip();});on(document,'scroll',hideTooltip);on(window,'resize',hideTooltip);
   on(document,'keydown',event=>{if(event.key==='Escape')hideTooltip();});
   on(window,'pagehide',()=>{ suspended=true;clear(); });
@@ -9184,7 +9490,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   on(window,'yt-navigate-start',()=>{ navigating=true;clear(); });
   on(window,'yt-navigate-finish',()=>{ navigating=false;refreshPlayTooltip();schedule(); });
   positionPlayTooltip();schedule();
-  return () => { disposed=true;if(frame)window.cancelAnimationFrame(frame);observer.disconnect();clear();clearAnchors();style.remove();for(const [target,type,callback]of listeners)target.removeEventListener(type,callback,true); };
+  return () => { disposed=true;if(frame)window.cancelAnimationFrame(frame);hostObserver?.disconnect();observer.disconnect();clear();clearAnchors();style.remove();for(const [target,type,callback]of listeners)target.removeEventListener(type,callback,true); };
 }, function installMembershipOffers({ document, window, preferences = {}, MutationObserver = window.MutationObserver }) {
   if (preferences.dismissMembershipOffers !== true) return () => {};
 
@@ -9303,7 +9609,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     if (next.length !== containers.length || next.some((root, index) => root !== containers[index])) {
       popups.disconnect(); containers = next;
       for (const root of containers) popups.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ['opened', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'disabled'] });
+        attributeFilter: ['opened', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'disabled', 'aria-disabled'] });
     }
     schedule();
   }
@@ -9352,6 +9658,8 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   const rows = 'ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer';
   const marker = 'data-ytms-current-queue-menu', owned = 'data-ytms-current-queue-menu-owned';
   const records = new Map();
+  const popupSelector = 'ytd-menu-popup-renderer';
+  let opening = null, opened = null;
   let failed = new WeakMap();
   let frame = 0, generation = 0, disposed = false, navigating = false, pageHidden = false, style = null, waitingForDefinition = false;
   const topology = new MutationObserver(schedule), content = new MutationObserver(schedule), visibility = new MutationObserver(schedule);
@@ -9538,6 +9846,7 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
     const record = records.get(row);
     if (!record) return;
     records.delete(row);
+    if (opened?.record === record) invalidatePopup();
     if (record.guard) {
       record.menu.removeEventListener('click', record.guard, true);
       record.menu.removeEventListener('keydown', record.guard, true);
@@ -9561,6 +9870,61 @@ ${hostSelector}[${marker}] ${panelSelector}[${panelMarker}] {
   function bound(record) {
     try { return record.menu.closest(rows) === record.row && menuStampOf(record.menu) === record.stamp; }
     catch { return false; }
+  }
+  function ownsPopup(binding) {
+    try { return binding.popup.isConnected && modelsOf(binding.popup).includes(binding.model); }
+    catch { return false; }
+  }
+  function forgetPopup() {
+    if (!opened) return;
+    opened.popup.removeEventListener('click', opened.guard, true);
+    opened.popup.removeEventListener('keydown', opened.guard, true);
+    opened = null;
+  }
+  function invalidatePopup() {
+    const binding = opened;
+    if (!binding || binding.invalid) return;
+    binding.invalid = true;
+    if (!ownsPopup(binding)) { forgetPopup(); return; }
+    const overlay = binding.popup.closest('tp-yt-iron-dropdown');
+    try {
+      if (overlay && overlay.querySelector(popupSelector) === binding.popup) {
+        const owner = typeof overlay.close === 'function' ? overlay : controller(overlay);
+        owner?.close?.();
+      }
+    } catch { /* The popup's capture guard still blocks stale activation. */ }
+  }
+  function popupOpened(event) {
+    const popup = event.target?.closest?.(popupSelector);
+    if (!popup) return;
+    if (opened?.popup === popup && !ownsPopup(opened)) forgetPopup();
+    const record = opening;
+    if (!record) return;
+    let model;
+    try { model = modelsOf(popup).find(value => value === record.model || value.items === record.model.items); }
+    catch { return; }
+    if (!model) return;
+    opening = null;
+    forgetPopup();
+    const binding = { popup, model, record, invalid: false, guard: null };
+    binding.guard = event => {
+      if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+      if (!ownsPopup(binding)) { forgetPopup(); return; }
+      if (binding.invalid || records.get(record.row) !== record || !bound(record) || !same(record, proof(record.panel))) {
+        event.preventDefault(); event.stopImmediatePropagation(); invalidatePopup();
+      }
+    };
+    opened = binding;
+    popup.addEventListener('click', binding.guard, true);
+    popup.addEventListener('keydown', binding.guard, true);
+    if (records.get(record.row) !== record) invalidatePopup();
+  }
+  function popupClosed(event) {
+    const popup = opened?.popup;
+    if (popup && (event.target === popup || event.target === popup.closest('tp-yt-iron-dropdown'))) forgetPopup();
+  }
+  function unrelatedActivation(event) {
+    if (opening && !opening.menu.contains(event.target)) opening = null;
   }
   function install(current) {
     const request = generation;
@@ -9633,7 +9997,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
       // Opening remains native; revalidate identity for every activation path.
       if (!active() || !same(record, proof(record.panel)) || !bound(record) || !active()) {
         event.preventDefault(); event.stopImmediatePropagation(); release(record.row); schedule();
-      }
+      } else opening = record;
     };
     // Preserve native target handlers while stopping row-level navigation.
     record.stop = event => event.stopPropagation();
@@ -9675,6 +10039,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; topology.disconnect(); content.disconnect(); visibility.disconnect();
     for (const row of [...records.keys()]) release(row);
+    opening = null;
     failed = new WeakMap();
   }
   const start = () => { navigating = true; clear(); };
@@ -9682,7 +10047,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   const hide = () => { pageHidden = true; clear(); };
   const show = () => { if (pageHidden) navigating = false; pageHidden = false; schedule(); };
   const listeners = [['yt-navigate-start', start], ['yt-navigate-finish', finish], ['yt-page-data-updated', schedule],
-    ['yt-playlist-data-updated', schedule], ['pagehide', hide], ['pageshow', show], ['DOMContentLoaded', schedule]];
+    ['yt-playlist-data-updated', schedule], ['pagehide', hide], ['pageshow', show], ['DOMContentLoaded', schedule],
+    ['yt-popup-opened', popupOpened], ['iron-overlay-opened', popupOpened], ['yt-popup-closed', popupClosed],
+    ['iron-overlay-closed', popupClosed], ['click', unrelatedActivation]];
   for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
   schedule();
   return () => { disposed = true; clear(); style?.remove(); for (const [type, listener] of listeners) window.removeEventListener(type, listener, true); };
@@ -9691,6 +10058,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   const panels = 'ytd-playlist-panel-renderer', slots = ':is(#playlist-action-menu,#overflow-menu,#overflow-menu-top-row).ytd-playlist-panel-renderer';
   const marker = 'data-ytms-queue-header-menu', sourceMarker = 'data-ytms-queue-header-source';
   const groups = new Map(), waiting = new Set(), failed = new WeakMap();
+  let anchoredMenu = null;
   let frame = 0, generation = 0, serial = 0, pendingKey = null, disposed = false, navigating = false, pageHidden = false;
   const owner = node => node?.polymerController || node?.getPolymerController?.() || node;
   const paused = () => disposed || navigating || pageHidden || document.hidden;
@@ -9746,7 +10114,27 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     }
     return selected.save.header === selected.clear.header && selected.save.playlistId === selected.clear.playlistId ? { ...selected, sources:[...choices.save,...choices.clear] } : null;
   }
+  function placement(panel, clear) {
+    const native = { parent: clear.menu.parentElement, before: null, toggle: null };
+    const content = panel.parentElement;
+    if (!panel.matches('[within-miniplayer]') || !content?.matches('ytd-miniplayer > .ytdMiniplayerComponentContent') ||
+        content.querySelectorAll(':scope > ytd-playlist-panel-renderer').length !== 1) return native;
+    const bars = content.querySelectorAll(':scope > yt-draggable > ytd-miniplayer-info-bar, :scope > ytd-miniplayer-info-bar');
+    if (bars.length !== 1) return native;
+    const bar = bars[0], buttons = bar.querySelectorAll(':scope > .ytdMiniplayerInfoBarExpand button[aria-expanded]');
+    if (buttons.length !== 1 || !bar.querySelector(':scope > .ytdMiniplayerInfoBarContent')) return native;
+    return { parent: bar, before: buttons[0].closest('.ytdMiniplayerInfoBarExpand'), toggle: buttons[0] };
+  }
+  function samePlacement(a, b) { return a.parent === b.parent && a.before === b.before && a.toggle === b.toggle; }
+  function expanded(group) {
+    return !group.place.toggle || (group.place.toggle.getAttribute('aria-expanded') === 'true' &&
+      !group.panel.matches('[hidden],[collapsed],[inert],[aria-hidden="true"]'));
+  }
   function close(group, restore = false) {
+    if (anchoredMenu === group) {
+      window.removeEventListener('scroll', anchorScrolled, true);
+      anchoredMenu = null;
+    }
     group.open = false; group.button.setAttribute('aria-expanded','false');
     try { if (group.popup.matches(':popover-open')) group.popup.hidePopover(); } catch { /* Older browser fallback. */ }
     group.popup.hidden = true;
@@ -9756,6 +10144,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     const group = groups.get(panel); if (!group) return;
     groups.delete(panel); close(group); restoreLayout(group); group.popup.remove(); group.wrap.remove();
     for (const source of group.sources) source.menu.removeAttribute(sourceMarker);
+    panel.removeAttribute('data-ytms-queue-menu-in-info-bar');
     panel.removeAttribute(marker);
   }
   function painted(node) {
@@ -9768,7 +10157,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     return true;
   }
   function valid(group, visible = false) {
-    if (paused() || groups.get(group.panel) !== group || !group.wrap.isConnected || group.wrap.parentElement !== group.clear.menu.parentElement || group.panel.closest('ytd-app') !== group.app || visible && !painted(group.button)) return false;
+    if (paused() || groups.get(group.panel) !== group || !group.wrap.isConnected || group.wrap.parentElement !== group.place.parent ||
+        group.panel.closest('ytd-app') !== group.app || visible && (!expanded(group) || !painted(group.button) ||
+        !samePlacement(group.place, placement(group.panel, group.clear)) || group.place.toggle && !painted(group.panel))) return false;
     return group.actions.length === 2 && group.actions.every(action => model(action.row) === action.item && group.popup.contains(action.row) && same(action,proof(action.menu))) && !paused() && groups.get(group.panel) === group;
   }
   function canActivate(group) {
@@ -9777,15 +10168,26 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   }
   function position(group) {
     const box = group.button.getBoundingClientRect(), width = group.popup.offsetWidth, height = group.popup.offsetHeight;
+    group.anchorTop = box.top;
+    group.anchorRight = box.right;
     group.popup.style.left = `${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
     group.popup.style.top = `${box.bottom+height+4 <= window.innerHeight-8 ? box.bottom+4 : Math.max(8,box.top-height-4)}px`;
+  }
+  function anchorScrolled(event) {
+    const group = anchoredMenu;
+    if (!group || (event.target !== window && !event.target.contains?.(group.button))) return;
+    const box = group.button.getBoundingClientRect();
+    if (box.top !== group.anchorTop || box.right !== group.anchorRight) close(group);
   }
   function open(group, last = false) {
     if (!valid(group,true)) { release(group.panel); schedule(); return; }
     for (const other of groups.values()) if (other !== group) close(other);
     group.popup.hidden = false;
     try { group.popup.showPopover?.(); } catch { group.popup.removeAttribute('popover'); (group.panel.closest('ytd-app') || document.body).append(group.popup); }
-    group.open = true; group.button.setAttribute('aria-expanded','true'); position(group); group.actions[last ? 1 : 0].row.focus({preventScroll:true});
+    group.open = true; group.button.setAttribute('aria-expanded','true'); position(group);
+    anchoredMenu = group;
+    window.addEventListener('scroll', anchorScrolled, { capture: true, passive: true });
+    group.actions[last ? 1 : 0].row.focus({preventScroll:true});
   }
   function icon(path) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true'); svg.setAttribute('focusable','false');
@@ -9802,6 +10204,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     group.layout = new Map();
   }
   function layout(group) {
+    if (group.place.toggle) return;
     const header = group.clear.header;
     if (group.layoutDirty) restoreLayout(group);
     // Read native text rather than inheriting the browser's default button colour.
@@ -9845,7 +10248,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   }
   function install(panel, current) {
     const request = generation, active = () => request === generation && !paused(); let group = groups.get(panel);
-    if (group && group.actions.every(action => same(action,current[action.action])) && current.sources.length === group.sources.length && current.sources.every((source,index) => same(source,group.sources[index])) && valid(group)) {
+    const place = placement(panel, current.clear);
+    if (group && samePlacement(group.place, place) && group.actions.every(action => same(action,current[action.action])) && current.sources.length === group.sources.length && current.sources.every((source,index) => same(source,group.sources[index])) && valid(group)) {
     } else {
       release(panel); if (!active()) return;
       const rejected = failed.get(panel);
@@ -9856,13 +10260,21 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
       }
       const wrap = document.createElement('span'); wrap.setAttribute('data-ytms-queue-menu-wrap','');
       const button = document.createElement('button'); button.type = 'button'; button.className = 'ytms-queue-more'; button.hidden = true;
+      button.title = 'Queue actions';
       button.setAttribute('aria-label','Queue actions'); button.setAttribute('aria-haspopup','menu'); button.setAttribute('aria-expanded','false');
       button.append(icon('M12 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z'));
       const popup = document.createElement('div'); popup.setAttribute('data-ytms-queue-menu-popup',''); popup.setAttribute('role','menu'); popup.setAttribute('aria-label','Queue actions'); popup.hidden = true;
       popup.id = `ytms-queue-header-popup-${++serial}`; button.setAttribute('aria-controls',popup.id);
       if (typeof popup.showPopover === 'function') popup.setAttribute('popover','auto');
-      wrap.append(button,popup); group = { panel,...current,app:panel.closest('ytd-app'),wrap,button,popup,actions:[],open:false,layoutDirty:true,layout:new Map() }; groups.set(panel,group);
-      current.clear.menu.parentElement.append(wrap);
+      wrap.append(button,popup); group = { panel,...current,place,app:panel.closest('ytd-app'),wrap,button,popup,actions:[],open:false,layoutDirty:true,layout:new Map() }; groups.set(panel,group);
+      if (place.toggle) {
+        // The info bar toggles the queue and its draggable parent handles presses.
+        // Keep the menu's own native activation and keyboard focus intact.
+        for (const type of ['pointerdown','mousedown','touchstart','click']) {
+          wrap.addEventListener(type, event => event.stopPropagation());
+        }
+      }
+      place.parent.insertBefore(wrap, place.before);
       if (!popup.hasAttribute('popover')) (panel.closest('ytd-app') || document.body).append(popup);
       if (!active() || groups.get(panel) !== group) { release(panel); return; }
       for (const action of ['save','clear']) {
@@ -9876,20 +10288,29 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         if (!active() || model(row) !== record.item || !same(record,proof(record.menu))) { if(active())failed.set(panel,current); release(panel); return; }
       }
       button.addEventListener('click',event => { event.stopPropagation(); group.open ? close(group) : open(group); });
-      popup.addEventListener('toggle',()=>{try{if(popup.hasAttribute('popover')&&!popup.matches(':popover-open')){group.open=false;button.setAttribute('aria-expanded','false');}}catch{/* No popover API. */}});
+      popup.addEventListener('toggle',()=>{try{if(group.open&&popup.hasAttribute('popover')&&!popup.matches(':popover-open'))close(group);}catch{/* No popover API. */}});
     }
     const ready = group.actions.map(prepare).every(Boolean);
     if (!active() || !valid(group)) { release(panel); return; }
-    group.button.hidden = !ready;
+    const show = ready && expanded(group);
+    if (!show && group.open) close(group);
+    group.button.hidden = !show;
+    if (place.toggle) {
+      group.wrap.hidden = !show;
+      panel.toggleAttribute('data-ytms-queue-menu-in-info-bar', ready);
+    }
     if (ready) { for (const source of group.sources) if (!source.menu.hasAttribute(sourceMarker)) source.menu.setAttribute(sourceMarker,''); if(!panel.hasAttribute(marker))panel.setAttribute(marker,''); layout(group); }
     else { if(group.open)close(group); for (const source of group.sources) source.menu.removeAttribute(sourceMarker); panel.removeAttribute(marker); }
   }
   function refresh() {
     frame=0; if(paused())return; const request=generation; observer.disconnect();
-    for(const root of [document.documentElement,document.body,...document.querySelectorAll('ytd-app,ytd-page-manager,#page-manager,ytd-watch-flexy,ytd-miniplayer,#secondary,#secondary-inner,#panels,.ytdMiniplayerComponentContent')])if(root)observer.observe(root,{childList:true});
+    for(const root of [document.documentElement,document.body,...document.querySelectorAll('ytd-app,ytd-page-manager,#page-manager,ytd-watch-flexy,ytd-miniplayer,#secondary,#secondary-inner,#panels,.ytdMiniplayerComponentContent,.ytdMiniplayerComponentContent > yt-draggable')])if(root)observer.observe(root,{childList:true});
+    for(const bar of document.querySelectorAll('ytd-miniplayer ytd-miniplayer-info-bar')) {
+      observer.observe(bar,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-expanded']});
+    }
     const seen=new Set();
     for(const panel of document.querySelectorAll(panels)){
-      if(paused()||request!==generation)return; observer.observe(panel,{childList:true});
+      if(paused()||request!==generation)return; observer.observe(panel,{childList:true,attributes:true,attributeFilter:['within-miniplayer','hidden','collapsed','inert','aria-hidden']});
       for(const root of panel.querySelectorAll(':scope > #container'))observer.observe(root,{childList:true});
       for(const header of panel.querySelectorAll('.header.ytd-playlist-panel-renderer'))if(header.closest(panels)===panel)observer.observe(header,{childList:true,subtree:true,characterData:true});
       const current=findActions(panel); if(paused()||request!==generation)return; if(current){seen.add(panel);install(panel,current);const group=groups.get(panel);if(group)observer.observe(group.popup,{childList:true,subtree:true,characterData:true});}
@@ -9913,6 +10334,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
       event.stopImmediatePropagation();pendingKey=event.key;
       if(event.key==='Tab'){close(group);return;}
       event.preventDefault();
+      if (event.repeat && (event.key === 'Enter' || event.key === ' ')) return;
       if(trigger){if(['ArrowDown','ArrowUp'].includes(event.key))open(group,event.key==='ArrowUp');else group.open?close(group):open(group);return;}
       if(event.key==='Escape'){close(group,true);return;}
       if(['Enter',' '].includes(event.key)){
@@ -9931,21 +10353,25 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   }), style=document.createElement('style');
   style.textContent=`
     ytd-menu-renderer[${sourceMarker}] { display:none !important; }
-    [data-ytms-queue-menu-wrap] { display:inline-flex;align-items:center;vertical-align:middle;color:var(--yt-spec-text-primary,inherit); }
-    .ytms-queue-more { display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:4px;border:0;border-radius:50%;background:transparent;color:inherit;cursor:pointer; }
+    [data-ytms-queue-menu-wrap] { display:inline-flex;align-items:center;vertical-align:middle;flex:none;--ytms-queue-trigger-ink:#0f0f0f; }
+    html[dark] [data-ytms-queue-menu-wrap] { --ytms-queue-trigger-ink:#f1f1f1; }
+    [data-ytms-queue-menu-wrap][hidden] { display:none !important; }
+    .ytms-queue-more { display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:4px;border:0;border-radius:50%;background:transparent;color:var(--yt-spec-text-primary,var(--ytms-queue-trigger-ink)) !important;cursor:pointer; }
+    ytd-playlist-panel-renderer[data-ytms-queue-menu-in-info-bar]:not([loading]) > #container > .header.ytd-playlist-panel-renderer { height:auto !important;min-height:0 !important;padding-block:0 !important; }
+    ytd-playlist-panel-renderer[data-ytms-queue-menu-in-info-bar] > #container > .header :is(#header-contents,#header-top-row).ytd-playlist-panel-renderer { margin-block:0 !important; }
     .ytms-queue-more[hidden] { display:none !important; }
     .ytms-queue-more svg { width:24px;height:24px;pointer-events:none; }
-    .ytms-queue-more svg, .ytms-queue-more svg path { fill:currentColor !important; }
+    .ytms-queue-more svg, .ytms-queue-more svg path { color:inherit !important;fill:currentColor !important; }
     .ytms-queue-more:hover { background:var(--yt-spec-badge-chip-background,rgba(127,127,127,.2)); }
     .ytms-queue-more:focus-visible { outline:2px solid currentColor;outline-offset:2px; }
-    [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#fff);--ytms-queue-menu-text:var(--yt-spec-text-primary,#0f0f0f);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(0,0,0,.1));color-scheme:light;position:fixed;inset:auto;margin:0;padding:8px 0;border:0;border-radius:12px;width:min(212px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;z-index:2202;background:var(--ytms-queue-menu-background) !important;color:var(--ytms-queue-menu-text) !important;box-shadow:0 4px 24px #0005;font-family:inherit;font-size:14px;line-height:20px;font-weight:400; }
+    [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#fff);--ytms-queue-menu-text:var(--yt-spec-text-primary,#0f0f0f);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(0,0,0,.1));color-scheme:light;position:fixed;inset:auto;margin:0;padding:8px 0;border:0;border-radius:12px;width:min(168px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;z-index:2202;background:var(--ytms-queue-menu-background) !important;color:var(--ytms-queue-menu-text) !important;box-shadow:0 4px 24px #0005;font-family:inherit;font-size:14px;line-height:20px;font-weight:400; }
     html[dark] [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#282828);--ytms-queue-menu-text:var(--yt-spec-text-primary,#f1f1f1);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(255,255,255,.1));color-scheme:dark; }
     [data-ytms-queue-menu-popup][hidden] { display:none !important; }
     [data-ytms-queue-menu-action], [data-ytms-queue-menu-action] [data-ytms-queue-menu-path] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;box-sizing:border-box !important;width:100% !important;height:36px !important;min-height:0 !important;min-width:0 !important;margin:0 !important;padding:0 !important;gap:0 !important;background:transparent !important;font-size:0 !important;line-height:0 !important;cursor:pointer; }
     [data-ytms-queue-menu-action], [data-ytms-queue-menu-action] [data-ytms-queue-menu-path], [data-ytms-queue-menu-content] { color:var(--ytms-queue-menu-text) !important;border:0 !important;box-shadow:none !important;outline:0 !important; }
     [data-ytms-queue-menu-action] > :not([data-ytms-queue-menu-path]):not([data-ytms-queue-menu-content]), [data-ytms-queue-menu-path] > :not([data-ytms-queue-menu-path]):not([data-ytms-queue-menu-content]) { display:none !important; }
     [data-ytms-queue-menu-action]::before, [data-ytms-queue-menu-action]::after { content:none !important;display:none !important; }
-    [data-ytms-queue-menu-content] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;gap:16px !important;box-sizing:border-box !important;width:100% !important;height:36px !important;padding:0 16px !important;margin:0 !important;white-space:nowrap !important;font-family:inherit !important;font-size:14px !important;line-height:20px !important;font-weight:400 !important; }
+    [data-ytms-queue-menu-content] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;gap:12px !important;box-sizing:border-box !important;width:100% !important;height:36px !important;padding:0 12px !important;margin:0 !important;white-space:nowrap !important;font-family:inherit !important;font-size:14px !important;line-height:20px !important;font-weight:400 !important; }
     [data-ytms-queue-menu-content] svg { display:block !important;flex:0 0 24px !important;width:24px !important;height:24px !important;margin:0 !important;fill:currentColor !important;pointer-events:none; }
     [data-ytms-queue-menu-content] svg path { fill:currentColor !important; }
     [data-ytms-queue-menu-content] span { color:inherit !important;font:inherit !important;margin:0 !important;padding:0 !important; }
@@ -10103,6 +10529,797 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   for(const [type,listener]of listeners)window.addEventListener(type,listener,true);
   refreshRoots();
   return()=>{disposed=true;clear();style.remove();for(const[type,listener]of listeners)window.removeEventListener(type,listener,true);};
+}, function installWatchLaterControls({
+  document, window, MutationObserver = window.MutationObserver, ResizeObserver = window.ResizeObserver,
+}) {
+  const searchClass = 'ytms-library-search';
+  const searchStatusClass = 'ytms-library-search-status';
+  const searchAttribute = 'data-ytms-library-search';
+  const searchPlacementAttribute = 'data-ytms-library-search-placement';
+  const searchHiddenAttribute = 'data-ytms-watch-later-search-hidden';
+  const historyLabelAttribute = 'data-ytms-history-action-labelled';
+  const historyVisibleLabelAttribute = 'data-ytms-history-visible-label';
+  const historyIconSlotAttribute = 'data-ytms-history-icon-slot';
+  const downloadLabelAttribute = 'data-ytms-watch-later-download-labelled';
+  const rowSelector = 'ytd-playlist-video-renderer,yt-lockup-view-model';
+  const legacyList = 'ytd-playlist-video-list-renderer';
+  const modernList = 'yt-section-list-renderer';
+  const excludedPlaylist = 'ytd-miniplayer,ytd-playlist-panel-renderer,yt-playlist-panel-renderer,ytd-watch-flexy';
+  const styleId = 'ytms-watch-later-controls-style';
+  const labelledHistoryActions = new Map();
+  const labelledDownloadActions = new Map();
+  const historyActionDefinitions = [
+    { label: 'Clear all watch history', pattern: /\bclear\s+(?:all\s+)?watch\s+history\b/i },
+    { label: 'Pause watch history', pattern: /\bpause\s+watch\s+history\b/i },
+    { label: 'Resume watch history', pattern: /\bresume\s+watch\s+history\b/i, group: 'Pause watch history' },
+    { label: 'Manage all history', pattern: /\bmanage\s+(?:all\s+)?history\b/i },
+  ];
+  let searchRecord = null;
+  let searchFrame = 0;
+  let reconcileFrame = 0;
+  let retryTimer = 0;
+  let retryCount = 0;
+  let retryGeneration = 0;
+  let disposed = false;
+  let navigating = false;
+  let pageHidden = false;
+  let historyActionsObserver = null;
+  let observedHistoryActions = null;
+
+  const text = value => String(value?.textContent ?? value ?? '').replace(/\s+/g, ' ').trim();
+  // YouTube can keep an action's native label in the DOM while hiding it
+  // during a renderer transition. Use rendered text for this decision so a
+  // fallback is present in that state without duplicating a visible label.
+  const visibleText = value => String(value?.innerText ?? '').replace(/\s+/g, ' ').trim();
+  const normalise = value => text(value).normalize('NFKC').toLowerCase();
+  const active = () => !disposed && !navigating && !pageHidden && !document.hidden;
+
+  function libraryRoute() {
+    try {
+      if (window.location.pathname !== '/playlist') return null;
+      const list = new window.URLSearchParams(window.location.search).get('list');
+      if (list === 'WL') return {
+        key: 'watch-later', label: 'Watch Later', searchId: 'ytms-watch-later-search',
+      };
+      if (list === 'LL') return {
+        key: 'liked-videos', label: 'Liked videos', searchId: 'ytms-liked-videos-search',
+      };
+    } catch {
+      // A transient route read is treated as an unsupported page and retried.
+    }
+    return null;
+  }
+
+  function isWatchLaterRoute() {
+    return libraryRoute()?.key === 'watch-later';
+  }
+
+  function sameLibraryRoute(route) {
+    return Boolean(route) && libraryRoute()?.key === route.key;
+  }
+
+  function isHistoryRoute() {
+    return window.location.pathname === '/feed/history';
+  }
+
+  function addStyle() {
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      [${searchHiddenAttribute}="1"] { display:none !important; }
+      .${searchClass}[${searchAttribute}="1"] {
+        display:flex !important;
+        align-items:center !important;
+        box-sizing:border-box !important;
+        width:min(100%, 540px) !important;
+        min-height:40px !important;
+        margin:0 0 16px !important;
+        border-bottom:1px solid var(--yt-spec-10-percent-layer, #717171) !important;
+        color:var(--yt-spec-text-primary, #f1f1f1) !important;
+        font:400 14px/20px Roboto, Arial, sans-serif !important;
+      }
+      .${searchClass}[${searchAttribute}="1"]:focus-within { border-bottom-color:var(--yt-spec-call-to-action, #3ea6ff) !important; }
+      .${searchClass}[${searchAttribute}="1"] svg { flex:0 0 auto !important; width:24px !important; height:24px !important; margin:0 12px 0 2px !important; fill:currentColor !important; }
+      .${searchClass}[${searchAttribute}="1"] input {
+        min-width:0 !important;
+        flex:1 1 auto !important;
+        border:0 !important;
+        outline:0 !important;
+        background:transparent !important;
+        color:inherit !important;
+        font:inherit !important;
+      }
+      .${searchClass}[${searchAttribute}="1"] input::placeholder { color:var(--yt-spec-text-secondary, #aaa) !important; opacity:1 !important; }
+      .${searchClass}[${searchAttribute}="1"] button {
+        display:inline-flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        width:32px !important;
+        height:32px !important;
+        margin-inline-start:8px !important;
+        padding:0 !important;
+        border:0 !important;
+        border-radius:50% !important;
+        background:transparent !important;
+        color:inherit !important;
+        cursor:pointer !important;
+      }
+      .${searchClass}[${searchAttribute}="1"] button:hover { background:var(--yt-spec-10-percent-layer, rgba(255,255,255,.1)) !important; }
+      .${searchClass}[${searchAttribute}="1"] button svg { width:20px !important; height:20px !important; margin:0 !important; }
+      .${searchStatusClass} {
+        display:block !important;
+        margin:0 0 16px !important;
+        color:var(--yt-spec-text-secondary, #aaa) !important;
+        font:400 14px/20px Roboto, Arial, sans-serif !important;
+      }
+      .${searchClass}[${searchAttribute}="1"] button[hidden],
+      .${searchStatusClass}[hidden] { display:none !important; }
+      [${historyLabelAttribute}="1"] :is(button, a) {
+        display:inline-flex !important;
+        align-items:center !important;
+        justify-content:flex-start !important;
+        box-sizing:border-box !important;
+        width:auto !important;
+        min-width:0 !important;
+        min-height:36px !important;
+        margin:0 !important;
+        padding:0 8px !important;
+        border:0 !important;
+        text-decoration:none !important;
+        gap:12px !important;
+        white-space:nowrap !important;
+      }
+      /* YouTube currently uses more than one native icon host here. Give each
+         host the same slot so an icon-specific inline margin cannot move the
+         glyph while leaving its action label in place. */
+      [${historyLabelAttribute}="1"] :is(button, a) [${historyIconSlotAttribute}="1"] {
+        display:grid !important;
+        place-items:center !important;
+        flex:0 0 24px !important;
+        box-sizing:border-box !important;
+        width:24px !important;
+        min-width:24px !important;
+        height:24px !important;
+        margin:0 !important;
+        line-height:0 !important;
+      }
+      [${historyLabelAttribute}="1"] :is(button, a) [${historyIconSlotAttribute}="1"]
+        :is([data-ytms-history-action-icon], yt-icon, yt-icon-shape, svg) {
+        margin:0 !important;
+      }
+      /* A few renderer variants insert an unlabelled span or div between the
+         slot and glyph. Its inline spacing must not offset only one action. */
+      [${historyLabelAttribute}="1"] :is(button, a) [${historyIconSlotAttribute}="1"] > :is(span, div, yt-icon, yt-icon-shape, svg) {
+        margin:0 !important;
+        padding:0 !important;
+      }
+      :is(button, a)[${historyVisibleLabelAttribute}]::after {
+        content:attr(${historyVisibleLabelAttribute}) !important;
+        display:block !important;
+        color:var(--yt-spec-text-primary, #f1f1f1) !important;
+        font:500 14px/20px Roboto, Arial, sans-serif !important;
+        pointer-events:none !important;
+      }
+    `;
+    (document.head || document.documentElement).append(style);
+  }
+
+  function createIcon(path) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    shape.setAttribute('d', path);
+    svg.append(shape);
+    return svg;
+  }
+
+  function clearAttribute(record, name, applied) {
+    if (record.element.getAttribute(name) !== applied) return;
+    if (record.previous === null) record.element.removeAttribute(name);
+    else record.element.setAttribute(name, record.previous);
+  }
+
+  function releaseLabelledActions(records, marker) {
+    for (const record of records.values()) {
+      clearAttribute(record.title, 'title', record.title.applied);
+      clearAttribute(record.aria, 'aria-label', record.aria.applied);
+      if (record.visibleLabel) clearAttribute(record.visibleLabel, historyVisibleLabelAttribute, record.visibleLabel.applied);
+      if (record.iconSlot) clearAttribute(record.iconSlot, historyIconSlotAttribute, record.iconSlot.applied);
+      if (record.host.getAttribute(marker) === '1') record.host.removeAttribute(marker);
+    }
+    records.clear();
+  }
+
+  function describeAction(host, button, label, records, marker) {
+    let record = records.get(button);
+    if (!record) {
+      record = {
+        host,
+        button,
+        title: { element: button, previous: button.getAttribute('title'), applied: label },
+        aria: { element: button, previous: button.getAttribute('aria-label'), applied: label },
+      };
+      records.set(button, record);
+    }
+    if (record.host !== host && record.host.getAttribute(marker) === '1') record.host.removeAttribute(marker);
+    record.host = host;
+    for (const [name, tracking] of [['title', record.title], ['aria-label', record.aria]]) {
+      const current = button.getAttribute(name);
+      if (current !== tracking.applied) tracking.previous = current;
+    }
+    if (button.getAttribute('title') !== label) button.setAttribute('title', label);
+    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
+    record.title.applied = label;
+    record.aria.applied = label;
+    if (host.getAttribute(marker) !== '1') host.setAttribute(marker, '1');
+  }
+
+  function describeHistoryVisibleLabel(record, definition) {
+    if (!record.visibleLabel) {
+      record.visibleLabel = {
+        element: record.button,
+        previous: record.button.getAttribute(historyVisibleLabelAttribute),
+        applied: null,
+      };
+    }
+    const visibleLabel = record.visibleLabel;
+    const applied = definition.pattern.test(visibleText(record.host)) ? null : definition.label;
+    if (visibleLabel.applied === applied && (applied === null ||
+        visibleLabel.element.getAttribute(historyVisibleLabelAttribute) === applied)) return;
+    if (applied === null) {
+      if (visibleLabel.element.getAttribute(historyVisibleLabelAttribute) === visibleLabel.applied) {
+        if (visibleLabel.previous === null) visibleLabel.element.removeAttribute(historyVisibleLabelAttribute);
+        else visibleLabel.element.setAttribute(historyVisibleLabelAttribute, visibleLabel.previous);
+      }
+    } else {
+      visibleLabel.element.setAttribute(historyVisibleLabelAttribute, applied);
+    }
+    visibleLabel.applied = applied;
+  }
+
+  function visibleHistoryIcon(node) {
+    if (!visibleNode(node)) return false;
+    const rect = node.getBoundingClientRect?.();
+    if (rect?.width > 0 && rect.height > 0) return true;
+    return [...node.querySelectorAll('*')].some(child => {
+      if (!visibleNode(child)) return false;
+      const childRect = child.getBoundingClientRect?.();
+      return childRect?.width > 0 && childRect.height > 0;
+    });
+  }
+
+  function historyIconSlot(button, definition) {
+    const selectors = [
+      '[data-ytms-history-action-icon]',
+      '.yt-spec-button-shape-next__icon',
+      '.ytIconWrapperHost',
+      '[id="icon"]',
+      'yt-icon',
+      'yt-icon-shape',
+      'svg',
+    ];
+    for (const selector of selectors) {
+      const icon = [...button.querySelectorAll(selector)].find(node =>
+        node.closest('button,a') === button && visibleHistoryIcon(node));
+      if (!icon) continue;
+      // Prefer the visual icon's direct button child. This normalises wrappers
+      // used by both the older and current History renderer without touching
+      // the sibling that holds the native action label.
+      const slot = [...button.children].find(child =>
+        child.contains(icon) && !definition.pattern.test(visibleText(child)));
+      return slot || icon;
+    }
+    return null;
+  }
+
+  function describeHistoryIconSlot(record, definition) {
+    const element = historyIconSlot(record.button, definition);
+    if (record.iconSlot?.element === element) {
+      if (element?.getAttribute(historyIconSlotAttribute) !== '1') element?.setAttribute(historyIconSlotAttribute, '1');
+      return;
+    }
+    if (record.iconSlot) clearAttribute(record.iconSlot, historyIconSlotAttribute, record.iconSlot.applied);
+    record.iconSlot = null;
+    if (!element) return;
+    record.iconSlot = {
+      element,
+      previous: element.getAttribute(historyIconSlotAttribute),
+      applied: '1',
+    };
+    element.setAttribute(historyIconSlotAttribute, '1');
+  }
+
+  function historyActions() {
+    const selector = 'ytd-two-column-browse-results-renderer #secondary ytd-browse-feed-actions-renderer > #contents';
+    const candidates = new Map(historyActionDefinitions.map(definition => [definition.group || definition.label, []]));
+    // Hidden browse roots may be retained through SPA navigation. Scope the
+    // lookup to the active root so an old copy cannot make an action ambiguous.
+    const browse = activeBrowse();
+    if (!browse) return [];
+    for (const container of browse.querySelectorAll(selector)) {
+      for (const host of container.children) {
+        const controls = host.matches('button,a') ? [host] : [...host.querySelectorAll('button,a')];
+        if (controls.length !== 1) continue;
+        const button = controls[0];
+        const record = labelledHistoryActions.get(button);
+        const native = (name, tracking) => {
+          const value = button.getAttribute(name);
+          return tracking && value === tracking.applied ? tracking.previous : value;
+        };
+        const labels = [visibleText(button), native('aria-label', record?.aria), button.getAttribute('data-tooltip-text'),
+          host === button ? null : host.getAttribute('aria-label'), native('title', record?.title), text(button)];
+        const definition = labels.map(label => label && historyActionDefinitions.find(action => action.pattern.test(label))).find(Boolean);
+        if (definition) candidates.get(definition.group || definition.label).push({ host, button, definition });
+      }
+    }
+    return [...candidates.values()].flatMap(matches => matches.length === 1 ? matches : []);
+  }
+
+  function releaseHistoryActionsObserver() {
+    historyActionsObserver?.disconnect();
+    historyActionsObserver = null;
+    observedHistoryActions = null;
+  }
+
+  function observeHistoryActions() {
+    if (typeof MutationObserver !== 'function' || !isHistoryRoute() || !active()) {
+      releaseHistoryActionsObserver();
+      return;
+    }
+    const browse = activeBrowse();
+    const contents = browse?.querySelector(
+      'ytd-two-column-browse-results-renderer #secondary ytd-browse-feed-actions-renderer > #contents',
+    ) || null;
+    if (contents === observedHistoryActions) return;
+    releaseHistoryActionsObserver();
+    if (!contents) return;
+    observedHistoryActions = contents;
+    historyActionsObserver = new MutationObserver(records => {
+      if (!active() || !isHistoryRoute() || contents !== observedHistoryActions) return;
+      if (records.some(record => record.type === 'childList' || record.type === 'characterData' || record.type === 'attributes')) {
+        scheduleReconcile();
+      }
+    });
+    historyActionsObserver.observe(contents, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['aria-label', 'title', 'hidden', 'inert', 'style', 'class'],
+    });
+  }
+
+  function reconcileHistoryLabel() {
+    const found = new Set();
+    if (isHistoryRoute()) {
+      for (const action of historyActions()) {
+        found.add(action.button);
+        describeAction(action.host, action.button, action.definition.label, labelledHistoryActions, historyLabelAttribute);
+        const record = labelledHistoryActions.get(action.button);
+        describeHistoryVisibleLabel(record, action.definition);
+        describeHistoryIconSlot(record, action.definition);
+      }
+    }
+    for (const [button, record] of labelledHistoryActions) {
+      if (found.has(button)) continue;
+      clearAttribute(record.title, 'title', record.title.applied);
+      clearAttribute(record.aria, 'aria-label', record.aria.applied);
+      if (record.visibleLabel) clearAttribute(record.visibleLabel, historyVisibleLabelAttribute, record.visibleLabel.applied);
+      if (record.iconSlot) clearAttribute(record.iconSlot, historyIconSlotAttribute, record.iconSlot.applied);
+      if (record.host.getAttribute(historyLabelAttribute) === '1') record.host.removeAttribute(historyLabelAttribute);
+      labelledHistoryActions.delete(button);
+    }
+  }
+
+  function downloadAction() {
+    const header = activeBrowse()?.querySelector('ytd-playlist-header-renderer');
+    if (!header || header.closest('ytd-miniplayer,ytd-watch-flexy')) return null;
+    const matches = [...header.querySelectorAll('button')].filter(button => {
+      const host = button.closest('ytd-button-renderer,yt-button-view-model,button-view-model') || button;
+      const label = [button, host].flatMap(node => [node.getAttribute('aria-label'), node.getAttribute('title'),
+        node.getAttribute('data-tooltip-text'), node.id, node.className, text(node)]).join(' ');
+      return /\bdownload\b/i.test(label);
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function reconcileDownloadLabel() {
+    const found = new Set();
+    if (isWatchLaterRoute()) {
+      const button = downloadAction();
+      if (button) {
+        found.add(button);
+        const host = button.closest('ytd-button-renderer,yt-button-view-model,button-view-model') || button;
+        describeAction(host, button, 'Download Watch Later', labelledDownloadActions, downloadLabelAttribute);
+      }
+    }
+    for (const [button, record] of labelledDownloadActions) {
+      if (found.has(button)) continue;
+      clearAttribute(record.title, 'title', record.title.applied);
+      clearAttribute(record.aria, 'aria-label', record.aria.applied);
+      if (record.host.getAttribute(downloadLabelAttribute) === '1') record.host.removeAttribute(downloadLabelAttribute);
+      labelledDownloadActions.delete(button);
+    }
+  }
+
+  function listRoot() {
+    const browse = activeBrowse();
+    if (!browse) return null;
+    const candidates = [...browse.querySelectorAll(legacyList)].filter(list => visibleNode(list) && !list.closest(excludedPlaylist));
+    if (candidates.length > 1) return null;
+    if (candidates.length === 1) {
+      const list = candidates[0], contents = list.querySelector(':scope > #contents') || list.querySelector('#contents');
+      return contents ? { list, contents, modern: false } : null;
+    }
+    const modern = [...browse.querySelectorAll('ytd-two-column-browse-results-renderer > #primary > ' + modernList)]
+      .filter(list => visibleNode(list) && !list.closest(excludedPlaylist) &&
+        [...list.querySelectorAll('yt-item-section-renderer yt-lockup-view-model')].some(isVideoLockup));
+    return modern.length === 1 ? { list: modern[0], contents: modern[0], modern: true } : null;
+  }
+
+  function searchHost(root) {
+    const browse = activeBrowse();
+    const secondary = browse?.querySelector('ytd-two-column-browse-results-renderer > #secondary');
+    const rect = secondary?.getBoundingClientRect?.();
+    const usableSecondary = visibleNode(secondary) && (!rect || rect.width >= 120);
+    if (usableSecondary && !secondary.contains(root.list) &&
+        !secondary.closest('ytd-miniplayer,ytd-playlist-panel-renderer,yt-playlist-panel-renderer,ytd-watch-flexy')) {
+      return { host: secondary, before: secondary.firstChild, placement: 'sidebar' };
+    }
+    const host = root.list.parentElement;
+    return host ? { host, before: root.list, placement: 'list' } : null;
+  }
+
+  function activeBrowse() {
+    const candidates = [...document.querySelectorAll('ytd-browse')].filter(visibleNode);
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function visibleNode(node) {
+    if (!node?.isConnected || node.closest('[hidden],[inert]')) return false;
+    const style = window.getComputedStyle?.(node);
+    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+  }
+
+  function rows(record) {
+    return [...record.contents.querySelectorAll(rowSelector)].filter(row => {
+      if (record.modern) return row.closest(modernList) === record.list &&
+        row.closest('yt-item-section-renderer') && !row.closest(excludedPlaylist) && isVideoLockup(row);
+      if (row.closest(legacyList) !== record.list) return false;
+      return !row.matches('yt-lockup-view-model') || !row.closest('ytd-playlist-video-renderer');
+    });
+  }
+
+  function isVideoLockup(row) {
+    return row.matches('yt-lockup-view-model') && Boolean(row.querySelector('a[href^="/watch?v="], a[href^="/shorts/"], a[href^="/live/"]'));
+  }
+
+  function rowSearchText(row) {
+    const selectors = [
+      '#video-title', '.yt-lockup-metadata-view-model__title', '.ytLockupMetadataViewModelTitle',
+      '#byline a', '#channel-name a', 'ytd-channel-name',
+      '.yt-content-metadata-view-model__metadata-row', '.ytContentMetadataViewModelMetadataRow',
+    ].join(',');
+    const fields = [...row.querySelectorAll(selectors)].map(text).filter(Boolean);
+    const value = fields.length ? fields.join(' ') : `${row.getAttribute('aria-label') || ''} ${text(row)}`;
+    return normalise(value).slice(0, 16384);
+  }
+
+  function applySearch(record) {
+    if (!record || searchRecord !== record || !record.ui.isConnected || !active() || !sameLibraryRoute(record.route)) return;
+    const query = normalise(record.input.value);
+    let noMatches = false;
+    if (query) {
+      const loaded = rows(record);
+      const hidden = new Set();
+      for (const row of loaded) {
+        if (rowSearchText(row).includes(query)) continue;
+        hidden.add(row);
+        if (row.getAttribute(searchHiddenAttribute) !== '1') row.setAttribute(searchHiddenAttribute, '1');
+      }
+      // YouTube can move a row out of the playlist while retaining its node.
+      for (const row of record.hiddenRows) {
+        if (!hidden.has(row)) row.removeAttribute(searchHiddenAttribute);
+      }
+      record.hiddenRows = hidden;
+      noMatches = loaded.length > 0 && hidden.size === loaded.length;
+    } else {
+      clearRows(record);
+    }
+    const statusHidden = !noMatches;
+    if (record.status.hidden !== statusHidden) {
+      record.status.textContent = noMatches ? `No loaded ${record.route.label} videos match your search.` : '';
+      record.status.hidden = statusHidden;
+    }
+    record.clear.hidden = !query;
+  }
+
+  function scheduleSearch() {
+    if (!active() || !searchRecord || searchFrame) return;
+    searchFrame = window.requestAnimationFrame(() => {
+      searchFrame = 0;
+      applySearch(searchRecord);
+    });
+  }
+
+  function clearRows(record) {
+    for (const row of record.hiddenRows) row.removeAttribute(searchHiddenAttribute);
+    record.hiddenRows.clear();
+  }
+
+  function releaseSearch() {
+    if (searchFrame) window.cancelAnimationFrame(searchFrame);
+    searchFrame = 0;
+    const record = searchRecord;
+    searchRecord = null;
+    if (!record) return;
+    record.observer?.disconnect();
+    record.surfaceObserver?.disconnect();
+    record.secondaryObserver?.disconnect();
+    record.secondaryResizeObserver?.disconnect();
+    clearRows(record);
+    record.status.remove();
+    record.ui.remove();
+  }
+
+  function observeSearchSurface(record) {
+    if (typeof MutationObserver !== 'function') return;
+    const columns = activeBrowse()?.querySelector('ytd-two-column-browse-results-renderer');
+    if (record.columns !== columns) {
+      record.surfaceObserver?.disconnect();
+      record.columns = columns || null;
+      record.surfaceObserver = null;
+      if (columns) {
+        record.surfaceObserver = new MutationObserver(records => {
+          if (!active() || searchRecord !== record || !sameLibraryRoute(record.route)) return;
+          if (records.some(change => change.type === 'childList')) scheduleReconcile();
+        });
+        record.surfaceObserver.observe(columns, { childList: true });
+      }
+    }
+    const secondary = columns?.querySelector(':scope > #secondary') || null;
+    if (record.secondary === secondary) return;
+    record.secondaryObserver?.disconnect();
+    record.secondaryResizeObserver?.disconnect();
+    record.secondary = secondary;
+    record.secondaryObserver = null;
+    record.secondaryResizeObserver = null;
+    if (secondary) {
+      record.secondaryObserver = new MutationObserver(records => {
+        if (!active() || searchRecord !== record || !sameLibraryRoute(record.route)) return;
+        if (records.some(change => change.type === 'attributes')) scheduleReconcile();
+      });
+      record.secondaryObserver.observe(secondary, {
+        attributes: true,
+        attributeFilter: ['class', 'hidden', 'inert', 'style'],
+      });
+      if (typeof ResizeObserver === 'function') {
+        record.secondaryResizeObserver = new ResizeObserver(() => {
+          if (active() && searchRecord === record && sameLibraryRoute(record.route)) scheduleReconcile();
+        });
+        record.secondaryResizeObserver.observe(secondary);
+      }
+    }
+  }
+
+  function createSearch(root, route, target, initialQuery = '', restoreFocus = null) {
+    const ui = document.createElement('form');
+    ui.id = route.searchId;
+    ui.className = searchClass;
+    ui.lang = 'en-GB';
+    ui.setAttribute(searchAttribute, '1');
+    ui.setAttribute(searchPlacementAttribute, target.placement);
+    ui.setAttribute('role', 'search');
+    ui.setAttribute('aria-label', `Search ${route.label}`);
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = `Search ${route.label}`;
+    input.setAttribute('aria-label', `Search ${route.label}`);
+    input.value = initialQuery;
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.hidden = true;
+    clear.title = `Clear ${route.label} search`;
+    clear.setAttribute('aria-label', `Clear ${route.label} search`);
+    clear.append(createIcon('M18.3 5.71 16.89 4.29 12 9.17 7.11 4.29 5.7 5.71 10.59 10.59 5.7 15.48 7.11 16.9 12 12 16.89 16.9 18.3 15.48 13.41 10.59z'));
+    ui.append(createIcon('M9.5 3a6.5 6.5 0 1 0 4.02 11.61l4.43 4.43 1.41-1.41-4.43-4.43A6.5 6.5 0 0 0 9.5 3m0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9'));
+    ui.append(input, clear);
+    const status = document.createElement('p');
+    status.id = `${route.searchId}-status`;
+    status.className = searchStatusClass;
+    status.hidden = true;
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    target.host.insertBefore(ui, target.before);
+    target.host.insertBefore(status, ui.nextSibling);
+    if (!ui.isConnected || !status.isConnected) {
+      ui.remove();
+      status.remove();
+      return null;
+    }
+    const record = {
+      ...root, ...target, route, ui, input, clear, status,
+      hiddenRows: new Set(),
+      observer: null, columns: null, secondary: null, surfaceObserver: null,
+      secondaryObserver: null, secondaryResizeObserver: null,
+    };
+    ui.addEventListener('submit', event => event.preventDefault());
+    input.addEventListener('input', scheduleSearch);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !input.value) return;
+      event.preventDefault();
+      input.value = '';
+      scheduleSearch();
+    });
+    clear.addEventListener('click', () => {
+      input.value = '';
+      input.focus({ preventScroll: true });
+      scheduleSearch();
+    });
+    if (typeof MutationObserver === 'function') {
+      record.observer = new MutationObserver(records => {
+        if (!active() || searchRecord !== record || !sameLibraryRoute(record.route)) return;
+        if (record.input.value && records.some(change => change.type !== 'childList' ||
+            change.addedNodes.length || change.removedNodes.length)) scheduleSearch();
+      });
+      record.observer.observe(root.contents, { childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ['aria-label', 'href'] });
+    }
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => {
+        if (!active() || searchRecord !== record || !sameLibraryRoute(record.route) || !input.isConnected) return;
+        input.focus({ preventScroll: true });
+        try {
+          input.setSelectionRange(restoreFocus.start, restoreFocus.end, restoreFocus.direction);
+        } catch {
+          // Search inputs may reject a selection while the native page is restoring focus.
+        }
+      });
+    }
+    return record;
+  }
+
+  function reconcileSearch() {
+    const route = libraryRoute();
+    if (!route || !active()) {
+      releaseSearch();
+      return;
+    }
+    const root = listRoot();
+    const target = root && searchHost(root);
+    if (!root || !target) {
+      releaseSearch();
+      return;
+    }
+    if (searchRecord && (searchRecord.list !== root.list || searchRecord.contents !== root.contents ||
+        searchRecord.route.key !== route.key || searchRecord.host !== target.host || !searchRecord.ui.isConnected)) {
+      const retainFilter = searchRecord.list === root.list && searchRecord.contents === root.contents &&
+        searchRecord.route.key === route.key;
+      const query = retainFilter ? searchRecord.input.value : '';
+      const restoreFocus = retainFilter && document.activeElement === searchRecord.input
+        ? {
+          start: searchRecord.input.selectionStart ?? query.length,
+          end: searchRecord.input.selectionEnd ?? query.length,
+          direction: searchRecord.input.selectionDirection || 'none',
+        }
+        : null;
+      releaseSearch();
+      searchRecord = createSearch(root, route, target, query, restoreFocus);
+    }
+    if (!searchRecord) searchRecord = createSearch(root, route, target);
+    if (searchRecord) {
+      observeSearchSurface(searchRecord);
+      applySearch(searchRecord);
+    }
+  }
+
+  function reconcile() {
+    if (disposed) return;
+    reconcileHistoryLabel();
+    observeHistoryActions();
+    reconcileDownloadLabel();
+    reconcileSearch();
+    if ((libraryRoute() && !searchRecord) ||
+        (isHistoryRoute() && labelledHistoryActions.size < 3)) scheduleRetry();
+    else cancelRetry();
+  }
+
+  function scheduleReconcile() {
+    if (!active() || reconcileFrame) return;
+    reconcileFrame = window.requestAnimationFrame(() => {
+      reconcileFrame = 0;
+      reconcile();
+    });
+  }
+
+  function cancelRetry() {
+    retryGeneration++;
+    if (retryTimer) window.clearTimeout(retryTimer);
+    retryTimer = 0;
+    retryCount = 0;
+  }
+
+  function scheduleRetry() {
+    if (!active() || retryTimer || retryCount >= 4) return;
+    const delays = [80, 220, 600, 1400];
+    const generation = retryGeneration;
+    const delay = delays[retryCount++];
+    retryTimer = window.setTimeout(() => {
+      retryTimer = 0;
+      if (generation !== retryGeneration || !active()) return;
+      scheduleReconcile();
+    }, delay);
+  }
+
+  function suspend() {
+    navigating = true;
+    if (reconcileFrame) window.cancelAnimationFrame(reconcileFrame);
+    reconcileFrame = 0;
+    cancelRetry();
+    releaseSearch();
+    releaseHistoryActionsObserver();
+    releaseLabelledActions(labelledHistoryActions, historyLabelAttribute);
+    releaseLabelledActions(labelledDownloadActions, downloadLabelAttribute);
+  }
+
+  function resume() {
+    navigating = false;
+    pageHidden = false;
+    cancelRetry();
+    scheduleReconcile();
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      if (searchFrame) window.cancelAnimationFrame(searchFrame);
+      if (reconcileFrame) window.cancelAnimationFrame(reconcileFrame);
+      searchFrame = reconcileFrame = 0;
+      cancelRetry();
+    } else scheduleReconcile();
+  }
+
+  function handleRendererStamped(event) {
+    if (!active() || !libraryRoute()) return;
+    const target = event?.target;
+    if (!target?.closest) return;
+    const stampedList = target.matches?.('ytd-playlist-video-list-renderer')
+      ? target
+      : target.closest('ytd-playlist-video-list-renderer');
+    if (!stampedList) return;
+    if (listRoot()?.list === stampedList) scheduleReconcile();
+  }
+
+  addStyle();
+  const listeners = [
+    ['yt-navigate-start', suspend],
+    ['yt-navigate-finish', resume],
+    ['yt-page-data-updated', scheduleReconcile],
+    ['yt-playlist-data-updated', scheduleReconcile],
+    ['pagehide', () => { pageHidden = true; suspend(); }],
+    ['pageshow', resume],
+    ['visibilitychange', handleVisibilityChange],
+    ['yt-rendererstamper-finished', handleRendererStamped],
+  ];
+  for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
+  reconcile();
+
+  return () => {
+    disposed = true;
+    if (reconcileFrame) window.cancelAnimationFrame(reconcileFrame);
+    reconcileFrame = 0;
+    cancelRetry();
+    releaseSearch();
+    releaseHistoryActionsObserver();
+    releaseLabelledActions(labelledHistoryActions, historyLabelAttribute);
+    releaseLabelledActions(labelledDownloadActions, downloadLabelAttribute);
+    document.getElementById(styleId)?.remove();
+    for (const [type, listener] of listeners) window.removeEventListener(type, listener, true);
+  };
 }]) {
       try { install(options); } catch { options.reportError(); }
     }
@@ -10112,7 +11329,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "commentCleaner",
-    "Comment Cleaner v1.31",
+    "Comment Cleaner v1.33",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -10921,25 +12138,51 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           return cachedUploaderPaths;
         };
 
+        const colourChildSelector = "span, yt-formatted-string, yt-attributed-string, .yt-core-attributed-string";
+        const ownedLinkStyles = new WeakMap();
         const setLinkColour = (link, colour) => {
-          if (link.dataset.iowColour !== colour) {
-            link.style.setProperty("color", colour, "important");
-            link.style.setProperty("-webkit-text-fill-color", colour, "important");
-            link.style.setProperty("font-weight", "700", "important");
-            link.style.setProperty("opacity", "1", "important");
-            link.dataset.iowColour = colour;
+          const desired = { color: colour, "-webkit-text-fill-color": colour, "font-weight": "700", opacity: "1" };
+          for (const node of [link, ...link.querySelectorAll(colourChildSelector)]) {
+            let state = ownedLinkStyles.get(node);
+            if (state?.link === link && state.colour === colour) continue;
+            if (!state) {
+              state = { properties: new Map() };
+              ownedLinkStyles.set(node, state);
+            }
+            state.link = link;
+            state.colour = colour;
+            for (const [name, next] of Object.entries(desired)) {
+              const value = node.style.getPropertyValue(name);
+              const priority = node.style.getPropertyPriority(name);
+              let saved = state.properties.get(name);
+              if (!saved || saved.applied !== value || priority !== "important") {
+                saved = { value, priority };
+                state.properties.set(name, saved);
+              }
+              node.style.setProperty(name, next, "important");
+              saved.applied = node.style.getPropertyValue(name);
+            }
           }
+          if (link.dataset.iowColour !== colour) link.dataset.iowColour = colour;
+        };
 
-          link
-            .querySelectorAll(
-              "span, yt-formatted-string, yt-attributed-string, .yt-core-attributed-string",
-            )
-            .forEach((child) => {
-              child.style.setProperty("color", colour, "important");
-              child.style.setProperty("-webkit-text-fill-color", colour, "important");
-              child.style.setProperty("font-weight", "700", "important");
-              child.style.setProperty("opacity", "1", "important");
-            });
+        const restoreLinkNode = (node, state) => {
+          for (const [name, saved] of state.properties) {
+            if (node.style.getPropertyValue(name) !== saved.applied || node.style.getPropertyPriority(name) !== "important") continue;
+            if (saved.value) node.style.setProperty(name, saved.value, saved.priority);
+            else node.style.removeProperty(name);
+          }
+          ownedLinkStyles.delete(node);
+        };
+        const releaseLinkColour = (link) => {
+          const owner = ownedLinkStyles.get(link);
+          if (!owner || owner.link !== link) return;
+          for (const node of [link, ...link.querySelectorAll(colourChildSelector)]) {
+            const state = ownedLinkStyles.get(node);
+            if (state?.link !== link) continue;
+            restoreLinkNode(node, state);
+          }
+          if (link.dataset.iowColour === owner.colour) delete link.dataset.iowColour;
         };
 
         const colourCommentAuthorLinks = (root = document, queryScopes) => {
@@ -11273,6 +12516,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               continue;
             }
             if (mutation.type === "attributes") {
+              if (mutation.attributeName === "href" && ownedLinkStyles.has(mutation.target) &&
+                  !mutation.target.matches(COMMENT_AUTHOR_SELECTOR)) releaseLinkColour(mutation.target);
               if (
                 mutation.attributeName === "video-id" &&
                 mutation.target === getActiveWatchFlexy()
@@ -11301,6 +12546,16 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             }
 
             collectCommentsVideoGuardRoots(commentsVideoGuardRoots, mutation.target);
+            if (CONFIG.colourCommenters && mutation.removedNodes.length) {
+              const link = mutation.target.closest?.('a');
+              if (link && ownedLinkStyles.has(link)) for (const removed of mutation.removedNodes) {
+                if (removed.nodeType !== 1) continue;
+                for (const node of [removed, ...removed.querySelectorAll(colourChildSelector)]) {
+                  const state = ownedLinkStyles.get(node);
+                  if (state?.link === link && !link.contains(node)) restoreLinkNode(node, state);
+                }
+              }
+            }
             if (containsUploaderSource(mutation.target) ||
                 Array.from(mutation.removedNodes).some(containsUploaderSource)) {
               invalidateCachedUploaderPaths();
@@ -11439,7 +12694,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "feedUiCleaner",
-    "Feed UI Cleaner v2.35",
+    "Feed UI Cleaner v2.42",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -11560,8 +12815,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           'ytd-miniplayer-ui',
           'ytd-miniplayer-bar-renderer',
           'ytd-playlist-panel-renderer',
+          'yt-playlist-panel-renderer',
           'ytd-playlist-panel-video-renderer',
-          'ytd-playlist-panel-renderer #items',
+          'yt-playlist-panel-video-renderer',
           'ytd-watch-flexy[playlist]',
           'ytd-engagement-panel-section-list-renderer',
         ].join(',');
@@ -11615,14 +12871,23 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           // Match a native label, not a channel name or prose mentioning membership.
           const memberLabel = value => /^members(?:\s+|-)(?:only|first)$/i.test(String(value || '').replace(/\s+/g, ' ').trim());
           const creatorLink = MEMBERS_ONLY_CREATOR_LINK_SELECTOR;
-          if (el.closest(creatorLink)) return false;
+          if (el.closest(creatorLink) || el.closest('[hidden]')) return false;
           // Native semantic badges remain authoritative before their translated
           // label arrives. Generic badge hosts still require a precise label below.
           if (el.classList.contains('badge-style-type-members-only')) return true;
-          return (!el.querySelector(creatorLink) && memberLabel(getText(el))) || memberLabel(el.getAttribute('aria-label')) ||
-            memberLabel(el.getAttribute('title')) ||
+          const label = node => {
+            if (memberLabel(node.getAttribute('aria-label')) || memberLabel(node.getAttribute('title'))) return true;
+            if (!node.querySelector('[hidden]')) return memberLabel(getText(node));
+            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+            let visibleText = '';
+            while (walker.nextNode()) {
+              if (!walker.currentNode.parentElement?.closest('[hidden]')) visibleText += walker.currentNode.nodeValue;
+            }
+            return memberLabel(visibleText);
+          };
+          return (!el.querySelector(creatorLink) && label(el)) ||
             [...el.querySelectorAll('.ytContentMetadataViewModelMetadataText,.yt-content-metadata-view-model__metadata-text')]
-              .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && memberLabel(getText(node)));
+              .some(node => !node.closest(creatorLink) && !node.querySelector(creatorLink) && !node.closest('[hidden]') && label(node));
         }
 
         function getFilterProfileName() {
@@ -11745,6 +13010,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         }
 
         function buildFilteredCardCss() {
+          // A renderer can be moved during navigation while observation is suspended.
+          const eligibleCard = `:where(${FEED_SURFACE_SELECTOR}) :not(:where(${EXCLUDED_ANCESTOR_SELECTORS}) *)`;
           return `
           [${CONFIRMATION_ATTRIBUTE}="1"] > :not(.ytms-channel-filter-confirmation) {
             display: none !important;
@@ -11785,11 +13052,11 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             outline-offset: 2px;
           }
 
-          [${PERMANENT_HIDDEN_FLAG}="1"] {
+          ${eligibleCard}[${PERMANENT_HIDDEN_FLAG}="1"] {
             display: none !important;
           }
 
-          :root:not([${FILTER_REVEAL_ATTRIBUTE}="1"]) [${HIDDEN_FLAG}="1"] {
+          :root:not([${FILTER_REVEAL_ATTRIBUTE}="1"]) ${eligibleCard}[${HIDDEN_FLAG}="1"] {
             display: none !important;
           }
 
@@ -12275,7 +13542,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           const element = mutation.target?.nodeType === Node.ELEMENT_NODE
             ? mutation.target : mutation.target?.parentElement;
           const surface = element?.closest?.(
-            '.ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls',
+            '.ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls, .html5-video-container, .ytp-spinner',
           );
           const player = surface?.closest('.html5-video-player');
           return Boolean(player?.closest('ytd-video-preview'));
@@ -12294,6 +13561,10 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               ? mutation.target
               : mutation.target?.parentElement;
           if (!element) return false;
+          if (mutation.attributeName === 'hidden') {
+            return Boolean(getFilterProfile().membersOnly && element.closest(FEED_SURFACE_SELECTOR) &&
+              (element.closest(MEMBERS_ONLY_SELECTOR) || element.querySelector(MEMBERS_ONLY_SELECTOR)));
+          }
           if (['class', 'title', 'aria-label'].includes(mutation.attributeName)) {
             const { membersOnly, mixes } = getFilterProfile();
             if (membersOnly && element.closest(MEMBERS_ONLY_SELECTOR) || mixes && element.closest(MIX_BADGE_SELECTOR)) return true;
@@ -12347,8 +13618,15 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             }
 
             const mutationRoot = getMutationCleanUpRoot(mutation);
-            if (mutationRoot) scheduleCleanUp(mutationRoot);
-            if (mutationRoot && [...mutation.addedNodes, ...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE)) toggleDirty = true;
+            // A badge change affects its enclosing card. A structural insertion
+            // into a grid affects the added subtree, not its existing siblings.
+            const inCard = mutationRoot && getCardContainer(mutationRoot);
+            if (inCard) scheduleCleanUp(mutationRoot);
+            // Card-local metadata is reclassified above. A child carrying its own
+            // filter marker can change the summary independently of the parent.
+            if (mutationRoot && !toggleDirty) toggleDirty = [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+              node.nodeType === Node.ELEMENT_NODE && (!inCard || node.matches(FILTERED_CARD_SELECTOR) ||
+                (node.firstElementChild && node.querySelector(FILTERED_CARD_SELECTOR))));
             for (const node of mutation.removedNodes) {
               if (node.nodeType !== Node.ELEMENT_NODE) continue;
               // Detached feed roots lose their contextual ancestor selectors. Match
@@ -12366,7 +13644,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               const cleanUpRoot = getAddedNodeCleanUpRoot(node);
               if (cleanUpRoot) {
                 scheduleCleanUp(cleanUpRoot);
-                if (node.nodeType === Node.ELEMENT_NODE) toggleDirty = true;
+                if (!mutationRoot && node.nodeType === Node.ELEMENT_NODE) toggleDirty = true;
               }
             });
           }
@@ -12380,6 +13658,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             'href',
             'class',
             'aria-label',
+            'hidden',
             'title',
             'datetime',
             'overlay-style',
@@ -12431,6 +13710,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         function reconcileRoute(event) {
           reconcileConfirmations(document);
           const nextRoute = routeKey();
+          if (currentRoute !== nextRoute || event?.type === 'pageshow') {
+            releaseRemovedFeedOwnership(document.documentElement);
+          }
           const fullRefresh = event?.type !== 'yt-page-data-updated' || !observerActive || currentRoute !== nextRoute;
           if (event?.type === 'yt-navigate-finish' || currentRoute !== nextRoute) resetTemporaryReveal();
           currentRoute = nextRoute;
@@ -14056,7 +15338,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "playerPreferencesLite",
-    "Player Preferences Lite v1.141",
+    "Player Preferences Lite v1.142",
     "document-idle",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -19002,7 +20284,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         function isPreviewPlaybackMutation(mutation) {
           const surface = closestElement(
             mutation.target,
-            ".ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls",
+            ".ytp-progress-bar-container, .ytp-caption-window-container, .ytp-chrome-controls, .html5-video-container, .ytp-spinner",
           );
           const player = surface?.closest(".html5-video-player");
           return Boolean(player?.closest("ytd-video-preview"));
@@ -19714,12 +20996,13 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           let watchDynamicRootsChanged = false;
           let videoMirrorChanged = false;
           let liveChatChanged = false;
+          const discoverCollapsibleChat = CONFIG.hideChat && liveChatOverride === null && isWatchPath();
 
           for (const mutation of mutations) {
             videoMirrorChanged ||= mutationAffectsVideoMirror(mutation);
             liveChatChanged ||= mutationAffectsLiveChat(mutation);
             if (
-              mutation.addedNodes &&
+              discoverCollapsibleChat && mutation.addedNodes &&
               mutation.addedNodes.length &&
               Array.from(mutation.addedNodes).some(nodeContainsLiveChatFrame)
             ) {
@@ -22054,7 +23337,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.105",
+    "Watch Layout Cleaner v1.115",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -23024,10 +24307,14 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           const entries = new WeakMap();
           const sheets = new WeakMap();
           const menuBindings = new WeakMap();
+          let pendingMenuWrites = new WeakMap();
           const pendingIcons = new Set();
           const nativeQueueEntries = new WeakMap();
+          const nativeGestures = new WeakMap();
           const appendReservations = new WeakMap();
           const knownAppendReservations = new Map();
+          const nativeAppendProofs = new WeakMap();
+          let knownAppendCount = 0;
           const unownedAppendReservations = new Set();
           const removalReservations = new WeakMap();
           const idleAttempts = new WeakMap();
@@ -23067,16 +24354,31 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             return { endpoint, command, videoId: ids[0], sourceItem: item, signature: boundedMenuSignature(command) };
           }
 
-          function isVisibleQueuePlayer(player) {
-            if (!player.isConnected || !player.getClientRects().length ||
-                player.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
-            const box = player.getBoundingClientRect();
-            if (!(box.width > 0 && box.height > 0)) return false;
-            for (let node = player; node; node = node.parentElement) {
+          function singleQueueCommand(items) {
+            if (!Array.isArray(items) || items.length > 60) return null;
+            let entry = null;
+            for (const item of items) {
+              const candidate = queueCommand(item);
+              if (!candidate) continue;
+              if (entry) return null;
+              entry = candidate;
+            }
+            return entry;
+          }
+
+          function visibleQueueAncestors(element) {
+            if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+            for (let node = element; node; node = node.parentElement) {
               const css = getComputedStyle(node);
               if (css.display === 'none' || ['hidden', 'collapse'].includes(css.visibility) || Number(css.opacity) === 0) return false;
             }
             return true;
+          }
+
+          function isVisibleQueuePlayer(player) {
+            if (!player.isConnected || !player.getClientRects().length) return false;
+            const box = player.getBoundingClientRect();
+            return box.width > 0 && box.height > 0 && visibleQueueAncestors(player);
           }
 
           function activeVideoId() {
@@ -23103,6 +24405,21 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               !player.closest('ytd-video-preview, ytd-reel-video-renderer') &&
               isVisibleQueuePlayer(player) &&
               player.getVideoData?.()?.video_id === anchor);
+          }
+
+          function watchPlayerHost(player) {
+            if (!player || location.pathname !== '/watch') return null;
+            const inline = player.closest('ytd-watch-flexy');
+            if (inline) return inline;
+            if (player.parentElement !== document.body || !document.body.classList.contains('ytsmp-scroll-miniplayer-active')) return null;
+            // The scrolling player is portalled to body. Its spacer intentionally
+            // has visibility:hidden and aria-hidden; its rendered parent owns it.
+            const spacers = [...document.querySelectorAll('#ytsmp-player-placeholder')].filter(node => {
+              const rect = node.getBoundingClientRect();
+              return !node.hidden && !node.hasAttribute('inert') && rect.width > 0 && rect.height > 0 &&
+                node.parentElement && visibleQueueAncestors(node.parentElement);
+            });
+            return spacers.length === 1 ? spacers[0] : null;
           }
 
           const sameIds = (left, right) => left.length === right.length && left.every((id, i) => id === right[i]);
@@ -23249,29 +24566,52 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             const mini = player?.closest("ytd-miniplayer");
             const miniQueue = miniplayerQueue(player, anchor);
             if (missingListId && miniQueue?.unavailable) return { unavailable: true };
-            const nativePlaylist = missingListId ? miniQueue?.ids : player?.getPlaylist?.();
+            const nativePlaylist = missingListId && mini ? miniQueue?.ids : player?.getPlaylist?.();
+            const watchHost = missingListId && !mini && watchPlayerHost(player);
+            const watch = watchHost && watchHost.closest('ytd-watch-flexy');
+            const candidates = [];
+            let collapsedPanel;
             for (const panel of document.querySelectorAll(panelSelector)) {
               if (!panel.isConnected) continue;
-              const ownedMini = mini && panel.closest("ytd-miniplayer") === mini;
-              // YouTube retains the watch panel after adopting its queue into the
-              // miniplayer. A hidden copy outside that player is not a second queue,
-              // even when its stale model still has the same playlist ID. Exclude it
-              // before accessing native bindings, which may already be disposed.
-              if (mini && !ownedMini && !isVisibleQueuePlayer(panel)) continue;
+              const panelMini = panel.closest("ytd-miniplayer");
+              const foreignSurface = panelMini !== (mini || null);
+              if (!foreignSurface || isVisibleQueuePlayer(panel)) {
+                candidates.push({ panel, foreignSurface });
+              } else if (!mini && panelMini && activeListId?.startsWith('TLPQ') &&
+                  player.closest('ytd-app') && panelMini.closest('ytd-app') === player.closest('ytd-app') &&
+                  (panel.hidden || getComputedStyle(panel).display === 'none') && visibleQueueAncestors(panel.parentElement)) {
+                // Some layouts keep the only collapsed queue in a separate floating
+                // host. A hidden host is a retained surface, not this arrangement.
+                collapsedPanel = collapsedPanel === undefined ? panel : null;
+              }
+            }
+            if (collapsedPanel) candidates.push({ panel: collapsedPanel, foreignSurface: true });
+            for (const { panel, foreignSurface } of candidates) {
+              const shared = panel === collapsedPanel;
+              if (shared && queues.length) continue; // Prefer the active surface without touching a discarded binding.
+              const ownedMini = mini && !foreignSurface;
               const owner = controller(panel);
               const data = owner?.data;
               if (typeof data?.playlistId !== "string" || !data.playlistId.startsWith("TLPQ")) continue;
+              if (foreignSurface && !shared) return { unavailable: true };
               if (missingListId && ownedMini && !miniQueue?.mini) return { unavailable: true };
               if (!panel.getClientRects().length && data.playlistId !== activeListId && !ownedMini) continue;
-              // Visible panels can also belong to a previous queue during navigation.
-              // On Home the native miniplayer reports no playlist ID. Only its own
-              // panel, with the player's exact ordered video IDs, can identify it.
-              if (data.playlistId !== activeListId && !(missingListId && ownedMini)) return { unavailable: true };
+              // Watch and the Home miniplayer can both omit the player playlist ID.
+              // On Watch require a visible panel in the active player's own watch
+              // component, with independent order and index evidence below.
+              const ownedWatch = watch && panel.closest('ytd-watch-flexy') === watch && isVisibleQueuePlayer(panel);
+              if (data.playlistId !== activeListId && !(missingListId && (ownedMini || ownedWatch))) return { unavailable: true };
+              if (ownedWatch) {
+                const routeList = new URLSearchParams(location.search).get('list');
+                if ((routeList && routeList !== data.playlistId) || !Array.isArray(nativePlaylist) || !nativePlaylist.length ||
+                    nativePlaylist.length > 1000 || !nativePlaylist.every(validId)) return { unavailable: true };
+              }
               if (!Array.isArray(data.contents) || data.contents.length > 1000 || owner.canReorder === false) {
                 return { unavailable: true };
               }
               const videos = data.contents.map(item => item.playlistPanelVideoRenderer);
               if (!videos.length || videos.some(video => !validId(video?.videoId))) return { unavailable: true };
+              if (shared && (!Array.isArray(nativePlaylist) || !sameIds(videos.map(video => video.videoId), nativePlaylist))) return { unavailable: true };
               if (uniqueVideos && (!Array.isArray(nativePlaylist) || !nativePlaylist.length || nativePlaylist.length > 1000 ||
                   nativePlaylist.some(id => !validId(id)))) return { unavailable: true };
               if (uniqueVideos && (data.playlistId.length > 1024 || videos.some(video =>
@@ -23289,7 +24629,12 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               }
               if (!Number.isInteger(currentIndex) || videos[currentIndex]?.videoId !== anchor ||
                   (Number.isInteger(data.totalVideos) && data.totalVideos > videos.length)) return { unavailable: true };
-              const queue = { panel, owner, data, videos, currentIndex, listId: data.playlistId, playerListId: activeListId, mini: ownedMini ? mini : null };
+              const queue = { panel, owner, data, videos, currentIndex, listId: data.playlistId, playerListId: activeListId, mini: ownedMini ? mini : null,
+                watchBinding: ownedWatch ? { watch, host: watchHost, player, panel, owner } : null };
+              if (ownedWatch && (player.getPlaylistIndex?.() !== currentIndex ||
+                  videos.filter(video => video.videoId === anchor).length !== 1 &&
+                  (!uniqueVideos || !sameIds(videos.map(video => video.videoId), nativePlaylist) ||
+                    new Set(videos.map(video => video.playlistSetVideoId)).size !== videos.length || !reorderRows(queue)))) return { unavailable: true };
               if (videos.filter(video => video.videoId === anchor).length !== 1) {
                 const index = uniqueVideos ? player?.getPlaylistIndex?.() : undefined;
                 if (!uniqueVideos || !(Number.isInteger(index) && index === currentIndex && Array.isArray(nativePlaylist) &&
@@ -23297,8 +24642,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                     ![pending?.removal, pending?.uniquenessProof, confirmedMiniOrders.get(player)]
                       .some(proof => uniqueOrderProof(queue, player, nativePlaylist, proof))) return { unavailable: true };
               }
-              if (missingListId && !sameIds(videos.map(video => video.videoId), miniQueue.ids) &&
-                  !allowsLaggingPlayerOrder(queue, player, anchor, miniQueue.ids, recovery)) return { unavailable: true };
+              if (missingListId && !sameIds(videos.map(video => video.videoId), nativePlaylist) &&
+                  !allowsLaggingPlayerOrder(queue, player, anchor, nativePlaylist, recovery)) return { unavailable: true };
               // A known queue ID does not prove that a retained panel has the current
               // order. Honour an independently readable native order, allowing only
               // this operation's exact captured append/reorder when that API lags.
@@ -23312,7 +24657,10 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 for (const video of videos) {
                   reservations?.get(queue.listId)?.delete(video.videoId);
                   reservations?.get('')?.delete(video.videoId);
-                  knownAppendReservations.get(queue.listId)?.delete(video.videoId);
+                  if (knownAppendReservations.get(queue.listId)?.delete(video.videoId)) knownAppendCount--;
+                  if (nativeAppendProofs.get(player)?.get(video.videoId)?.listId === queue.listId) {
+                    nativeAppendProofs.get(player).delete(video.videoId);
+                  }
                   unownedAppendReservations.delete(video.videoId);
                 }
                 for (const [key, ids] of reservations || []) if (!ids.size) reservations.delete(key);
@@ -23329,9 +24677,16 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             // is unavailable or empty. On watch, a non-empty native playlist also
             // proves an existing queue. Neither can append safely without a panel
             // that can verify and reorder the addition.
-            if (!queues.length && activeListId?.startsWith("TLPQ") &&
-                (mini || (Array.isArray(nativePlaylist) && nativePlaylist.length > 0))) return { unavailable: true };
+            if (!queues.length && ((activeListId?.startsWith("TLPQ") &&
+                (mini || (Array.isArray(nativePlaylist) && nativePlaylist.length > 0))) ||
+                (missingListId && !mini && Array.isArray(nativePlaylist) && nativePlaylist.length > 0))) return { unavailable: true };
             return queues.length > 1 ? { unavailable: true } : queues[0] || null;
+          }
+
+          function queueDragActive(owner) {
+            const reorder = owner.ytReorderableController;
+            return reorder && Object.getOwnPropertyNames(reorder).some(name =>
+              name.endsWith("dragListGroup") && reorder[name]?.isDragging?.());
           }
 
           function reorderRows(queue) {
@@ -23343,9 +24698,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                   return items.childNodes[i] !== row || data?.videoId !== queue.videos[i].videoId ||
                     !data?.playlistSetVideoId || data.playlistSetVideoId !== queue.videos[i].playlistSetVideoId;
                 })) return null;
-            const reorder = queue.owner.ytReorderableController;
-            if (reorder && Object.getOwnPropertyNames(reorder).some(name =>
-              name.endsWith("dragListGroup") && reorder[name]?.isDragging?.())) return null;
+            if (queueDragActive(queue.owner)) return null;
             return { items, rows };
           }
 
@@ -23357,12 +24710,12 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             }
             if (reservations === appendReservations && typeof listId === 'string' && listId.startsWith('TLPQ')) {
               let ids = knownAppendReservations.get(listId);
-              if (!ids) {
-                if (knownAppendReservations.size >= 4) return false;
-                knownAppendReservations.set(listId, ids = new Set());
-              }
-              if (ids.has(videoId) || ids.size >= 1000) return false;
+              // Bound outstanding video additions across queues. An unconfirmed
+              // addition in an old queue must not consume a whole queue's capacity.
+              if (knownAppendCount >= 4000 || ids && (ids.has(videoId) || ids.size >= 1000)) return false;
+              if (!ids) knownAppendReservations.set(listId, ids = new Set());
               ids.add(videoId);
+              knownAppendCount++;
               const creation = appendReservations.get(player)?.get('');
               if (creation?.has(videoId) || unownedAppendReservations.has(videoId)) {
                 // Bind an uncertain creation to the first verified queue used by a
@@ -23386,7 +24739,34 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             return true;
           }
 
-          function uniqueQueueStep(queue, player, operation) {
+          function reserveNativeTail(player, queue, listId, videoId, playlist, stillCurrent) {
+            // An unowned or creation request has no trustworthy unchanged-order
+            // proof. Keep its ambiguity guard. For a known native queue, only a new
+            // user gesture after the confirmation window can use the exact proof.
+            let proof = null, attempts;
+            if (player && queue?.owner && typeof listId === 'string' && queue.listId === listId && listId.startsWith('TLPQ') && reorderRows(queue) &&
+                player.getPlaylistIndex?.() === queue.currentIndex && sameIds(queue.videos.map(video => video.videoId), playlist)) {
+              const entries = queueEntries(queue.videos);
+              if (entries.every(entry => entry.playlistSetVideoId) && new Set(entries.map(entry => entry.playlistSetVideoId)).size === entries.length) {
+                proof = { ...captureOrderProof(queue, player, entries, playlist), deadline: Date.now() + 8000 };
+                attempts = nativeAppendProofs.get(player);
+              }
+            }
+            const prior = attempts?.get(videoId);
+            const retry = proof && prior && Date.now() >= prior.deadline &&
+              knownAppendReservations.get(listId)?.has(videoId) && prior.playerIndex === proof.playerIndex &&
+              uniqueOrderProof(queue, player, playlist, prior);
+            if (!stillCurrent() || (!retry && !reserveAppend(player, listId, videoId))) return false;
+            if (proof) {
+              if (!attempts) nativeAppendProofs.set(player, attempts = new Map());
+              // Retry evidence is optional. Bound it without releasing any guard.
+              if (!attempts.has(videoId) && attempts.size >= 16) attempts.delete(attempts.keys().next().value);
+              attempts.set(videoId, proof);
+            }
+            return true;
+          }
+
+          function uniqueQueueStep(queue, player, operation, verificationOnly = false) {
             const entries = queueEntries(queue.videos), binding = reorderRows(queue);
             if (!binding || entries.some(entry => typeof entry.playlistSetVideoId !== 'string' || !entry.playlistSetVideoId) ||
                 new Set(entries.map(entry => entry.playlistSetVideoId)).size !== entries.length) return false;
@@ -23403,7 +24783,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             }
             if (operation.removal) {
               if (sameEntries(entries, operation.removal.expectedEntries)) {
-                removalReservations.get(player)?.get(queue.listId)?.delete(operation.removal.removedEntryId);
+                const queues = removalReservations.get(player);
+                const reserved = queues?.get(queue.listId);
+                if (reserved?.delete(operation.removal.removedEntryId) && !reserved.size) queues.delete(queue.listId);
                 operation.uniquenessProof = operation.removal;
                 operation.removal = null;
                 operation.removed = (operation.removed || 0) + 1;
@@ -23424,6 +24806,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               return kept.get(entry.videoId) !== entry.playlistSetVideoId;
             });
             if (!duplicate) return true;
+            if (verificationOnly) return false;
             const expectedEntries = entries.filter(entry => entry.playlistSetVideoId !== duplicate.playlistSetVideoId);
             operation.removal = { ...captureOrderProof(queue, player, expectedEntries, player.getPlaylist?.()), beforeEntries: entries,
               removedEntryId: duplicate.playlistSetVideoId };
@@ -23469,11 +24852,12 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 const signature = JSON.stringify([queue.listId, queue.currentIndex, queueEntries(queue.videos)]);
                 const attempted = idleAttempts.get(queue.panel);
                 if (attempted?.owner === queue.owner && attempted.player === player && attempted.signature === signature) return;
-                const operation = pending = { anchor, videoId: null, mode: 'normalise', player, listId: queue.listId, mini: queue.mini,
+                const operation = pending = { anchor, videoId: null, mode: 'normalise', player, listId: queue.listId, mini: queue.mini, watchBinding: queue.watchBinding,
                   idleSignature: signature,
                   generation: ++operationGeneration, observer: observeQueue(), moveQueued: false, frame: 0,
                   deadline: Date.now() + 8000, timer: 0 };
                 operation.timer = setTimeout(() => {
+                  if (pending === operation && operation.removal) tryMoveNext(true);
                   if (pending === operation) finish('Duplicate cleanup was not confirmed. Please check the queue.');
                 }, 8000);
                 scheduleMove();
@@ -23518,9 +24902,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               if (!queue || queue.panel !== panel || queue.owner !== owner || queue.listId !== listId || queue.currentIndex !== currentIndex ||
                   queue.videos.length !== entries.length || queue.videos.some((video, index) =>
                     video.videoId !== entries[index].videoId || video.playlistSetVideoId !== entries[index].playlistSetVideoId)) return;
-              const reorder = owner.ytReorderableController;
-              if (reorder && Object.getOwnPropertyNames(reorder).some(name =>
-                name.endsWith('dragListGroup') && reorder[name]?.isDragging?.())) return;
+              if (queueDragActive(owner)) return;
               if (!sameIds([...items.childNodes], expected) || rows.some((original, index) => {
                 const data = controller(original)?.data;
                 return controller(original) !== rowOwners[index] || data?.videoId !== entries[index].videoId ||
@@ -23552,13 +24934,16 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             if (message) notify(message);
           }
 
-          function tryMoveNext() {
+          function tryMoveNext(verificationOnly = false) {
             if (!pending) return;
             const operation = pending;
             try {
-              if (uniqueVideos && operation.deadline && Date.now() >= operation.deadline) {
-                finish('The queue update was not fully confirmed. Please check the queue.', true); return;
+              if (!verificationOnly && uniqueVideos && operation.deadline && Date.now() >= operation.deadline) {
+                tryMoveNext(true);
+                if (pending === operation) finish('The queue update was not fully confirmed. Please check the queue.', true);
+                return;
               }
+              if (verificationOnly && !operation.committed && !operation.removal) return;
               const playing = activeVideoId();
               // Native player adoption can briefly fade the sole player, or expose
               // both retained hosts. Unknown visibility is not a playback change.
@@ -23572,9 +24957,19 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               if (uniqueVideos && (player?.classList.contains('ad-showing') || player?.classList.contains('ad-interrupting') ||
                   operation.mode === 'normalise' && document.hidden)) return;
               const activeListId = player?.getPlaylistId?.();
+              const watchBinding = operation.watchBinding;
+              if (watchBinding) {
+                const host = watchPlayerHost(player);
+                if (watchBinding.player !== player || host?.closest('ytd-watch-flexy') !== watchBinding.watch ||
+                    watchBinding.panel.closest('ytd-watch-flexy') !== watchBinding.watch ||
+                    (host !== watchBinding.host && host !== watchBinding.watch && watchBinding.host !== watchBinding.watch)) {
+                  finish("The queue changed; no item was moved."); return;
+                }
+                watchBinding.host = host;
+              }
               if (operation.listId && activeListId !== operation.listId &&
-                  !((activeListId == null || activeListId === "") && operation.mini &&
-                    player?.closest("ytd-miniplayer") === operation.mini)) {
+                  !((activeListId == null || activeListId === "") && (watchBinding ||
+                    operation.mini && player?.closest("ytd-miniplayer") === operation.mini))) {
                 finish("The queue changed; no item was moved.");
                 return;
               }
@@ -23626,6 +25021,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 return;
               }
               if (!queue || queue.unavailable || queue.awaitingPanel) return;
+              if (watchBinding && (queue.panel !== watchBinding.panel || queue.owner !== watchBinding.owner)) {
+                finish("The queue changed; no item was moved."); return;
+              }
               if (operation.restore) {
                 const proof = operation.restore;
                 if (queue.mini !== proof.mini || queue.listId !== proof.listId ||
@@ -23657,7 +25055,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 return;
               }
               const currentIndex = queue.currentIndex;
-              if (uniqueVideos && !operation.committed && !uniqueQueueStep(queue, player, operation)) return;
+              if (uniqueVideos && !operation.committed && !uniqueQueueStep(queue, player, operation, verificationOnly)) return;
               if (uniqueVideos && operation.mode === 'normalise') {
                 finish(operation.removed ? 'Removed duplicate queue entries' : undefined); return;
               }
@@ -23683,6 +25081,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 if (pending !== operation) return;
                 finish(operation.mode === 'tail' ? 'Queued at the end' : "Playing next in queue"); return;
               }
+              if (verificationOnly) return;
               const matches = queue.videos.flatMap((video, index) => video.videoId === operation.videoId ? [index] : []);
               if (!matches.length) return;
               if (matches.length > 1) {
@@ -23812,7 +25211,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           }
 
           function queueExpansionControl(queue) {
-            const toggles = queue?.mini ? [...queue.mini.querySelectorAll("ytd-miniplayer-info-bar button[aria-expanded]")]
+            const toggles = queue?.mini ? [...queue.mini.querySelectorAll('ytd-miniplayer-info-bar button[aria-expanded]:not([aria-haspopup="menu"])')]
               .filter(button => button.closest("ytd-miniplayer") === queue.mini && isVisibleQueuePlayer(button)) : [];
             return toggles.length === 1 && ['true', 'false'].includes(toggles[0].getAttribute('aria-expanded')) ? toggles[0] : null;
           }
@@ -23849,7 +25248,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             scheduleMove();
           }
 
-          function begin(entry, popup, activation = menuActivation, mode = 'next', retried = false) {
+          function begin(entry, popup, activation = menuActivation, mode = 'next', retried = false, nativeTailRow = null) {
             if (entry.used === activation) return;
             if (navigating || pageSuspended) {
               notify("YouTube is changing pages. Reopen the menu once it finishes.");
@@ -23897,6 +25296,34 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             if (uniqueVideos && anchor && !queue && activePlayer(anchor)?.getPlaylistId?.()?.startsWith('TLPQ')) {
               notify('The queue is still updating. Nothing was added; please try again.'); return;
             }
+            if (nativeTailRow) {
+              const player = anchor && activePlayer(anchor);
+              const playlist = player && player.getPlaylist?.();
+              const listId = player && player.getPlaylistId?.();
+              const ids = queue?.videos?.map(video => video.videoId) || queue?.ids;
+              const freshQueue = !queue && (!anchor || ((!listId || !listId.startsWith('TLPQ')) &&
+                (playlist == null || Array.isArray(playlist) && playlist.length === 0)));
+              const freshEntry = ids && Array.isArray(playlist) && sameIds(ids, playlist) &&
+                !ids.includes(entry.videoId) && new Set(ids).size === ids.length &&
+                (queue.owner ? !queueDragActive(queue.owner) : typeof listId === 'string' && listId.startsWith('TLPQ'));
+              if (freshQueue || freshEntry) {
+                // The original tail row already knows how to add this item. Preserve
+                // the trusted activation even if there is no exposed command router
+                // or the panel has not rendered every draggable row.
+                const item = queueMenuBindings.get(nativeTailRow, popup)?.item;
+                const current = item === entry.sourceItem && queueCommand(item);
+                if (!current || current.endpoint !== entry.endpoint || current.command !== entry.command || current.signature !== entry.signature) {
+                  notify('This menu changed. Reopen it and choose the queue action again.'); return;
+                }
+                if (operationGeneration !== startingGeneration || menuActivation !== activation || pending) return;
+                if (!reserveNativeTail(player, queue, queue?.listId || listId, entry.videoId, playlist,
+                  () => operationGeneration === startingGeneration && menuActivation === activation && !pending)) {
+                  notify('An earlier queue addition is still unconfirmed. Nothing was added.'); return;
+                }
+                entry.used = activation;
+                return true;
+              }
+            }
             let restore = null;
             if (queue?.awaitingPanel || (queue?.mini && !reorderRows(queue))) {
               // After end-of-video adoption YouTube can retain its queue in the
@@ -23926,7 +25353,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             entry.used = activation; // Consume one opening, not a cached native model forever.
             const generation = ++operationGeneration;
             if (anchor) {
-              const operation = pending = { anchor, videoId: entry.videoId, mode, listId: restore?.listId || queue?.listId, mini: queue?.mini, generation, restore,
+              const operation = pending = { anchor, videoId: entry.videoId, mode, listId: restore?.listId || queue?.listId, mini: queue?.mini, watchBinding: queue?.watchBinding, generation, restore,
                 deadline: uniqueVideos ? Date.now() + 8000 : undefined,
                 observer: observeQueue(), moveQueued: false, frame: 0, timer: 0 };
               if (uniqueVideos && queue?.videos) operation.uniquenessProof = captureOrderProof(queue, activePlayer(anchor), queueEntries(queue.videos), playlist);
@@ -23934,7 +25361,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               if (pending !== operation) return;
               operation.timer = setTimeout(() => {
                 if (pending !== operation) return;
-                if (operation.committed || (uniqueVideos && operation.removal)) tryMoveNext(); // A native confirmation may have settled silently.
+                if (operation.committed || (uniqueVideos && operation.removal)) tryMoveNext(true); // Read back a silent native commit without issuing another command.
                 if (pending !== operation) return;
                 finish(operation.committed ? "Could not confirm Play next. Please check the queue."
                   : existing ? "Could not move the queued video next. Please try again."
@@ -24081,23 +25508,30 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             } catch { /* A partially stamped popup has no native action ownership. */ }
           }
 
-          function openMenu(event) {
-            const popup = event.target;
-            if (!popup?.matches?.("ytd-menu-popup-renderer, yt-sheet-view-model")) return;
-            captureNativeQueueMenu(popup);
-            queueMicrotask(() => captureNativeQueueMenu(popup));
+          function prepareMenu(popup, expectedVideoId) {
             try {
               const sheet = popup.matches("yt-sheet-view-model");
-              clearPendingIcons(popup);
-              sheets.delete(popup);
               const owner = controller(popup);
               const data = sheet ? sheetData(popup) : owner?.data;
               const list = data?.content?.listViewModel;
               const sourceItems = sheet ? list?.listItems : data?.items;
               if (!Array.isArray(sourceItems) || sourceItems.length > 60 ||
                   (sheet ? typeof popup.setters?.data !== "function" : typeof owner.set !== "function")) return;
+              const entry = singleQueueCommand(sourceItems);
+              if (expectedVideoId !== undefined && entry?.videoId !== expectedVideoId) return;
+              const previousWrite = pendingMenuWrites.get(popup);
+              if (previousWrite?.writing) return true;
+              if (previousWrite && previousWrite.activation === menuActivation && previousWrite.data === data &&
+                  previousWrite.items === sourceItems && previousWrite.entry.sourceItem === entry?.sourceItem &&
+                  previousWrite.entry.endpoint === entry.endpoint && previousWrite.entry.command === entry.command &&
+                  previousWrite.entry.signature === entry.signature) return true;
+              if (previousWrite) pendingMenuWrites.delete(popup);
+              if (expectedVideoId !== undefined && sourceItems.some(item =>
+                  (item?.menuServiceItemRenderer || item?.listItemViewModel)?.[marker] === true)) return;
+              clearPendingIcons(popup);
+              sheets.delete(popup);
               const cached = menuBindings.get(popup);
-              const cachedEntry = cached && queueCommand(sourceItems[cached.queueIndex]);
+              const cachedEntry = cached && entry?.sourceItem === sourceItems[cached.queueIndex] ? entry : null;
               if (cached && cached.data === data && cached.items === sourceItems &&
                   cached.row?.isConnected && cached.row.closest('ytd-menu-popup-renderer, yt-sheet-view-model') === popup &&
                   (sheet ? cached.row.matches('yt-list-item-view-model[data-target-id="yt-master-play-next"]') : controller(cached.row)?.data === cached.record) &&
@@ -24123,12 +25557,13 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                   item?.listItemViewModel?.leadingImage?.sources?.[0]?.clientResource?.imageName;
                 return ["QUEUE_PLAY_NEXT", "ADD_TO_QUEUE_HEAD"].includes(icon?.toUpperCase());
               })) return;
-              const index = items.findIndex(item => queueCommand(item));
+              if (!entry || entry.signature === null) return;
+              const index = items.indexOf(entry.sourceItem);
               if (index < 0 || (sheet && !items[index].listItemViewModel)) return;
-              const entry = queueCommand(items[index]);
               const endpoint = { signalServiceEndpoint: { signal: "CLIENT_SIGNAL", actions: [] } };
+              let record, updated;
               if (sheet) {
-                const record = {
+                record = {
                   ...items[index].listItemViewModel,
                   title: { content: "Play next in queue" },
                   leadingImage: { sources: [{ clientResource: { imageName: "QUEUE_PLAY_NEXT" } }] },
@@ -24137,25 +25572,34 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                   targetId: "yt-master-play-next", [marker]: true,
                 };
                 items.splice(index, 0, { listItemViewModel: record });
-                const updated = { ...data, content: { ...data.content, listViewModel: { ...list, listItems: items } } };
+                updated = { ...data, content: { ...data.content, listViewModel: { ...list, listItems: items } } };
                 // Native view-model rows do not expose .data. Bind activation to the
                 // owned sheet's exact model and native target ID, not text or position.
                 sheets.set(popup, { data: updated, entry });
-                popup.data = updated;
-                menuBindings.set(popup, { sheet, data: updated, items, rows: [...items], record,
-                  ownedIndex: index, queueIndex: index + 1, entry, signature: entry.signature, ownedSignature: boundedMenuSignature(record) });
               } else {
-                const record = {
+                record = {
                   text: { simpleText: "Play next in queue" }, icon: { iconType: "QUEUE_PLAY_NEXT" },
                   serviceEndpoint: endpoint, [marker]: true,
                 };
                 entries.set(record, entry);
                 items.splice(index, 0, { menuServiceItemRenderer: record });
-                const updated = { ...data, items };
-                owner.set("data", updated);
-                menuBindings.set(popup, { sheet, data: updated, items, rows: [...items], record,
-                  ownedIndex: index, queueIndex: index + 1, entry, signature: entry.signature, ownedSignature: boundedMenuSignature(record) });
+                updated = { ...data, items };
               }
+              // The native setter can emit another open synchronously or publish
+              // its new model later. Both open paths must wait on the same write.
+              const write = { data, items: sourceItems, entry, activation: menuActivation, writing: true };
+              pendingMenuWrites.set(popup, write);
+              try {
+                if (sheet) popup.data = updated;
+                else owner.set("data", updated);
+              } catch {
+                pendingMenuWrites.delete(popup);
+                return;
+              }
+              write.writing = false;
+              menuBindings.set(popup, { sheet, data: updated, items, rows: [...items], record,
+                ownedIndex: index, queueIndex: index + 1, entry, signature: entry.signature, ownedSignature: boundedMenuSignature(record) });
+              if ((sheet ? sheetData(popup) : owner.data) === updated) pendingMenuWrites.delete(popup);
               showPendingPlayNextIcon(popup);
               queueMicrotask(() => showPendingPlayNextIcon(popup));
               // Stamp through the native menu, then let its dropdown fit the extra row.
@@ -24165,7 +25609,16 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
                 showPendingPlayNextIcon(popup);
                 if (popup.isConnected) popup.closest("tp-yt-iron-dropdown")?.refit?.();
               });
+              return true;
             } catch { /* An unrecognised menu keeps its native Add to queue action. */ }
+          }
+
+          function openMenu(event) {
+            const popup = event.target;
+            if (!popup?.matches?.("ytd-menu-popup-renderer, yt-sheet-view-model")) return;
+            captureNativeQueueMenu(popup);
+            queueMicrotask(() => captureNativeQueueMenu(popup));
+            prepareMenu(popup);
           }
 
           function renewMenuActivation(event) {
@@ -24214,16 +25667,27 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               return;
             }
             if (!entry) return;
-            event.preventDefault();
-            event.stopImmediatePropagation();
             const previousOperation = pending;
+            let nativeHandlesEvent = false;
             try {
               if (nativeItem) {
                 if (!isVisibleQueuePlayer(popup) || !isVisibleQueuePlayer(row)) return;
                 if (queueMenuBindings?.get(row, popup)?.item !== nativeItem) {
                   notify('This menu changed. Reopen it and choose the queue action again.'); return;
                 }
-                begin(entry, popup, menuActivation, mode);
+                const gesture = nativeGestures.get(row);
+                if (mode === 'tail' && entry.used === menuActivation && gesture?.entry === entry && gesture.activation === menuActivation) {
+                  // A native button can synthesise its click after a trusted keydown.
+                  // Polymer can also translate a click to a tap on the same gesture.
+                  if (gesture.generation === operationGeneration && !navigating && !pageSuspended &&
+                      ((gesture.event.type === 'keydown' && event.type === 'click' && event.detail === 0) ||
+                      source === gesture.event || gesture.event.detail?.sourceEvent === event)) {
+                    nativeGestures.delete(row); nativeHandlesEvent = true;
+                  }
+                  return;
+                }
+                nativeHandlesEvent = begin(entry, popup, menuActivation, mode, false, mode === 'tail' ? row : null) === true;
+                if (nativeHandlesEvent) nativeGestures.set(row, { entry, event, activation: menuActivation, generation: operationGeneration });
                 return;
               }
               const binding = menuBindings.get(popup);
@@ -24233,7 +25697,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               // its popup. A stale weak entry binding must not activate a row that
               // has since become a different action, even if Add to queue is intact.
               const ownedRecord = binding?.record;
-              if (!binding || data !== binding.data || items !== binding.items || !items?.includes(entry.sourceItem) ||
+              if (!binding || data !== binding.data || items !== binding.items || singleQueueCommand(items)?.sourceItem !== entry.sourceItem ||
                   !items.some(item => (item?.menuServiceItemRenderer || item?.listItemViewModel) === ownedRecord) ||
                   ownedRecord?.[marker] !== true || binding.ownedSignature === null ||
                   boundedMenuSignature(ownedRecord) !== binding.ownedSignature ||
@@ -24252,16 +25716,19 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               else notify("Play next could not be completed. Please check the queue.");
             }
             finally {
-              // Native activation is suppressed above, so dismiss rejected and
-              // preparing selections too. Resolve/dispatch before native teardown.
-              try { dismissMenu(popup); }
-              catch { /* Closing an already disposed native popup is harmless. */ }
+              if (!nativeHandlesEvent) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                try { dismissMenu(popup); }
+                catch { /* Closing an already disposed native popup is harmless. */ }
+              }
             }
           }
 
           function reset(event) {
             if (event?.type === 'yt-navigate-start') navigating = true;
             if (event?.type === 'pagehide') pageSuspended = true;
+            pendingMenuWrites = new WeakMap();
             ++operationGeneration;
             finish();
             // A completed queue may be adopted by the same player during SPA
@@ -24286,6 +25753,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             toast = null;
           }
           suite.addWindowListener("yt-popup-opened", openMenu, true);
+          if (options.suite) options.suite.prepareVideoQueueMenu = (popup, expectedVideoId) =>
+            !navigating && !pageSuspended && validId(expectedVideoId) && popup?.isConnected === true &&
+            popup.matches('ytd-menu-popup-renderer, yt-sheet-view-model') && prepareMenu(popup, expectedVideoId) === true;
           ['yt-popup-closed', 'iron-overlay-closed'].forEach(type => suite.addWindowListener(type, event => {
             if (event.target?.contains) clearPendingIcons(event.target);
           }, true));
@@ -24634,8 +26104,10 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           function snapshot(panel) {
             try {
               if (!visible(panel)) return null;
-              const owner = controller(panel), data = owner?.data, player = activePlayer();
-              if (!player || typeof data?.playlistId !== 'string' || !data.playlistId.startsWith('TLPQ') ||
+              const player = activePlayer(), mini = player?.closest('ytd-miniplayer');
+              if (!player || panel.closest('ytd-miniplayer') !== mini) return null;
+              const owner = controller(panel), data = owner?.data;
+              if (typeof data?.playlistId !== 'string' || !data.playlistId.startsWith('TLPQ') ||
                   typeof owner.handleDrop !== 'function' || owner.canReorder === false ||
                   !(owner.canReorder === true || panel.hasAttribute('can-reorder')) || dragging(owner) ||
                   !Array.isArray(data.contents) || !data.contents.length || data.contents.length > 1000 ||
@@ -24647,8 +26119,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               if (!validId(anchor) || videos.filter(video => video.videoId === anchor).length !== 1) return null;
               const ids = videos.map(video => video.videoId), playlist = player.getPlaylist?.();
               if (playlist != null && !Array.isArray(playlist)) return null;
-              const mini = player.closest('ytd-miniplayer');
-              if (listId !== data.playlistId && !((listId == null || listId === '') && mini && panel.closest('ytd-miniplayer') === mini &&
+              if (listId !== data.playlistId && !((listId == null || listId === '') && mini &&
                   Array.isArray(playlist) && same(playlist, ids))) return null;
               if (Array.isArray(playlist) && !same(playlist, ids)) return null;
               let currentIndex = data.currentIndex;
@@ -25416,7 +26887,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
         }
 
         const scheduleQueuePlayingMarkerReconciliation = installQueuePlayingMarkerReconciliation();
-        installQueuePlayNext({ uniqueVideos: suite.settings.initial.uniqueQueueVideos, menuBindings: suite.queueMenuBindings });
+        installQueuePlayNext({ suite, uniqueVideos: suite.settings.initial.uniqueQueueVideos, menuBindings: suite.queueMenuBindings });
         installQueueStepControls();
         installQueueDragAssistance();
         ensureStyle();
@@ -25467,7 +26938,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "suiteSettings",
-    "Suite Settings v1.86",
+    "Suite Settings v1.87",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -25944,7 +27415,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               const unsaved = dirty && !samePreference(key, checked[key], saved[key]);
               const needsReload = pendingReload && !samePreference(key, saved[key], applied[key]);
               if (!unsaved && !needsReload) continue;
-              const id = key.startsWith('menu') ? 'menu-editor-heading' : preferenceControlIds[key] || key;
+              const id = key.startsWith('menu') && key !== 'menuShowHype' ? 'menu-editor-heading' : preferenceControlIds[key] || key;
               const flags = changes.get(id) || 0;
               changes.set(id, flags | (unsaved ? 1 : 0) | (needsReload ? 2 : 0));
             }
@@ -26165,7 +27636,6 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
               event.preventDefault(); clearReloadConfirmation(true);
             }
           });
-          document.addEventListener('fullscreenchange', () => clearReloadConfirmation());
           dialog.addEventListener('click', event => {
             if (event.target !== dialog) return;
             const box = dialog.getBoundingClientRect();
@@ -26445,7 +27915,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           dialog.addEventListener('close', () => supportPanel.close());
           populate(); selectTab('comments');
           return { dialog, open: openPanel, openChannels, resetChannels: () => channelManager.reset({ defer: true }),
-            updateTheme: updateColours, updateChannels: renderChannelRules, reconcileSaved: reconcileStoredPreferences };
+            updateTheme: updateColours, updateChannels: renderChannelRules, reconcileSaved: reconcileStoredPreferences,
+            clearReloadConfirmation };
 
         }
 
@@ -26687,8 +28158,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           installPlayerButton(target);
           if (!masthead) { button?.remove(); return; }
           const avatar = masthead.querySelector("#avatar-btn, button[aria-label*='Account'], button[aria-label*='account']");
-          if (!avatar) { button?.remove(); return; }
-          const anchor = avatar.closest("ytd-topbar-menu-button-renderer, ytd-topbar-menu-button-view-model") || avatar;
+          const anchor = avatar?.closest("ytd-topbar-menu-button-renderer, ytd-topbar-menu-button-view-model") || avatar;
+          const parent = anchor?.parentElement || masthead.querySelector('#end #buttons');
+          if (!parent) { button?.remove(); return; }
           if (!button) {
             button = document.createElement("button");
             button.id = BUTTON_ID; button.type = "button";
@@ -26704,8 +28176,8 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             button.append(image);
             button.addEventListener("click", openSettings);
           }
-          if (button.parentNode !== anchor.parentNode || button.nextElementSibling !== anchor) {
-            anchor.before(button);
+          if (button.parentNode !== parent || button.nextElementSibling !== anchor) {
+            parent.insertBefore(button, anchor);
           }
         }
 
@@ -26768,7 +28240,10 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
           if (event.key === null || event.key === suite.channelAge.key) window.dispatchEvent(new CustomEvent('yt-master-channel-age-changed'));
         });
         document.addEventListener('loadedmetadata', event => { if (event.target?.matches?.('video.html5-main-video')) scheduleInstall(); }, true);
-        document.addEventListener('fullscreenchange', () => { hidePlayerTooltip(); scheduleInstall(); }, true);
+        document.addEventListener('fullscreenchange', () => {
+          panel?.clearReloadConfirmation();
+          hidePlayerTooltip(); scheduleInstall();
+        }, true);
         suite.addWindowListener('resize', refreshPlayerTooltip);
         suite.addWindowListener('blur', hidePlayerTooltip);
         start();

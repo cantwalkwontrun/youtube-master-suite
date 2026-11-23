@@ -71,6 +71,16 @@ test('failed storage writes leave the saved marker unchanged', () => {
   assert.equal(h.marker.save({dataUrl:image,size:32}).ok,false);
   assert.equal(h.records.get(KEY),raw);
 });
+test('successful marker writes and removals reconcile if the first readback throws', () => {
+  const h = harness(), save = h.storage.setItem, remove = h.storage.removeItem;
+  h.storage.setItem = (key, value) => { save(key, value); throw new Error('Synthetic readback failure'); };
+  h.storage.removeItem = key => { remove(key); throw new Error('Synthetic readback failure'); };
+  const value = {dataUrl:image,size:24};
+  assert.deepEqual(h.marker.save(value), {ok:true,value});
+  assert.deepEqual(h.marker.read(), {ok:true,value});
+  assert.deepEqual(h.marker.remove(), {ok:true,value:null});
+  assert.deepEqual(h.marker.read(), {ok:true,value:null});
+});
 test('file preparation validates file size, signature and dimensions before decoding', async () => {
   let decodes = 0;
   const h = harness(null,{window:{createImageBitmap:async()=>{ decodes++; throw new Error('Unexpected decode'); }}});

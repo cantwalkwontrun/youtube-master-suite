@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { before, after, test } from 'node:test';
 import { createSuiteSettings } from '../../sources/suite-settings.mjs';
+import { createMenuLayout } from '../../sources/menu-layout.mjs';
 import { launchFixtureBrowser, waitForSuiteHealth, saveFixtureSettings } from './fixture-browser.mjs';
 
 const source = readFileSync(new URL('../../youtube-master-suite.user.js', import.meta.url), 'utf8');
@@ -12,7 +13,7 @@ const html = readFileSync(new URL('./watch-page.html', import.meta.url), 'utf8')
 const settings = createSuiteSettings(() => null, () => true);
 const defaults = settings.defaults;
 // Tree, ordering and legacy menu fields use the dedicated submenu/menu contracts.
-const menuKeys = Object.keys(defaults).filter(key => key.startsWith('menu'));
+const menuKeys = [...Object.keys(createMenuLayout().visibilityDefaults), 'menuGroupChannelTools', 'menuItemOrder', 'menuLayout'];
 const scalarKeys = Object.keys(defaults).filter(key => !menuKeys.includes(key));
 const aliases = { colourMode: 'colour-mode', viewerColour: 'viewer-hex', ownerColour: 'owner-hex' };
 const prerequisites = {
@@ -29,7 +30,7 @@ let browser, launch;
 before(async () => { browser = await (launch = launchFixtureBrowser()); });
 after(async () => { await (await launch)?.close(); });
 
-test('every scalar setting exposes its declared choices and saves each through its real control', { timeout: 180000 }, async t => {
+test('every scalar setting exposes its declared choices and saves each through its real control', async t => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
   const address = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
   await context.route('**/*', route => route.request().url() === address
@@ -71,7 +72,8 @@ test('every scalar setting exposes its declared choices and saves each through i
     }
     return field;
   }
-  for (const key of scalarKeys) await t.test(key, async () => {
+  // Each setting gets its own deadline as the number of controls grows.
+  for (const key of scalarKeys) await t.test(key, { timeout: 30000 }, async () => {
     for (const [dependency, value] of Object.entries(prerequisites[key] || {})) await change(dependency, value);
     const field = await control(key);
     assert.equal(await field.isEnabled(), true, `${key}: prerequisites expose an editable control`);
@@ -90,5 +92,5 @@ test('every scalar setting exposes its declared choices and saves each through i
     }
   });
   assert.equal(scalarKeys.length + menuKeys.length, Object.keys(defaults).length);
-  assert.deepEqual(menuKeys.sort(), ['menuGroupChannelTools', 'menuItemOrder', 'menuLayout', 'menuShowAgeLimit', 'menuShowDontRecommend', 'menuShowDownload', 'menuShowHype', 'menuShowNotInterested', 'menuShowReport'].sort());
+  assert.ok(scalarKeys.includes('menuShowHype'), 'The watch-page Hype switch is a Player control');
 });

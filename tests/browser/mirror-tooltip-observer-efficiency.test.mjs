@@ -34,14 +34,21 @@ async function open(t) {
   return page;
 }
 
-function instrumentBroker(source) {
+function instrumentBroker(source, sequential) {
   const replace = (needle, replacement) => {
     assert.equal(source.split(needle).length, 2, `Expected one instrumentation target: ${needle}`);
     source = source.replace(needle, replacement);
   };
-  replace('function refreshNativeMutationObserver() {', 'function refreshNativeMutationObserver() { window.mirrorBrokerAudit.refreshes++; window.mirrorBrokerAudit.activeObservers = sharedMutationObservers.size;');
-  replace('const replacementObserver = new NativeObserver(callback);', 'window.mirrorBrokerAudit.replacements++; const replacementObserver = new NativeObserver(callback);');
-  replace('replacementObserver.observe(target, options),', '(window.mirrorBrokerAudit.nativeObserves++, replacementObserver.observe(target, options)),');
+  // Attribute synchronous observer registration work to the tooltip. Other
+  // modules legitimately refresh the shared broker during startup and resize.
+  const registration = 'replaceObserverRegistrations(videoMirrorTooltipObserver, registrations);';
+  const disconnect = 'videoMirrorTooltipObserver?.disconnect();';
+  const measure = operation => `window.mirrorBrokerAudit.measuring = true; try { ${operation} } finally { window.mirrorBrokerAudit.measuring = false; }`;
+  replace(registration, measure(sequential ? 'registrations.forEach(([target, options]) => videoMirrorTooltipObserver.observe(target, options));' : registration));
+  replace(disconnect, measure(disconnect));
+  replace('function refreshNativeMutationObserver() {', 'function refreshNativeMutationObserver() { if(window.mirrorBrokerAudit.measuring) window.mirrorBrokerAudit.refreshes++; window.mirrorBrokerAudit.activeObservers = sharedMutationObservers.size;');
+  replace('const replacementObserver = new NativeObserver(callback);', 'if(window.mirrorBrokerAudit.measuring) window.mirrorBrokerAudit.replacements++; const replacementObserver = new NativeObserver(callback);');
+  replace('replacementObserver.observe(target, options),', '(window.mirrorBrokerAudit.measuring && window.mirrorBrokerAudit.nativeObserves++, replacementObserver.observe(target, options)),');
   replace('function dispatchMutations(mutations) {', 'function dispatchMutations(mutations) { window.mirrorBrokerAudit.batches++; window.mirrorBrokerAudit.records += mutations.length;');
   return `window.mirrorBrokerAudit = { refreshes: 0, replacements: 0, nativeObserves: 0, activeObservers: 0, batches: 0, records: 0 };\n${source}`;
 }
@@ -126,15 +133,11 @@ for (const bundled of [false, true]) for (const hiddenBy of ['opacity', 'scale',
 }
 
 test('complete Suite batches Mirror tooltip registrations without changing native delivery or retaining observers', async t => {
-  const marker = 'replaceObserverRegistrations(videoMirrorTooltipObserver, registrations);';
-  assert.equal(SUITE.split(marker).length, 2, 'The generated Suite must contain the canonical registration batch');
   const results = [];
   for (const sequential of [true, false]) {
     const page = await open(t);
     // The reference changes only how the identical native owner chain is registered.
-    const source = sequential ? SUITE.replace(marker,
-      'registrations.forEach(([target, options]) => videoMirrorTooltipObserver.observe(target, options));') : SUITE;
-    await page.addScriptTag({ content: instrumentBroker(source) });
+    await page.addScriptTag({ content: instrumentBroker(SUITE, sequential) });
     await waitForSuiteHealth(page, 8, { timeoutMs: 7000 });
     await page.locator('video').hover();
     await page.evaluate(async () => {
@@ -154,7 +157,7 @@ test('complete Suite batches Mirror tooltip registrations without changing nativ
   const [reference, batched] = results;
   t.diagnostic(JSON.stringify({ reference, batched }));
   assert.equal(batched.replacements, 20, 'Each tooltip needs one registration transaction and one disconnect');
-  assert.ok(batched.refreshes >= batched.replacements, 'Other Suite observers may also refresh the shared observer');
+  assert.ok(batched.refreshes >= batched.replacements, 'Every replacement must be accounted for by a refresh');
   assert.ok(reference.refreshes > batched.refreshes);
   assert.ok(reference.replacements > batched.replacements);
   assert.ok(reference.nativeObserves > batched.nativeObserves);

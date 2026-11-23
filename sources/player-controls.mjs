@@ -32,9 +32,9 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     if (p.embedHideShare) css.push('#movie_player .ytp-share-button, #movie_player .ytp-share-panel { display:none !important; }');
     if (p.embedHidePauseOverlay) css.push('#movie_player .ytp-pause-overlay, #movie_player .ytp-pause-overlay-container { display:none !important; }');
   }
-  const active = css.length || p.originalAudio || p.disableAutoplay || p.disableStableVolume ||
+  const needsRuntime = p.originalAudio || p.disableAutoplay || p.disableStableVolume ||
     p.disableNumberKeySeeking || p.snapshotButton || p.transcriptDownload;
-  if (!active) return () => {};
+  if (!css.length && !needsRuntime) return () => {};
 
   const style = document.createElement('style');
   style.id = 'ytms-player-controls-style';
@@ -45,6 +45,7 @@ export function installPlayerControls({ document, window, preferences = {}, Muta
     .ytp-delhi-modern #ytms-export-tooltip { border-radius:8px; background:var(--yt-sys-color-baseline--overlay-background-medium-light,rgba(0,0,0,.3)); -webkit-backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); backdrop-filter:var(--yt-frosted-glass-backdrop-filter-override,blur(16px)); text-shadow:0 0 2px #000; }
   `;
   (document.head || document.documentElement).appendChild(style);
+  if (!needsRuntime) return () => style.remove();
   let disposed = false, suspended = false, pageSuspended = false, navigationPending = false, observing = false, snapshotPending = false, captureGeneration = 0, frame = 0, statusTimer = 0, status = null, owner = null;
   const buttons = new Set(), attempts = new WeakMap(), downloads = new Map();
   let manualIdentityGeneration = 0;

@@ -230,19 +230,22 @@ stays in Tampermonkey storage. A tab whose local cache is behind keeps its draft
 and reports a conflict instead of overwriting a newer save. Reload after clearing
 YouTube site data so the Suite can re-establish the revision from protected storage.
 
-First migration uses a Web Lock and one page-visible coordination flag containing
-only the constant `1`. A tab with a delayed Tampermonkey cache waits for the
+First migration validates the five legacy records under a Web Lock before setting
+the page-visible coordination flag to `1`. If validation fails, correcting the
+record and reloading retries the migration. Once the private write has been
+attempted, a tab with a delayed Tampermonkey cache waits for the
 private migration record instead of copying stale settings over it. This flag
 contains no settings. If migration is interrupted and the private record never
 arrives, startup stops visibly; it does not clear the guard and guess that retrying
 is safe. The existing site records remain available for rollback.
 
-If the storage notice remains after a reload, restore the saved v1.2.64 script
-to use the preserved older settings. Reinstalling v1.2.65 alone does not reset a
-retained migration guard. If Tampermonkey's protected records were deleted,
-recovering settings saved after migration requires an existing personal export
-or Tampermonkey backup containing those settings. Keep the existing YouTube site
-data and migration guard intact while recovering.
+If you cleared the script's Tampermonkey data and the storage notice offers
+**Prepare Suite defaults**, choose it and reload when convenient. This uses a
+separate default baseline and writes changes to separate protected records.
+The original migration snapshot takes precedence if it becomes available again.
+The old YouTube records and migration guard are retained. Recovering preferences
+deleted from Tampermonkey still requires a personal export or backup containing
+those settings.
 
 Private-window and Firefox container records use separate Tampermonkey keys,
 based on the browsing-context information supplied by Tampermonkey. Container

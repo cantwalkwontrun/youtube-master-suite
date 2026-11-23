@@ -86,6 +86,33 @@ for (const [size,width] of [['small',240],['medium',320],['large',400]]) test(`s
   assert.equal(await page.locator('[data-target]').evaluate(el=>getComputedStyle(el).width),'180px');
 });
 
+for (const count of ['auto', '2', '3', '4', '5', '6']) test(`feedColumns ${count} follows Home and Subscriptions across navigation`, async t => {
+  const grid = '<ytd-rich-grid-renderer data-target style="--ytd-rich-grid-items-per-row:8;--ytd-rich-grid-posts-per-row:7">Grid</ytd-rich-grid-renderer>';
+  const page = await open(t, '/', grid);
+  const values = () => page.locator('[data-target]').evaluate(node => {
+    const css = getComputedStyle(node);
+    return ['--ytd-rich-grid-items-per-row', '--ytd-rich-grid-posts-per-row'].map(name => css.getPropertyValue(name).trim());
+  });
+  const native = ['8', '7'];
+  const expected = count === 'auto' ? native : [count, count];
+  await install(page, { feedColumns: count });
+  const navigate = async (path, route) => {
+    await page.evaluate(path => { history.pushState({}, '', path); window.dispatchEvent(new Event('yt-navigate-finish')); }, path);
+    if (count !== 'auto') await page.waitForFunction(route => document.documentElement.dataset.ytmsDiscoveryRoute === route, route);
+  };
+  assert.deepEqual(await values(), expected);
+  await navigate('/@Fixture/videos', 'channel');
+  assert.deepEqual(await values(), native);
+  await navigate('/feed/subscriptions', 'subscriptions');
+  assert.deepEqual(await values(), expected);
+  await navigate('/results?search_query=fixture', 'search');
+  assert.deepEqual(await values(), native);
+  await navigate('/feed/recommended', 'home');
+  assert.deepEqual(await values(), expected);
+  await page.evaluate(() => disposeContract());
+  assert.deepEqual(await values(), native);
+});
+
 for(const count of ['3','4','5','6']) test(`shortsColumns ${count} changes only the Shorts grid`,async t=>{
   const page=await open(t,'/','<ytd-rich-grid-renderer data-target><ytd-rich-grid-slim-media>Short</ytd-rich-grid-slim-media></ytd-rich-grid-renderer>');
   await install(page,{shortsColumns:count});

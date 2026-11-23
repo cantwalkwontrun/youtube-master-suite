@@ -7,7 +7,6 @@ import { createSuiteUpdates } from '../sources/suite-updates.mjs';
 const KEY = 'yt-master-suite.update-source.v1';
 const MANIFEST_URL = 'https://updates.example.invalid/stable/release-manifest.json';
 const GITHUB_URL = 'https://github.com/fixture-owner/fixture-suite/releases/latest';
-const LEGACY_SUITE_SOURCE = 'https://github.com/noswimmingplease/youtube-master-suite/releases/latest';
 const CANONICAL_SUITE_SOURCE = 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/latest';
 const CANONICAL_SUITE_DOWNLOAD = 'https://github.com/cantwalkwontrun/youtube-master-suite/releases/download/v1.2.61/youtube-master-suite.user.js';
 const HASH = 'a'.repeat(64);
@@ -68,6 +67,26 @@ test('a direct manifest or public Releases URL is saved locally in canonical for
   assert.equal(f.data.has(KEY), false);
 });
 
+test('a GitHub API redirect to the canonical Suite resolves a saved former owner without rewriting it', async () => {
+  const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
+  const saved = 'https://github.com/former-fixture-owner/youtube-master-suite/releases/latest';
+  assert.equal(f.source(saved).ok, true);
+  const original = f.data.get(KEY);
+  const data = release({ url: 'https://api.github.com/repos/cantwalkwontrun/youtube-master-suite/releases/123',
+    assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD })] });
+  f.reply(() => response(data));
+  assert.equal((await f.updates.check()).ok, false);
+  f.reply(() => {
+    const reply = response(data);
+    Object.defineProperties(reply, { redirected: { value: true }, url: { value: 'https://api.github.com/repositories/123/releases/latest' } });
+    return reply;
+  });
+  const updated = await f.updates.check();
+  assert.equal(updated.ok, true);
+  assert.equal(f.updates.installationUrl(updated), CANONICAL_SUITE_DOWNLOAD);
+  assert.equal(f.data.get(KEY), original);
+});
+
 test('the default source works without entry or storage writes and custom sources take priority', async () => {
   const f = fixture({ defaultSourceUrl: 'https://github.com/fixture-owner/fixture-suite/releases/' });
   assert.deepEqual(f.updates.readSource(), { ok: true, url: GITHUB_URL });
@@ -87,11 +106,11 @@ test('the default source works without entry or storage writes and custom source
   assert.deepEqual(f.updates.readSource(), { ok: true, url: GITHUB_URL });
 });
 
-for (const saved of [false, true]) test(`the known Suite repository rename routes the ${saved ? 'saved' : 'default'} source without rewriting it`, async () => {
-  const f = fixture({ defaultSourceUrl: saved ? CANONICAL_SUITE_SOURCE : LEGACY_SUITE_SOURCE });
-  const raw = '{\n  "url": "' + LEGACY_SUITE_SOURCE + '", "version": 1\n}';
+for (const saved of [false, true]) test(`the canonical Suite source checks safely when ${saved ? 'saved' : 'default'}`, async () => {
+  const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
+  const raw = '{\n  "url": "' + CANONICAL_SUITE_SOURCE + '", "version": 1\n}';
   if (saved) f.data.set(KEY, raw);
-  assert.deepEqual(f.updates.readSource(), { ok: true, url: LEGACY_SUITE_SOURCE });
+  assert.deepEqual(f.updates.readSource(), { ok: true, url: CANONICAL_SUITE_SOURCE });
   f.reply(async () => response(release({ assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD })] })));
   const result = await f.updates.check();
   assert.equal(result.ok, true, result.error);
@@ -101,35 +120,35 @@ for (const saved of [false, true]) test(`the known Suite repository rename route
   assert.equal(f.data.get(KEY) ?? null, saved ? raw : null);
 });
 
-test('mixed-case known Suite aliases retain their saved URL and use the canonical repository', async () => {
-  const url = 'https://github.com/NoSwimmingPlease/YouTube-Master-Suite/releases/latest';
+test('a mixed-case configured Suite source retains its saved URL and checks its own repository', async () => {
+  const url = 'https://github.com/CantWalkWontRun/YouTube-Master-Suite/releases/latest';
   const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
   const raw = JSON.stringify({ version: 1, url }); f.data.set(KEY, raw);
   f.reply(async () => response(release({ assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD })] })));
   assert.deepEqual(f.updates.readSource(), { ok: true, url });
   const result = await f.updates.check();
   assert.equal(result.ok, true, result.error);
-  assert.equal(f.calls[0].url, 'https://api.github.com/repos/cantwalkwontrun/youtube-master-suite/releases/latest');
+  assert.equal(f.calls[0].url, 'https://api.github.com/repos/CantWalkWontRun/YouTube-Master-Suite/releases/latest');
   assert.equal(f.updates.installationUrl(result), CANONICAL_SUITE_DOWNLOAD);
   assert.equal(f.data.get(KEY), raw); assert.deepEqual(f.writes, []);
 });
 
-test('the canonical Suite source accepts its own downloads and rejects the former owner download path', async () => {
+test('the canonical Suite source accepts its own downloads and rejects another repository owner', async () => {
   const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
   f.reply(async () => response(release({ assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD })] })));
   const result = await f.updates.check();
   assert.equal(result.ok, true, result.error);
   assert.equal(f.updates.installationUrl(result), CANONICAL_SUITE_DOWNLOAD);
-  f.reply(async () => response(release({ assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD.replace('/cantwalkwontrun/', '/noswimmingplease/') })] })));
+  f.reply(async () => response(release({ assets: [asset({ browser_download_url: CANONICAL_SUITE_DOWNLOAD.replace('/cantwalkwontrun/', '/alternate-owner/') })] })));
   const rejected = await f.updates.check();
   assert.equal(rejected.ok, false);
   assert.equal(f.updates.installationUrl(rejected), null);
   assert.deepEqual(f.writes, []);
 });
 
-test('the Suite alias never redirects other owners or repositories or approves their mismatched downloads', async () => {
-  for (const [owner, repository] of [['noswimmingplease', 'another-suite'], ['fixture-owner', 'youtube-master-suite'],
-    ['noswimmingplease-extra', 'youtube-master-suite'], ['noswimmingplease', 'youtube-master-suite-fork']]) {
+test('each custom source keeps its own owner and repository and rejects mismatched downloads', async () => {
+  for (const [owner, repository] of [['alternate-owner', 'another-suite'], ['fixture-owner', 'youtube-master-suite'],
+    ['alternate-owner-extra', 'youtube-master-suite'], ['alternate-owner', 'youtube-master-suite-fork']]) {
     const url = `https://github.com/${owner}/${repository}/releases/latest`;
     const f = fixture({ defaultSourceUrl: url });
     const download = `https://github.com/${owner}/${repository}/releases/download/v1.2.61/youtube-master-suite.user.js`;
@@ -145,9 +164,9 @@ test('the Suite alias never redirects other owners or repositories or approves t
   }
 });
 
-test('the known rename does not make noncanonical saved URLs or forged download paths valid', async () => {
-  for (const url of [LEGACY_SUITE_SOURCE + '/', LEGACY_SUITE_SOURCE.replace('/latest', ''),
-    LEGACY_SUITE_SOURCE + '?token=synthetic', LEGACY_SUITE_SOURCE.replace('github.com', 'github.com.example.invalid')]) {
+test('noncanonical saved URLs and forged download paths remain invalid', async () => {
+  for (const url of [CANONICAL_SUITE_SOURCE + '/', CANONICAL_SUITE_SOURCE.replace('/latest', ''),
+    CANONICAL_SUITE_SOURCE + '?token=synthetic', CANONICAL_SUITE_SOURCE.replace('github.com', 'github.com.example.invalid')]) {
     const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
     const raw = JSON.stringify({ version: 1, url }); f.data.set(KEY, raw);
     assert.equal(f.updates.readSource().ok, false);
@@ -157,7 +176,7 @@ test('the known rename does not make noncanonical saved URLs or forged download 
   for (const url of [CANONICAL_SUITE_DOWNLOAD.replace('/youtube-master-suite/', '/youtube-master-suite-fork/'),
     CANONICAL_SUITE_DOWNLOAD.replace('/cantwalkwontrun/', '/cantwalkwontrun-extra/'),
     CANONICAL_SUITE_DOWNLOAD.replace('/download/', '/latest/'), CANONICAL_SUITE_DOWNLOAD + '?token=synthetic']) {
-    const f = fixture({ defaultSourceUrl: LEGACY_SUITE_SOURCE });
+    const f = fixture({ defaultSourceUrl: CANONICAL_SUITE_SOURCE });
     f.reply(async () => response(release({ assets: [asset({ browser_download_url: url })] })));
     const result = await f.updates.check();
     assert.equal(result.ok, false); assert.equal(f.updates.installationUrl(result), null); assert.deepEqual(f.writes, []);

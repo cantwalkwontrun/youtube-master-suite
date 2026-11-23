@@ -814,6 +814,30 @@ test('a hidden metadata header and collapsed native control are handled independ
   assert.equal((await state(page)).panel,138);
 });
 
+for (const suite of [false,true]) test(`queue menu disclosure never changes the native miniplayer queue fit (${suite?'Suite':'source'})`, async t => {
+  const page=await open(t,{suite});
+  await page.evaluate(()=>{
+    const bar=document.querySelector('ytd-miniplayer-info-bar');
+    const native=bar.querySelector('button');
+    const expand=document.createElement('div');expand.className='ytdMiniplayerInfoBarExpand';
+    native.replaceWith(expand);expand.append(native);
+    const wrap=document.createElement('span');wrap.setAttribute('data-ytms-queue-menu-wrap','');
+    const button=document.createElement('button');button.className='ytms-queue-more';
+    button.setAttribute('aria-label','Queue actions');button.setAttribute('aria-haspopup','menu');
+    button.setAttribute('aria-expanded','false');wrap.append(button);bar.insertBefore(wrap,expand);
+    window.dispatchEvent(new Event('resize'));
+  });await settle(page);
+  const queue=page.locator('.ytdMiniplayerInfoBarExpand button'),menu=page.getByRole('button',{name:'Queue actions'});
+  assert.equal((await state(page)).panel,190,'Closed menu must retain the two-row compact fit');
+  await menu.evaluate(button=>button.setAttribute('aria-expanded','true'));await settle(page);
+  assert.equal((await state(page)).panel,190);
+  await queue.evaluate(button=>button.setAttribute('aria-expanded','false'));await settle(page);
+  assert.equal((await state(page)).compact,false,'Collapsing the actual queue releases its fit');
+  await menu.evaluate(button=>button.setAttribute('aria-expanded','false'));
+  await queue.evaluate(button=>button.setAttribute('aria-expanded','true'));await settle(page);
+  assert.equal((await state(page)).panel,190,'The native queue recovers with its action menu closed');
+});
+
 test('a scrolled native outer content viewport is left unchanged', async t => {
   const page = await open(t, { enabled:false,viewport:500 });
   const original = await page.evaluate(() => {

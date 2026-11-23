@@ -44,6 +44,7 @@ function fixture() {
         assert.equal(key, guardKey); assert.equal(value, '1');
         publicWrites.push([key, value]); publicStore.set(key, value);
       },
+      removeItem(key) { assert.equal(key, guardKey); publicStore.delete(key); },
     };
     const adapterOptions = {
       getValue: (key, fallback) => cache.has(key) ? cache.get(key) : fallback,
@@ -76,6 +77,27 @@ test('first migration writes only a fixed public guard and preserves all legacy 
   assert.deepEqual(f.privateWrites, [[migrationKey, snapshot('synthetic setting')]]);
   assert.equal(tab.legacy.getItem(settingsKey), 'synthetic setting');
   result.dispose();
+});
+
+test('explicit recovery starts from defaults after a protected store reset without replacing an original snapshot', async () => {
+  const f = fixture(), tab = f.client('old site settings');
+  f.publicStore.set(guardKey, '1');
+  await assert.rejects(tab.open({ timeoutMs: 15 }), { code: 'storage-snapshot-missing' });
+  const recovered = await tab.open({ recoverEmpty: true });
+  assert.equal(recovered.getItem(settingsKey), null);
+  assert.equal(tab.legacyReads(), 0);
+  assert.deepEqual(f.privateWrites, [['yt-master-suite.storage-empty-baseline.v1', '1']]);
+  assert.deepEqual(f.publicWrites, []);
+  assert.equal(f.publicStore.get(guardKey), '1');
+  recovered.dispose();
+  const restarted = await tab.open();
+  assert.equal(restarted.getItem(settingsKey), null);
+  restarted.dispose();
+  tab.deliver(migrationKey, snapshot('protected baseline arrived late'));
+  const preferred = await tab.open();
+  assert.equal(preferred.getItem(settingsKey), 'protected baseline arrived late');
+  preferred.dispose();
+  assert.equal(f.privateWrites.length, 1);
 });
 
 test('simultaneous stale GM caches migrate once despite different legacy snapshots', async () => {
@@ -114,12 +136,32 @@ test('a baseline delivered while waiting for the lock is re-read before page sto
   assert.deepEqual(f.privateWrites, []); storage.dispose();
 });
 
-test('guard write failure stops before any private write or legacy snapshot read', async () => {
-  for (const write of [() => {}, () => { throw new Error('Blocked'); }]) {
-    const f = fixture(), tab = f.client(); tab.legacy.setItem = write;
+test('a failed guard write cannot start the private write or strand a known pre-write failure', async () => {
+  for (const failure of ['drop', 'throw', 'write then throw']) {
+    const f = fixture(), tab = f.client(), write = tab.legacy.setItem;
+    tab.legacy.setItem = (key, value) => {
+      if (failure === 'write then throw') write(key, value);
+      if (failure !== 'drop') throw new Error('Blocked');
+    };
     await assert.rejects(tab.open());
-    assert.deepEqual(f.privateWrites, []); assert.equal(tab.legacyReads(), 0);
+    assert.deepEqual(f.privateWrites, []);
+    assert.equal(f.publicStore.has(guardKey), false);
+    tab.legacy.setItem = write;
+    const storage = await tab.open();
+    assert.equal(storage.getItem(settingsKey), 'synthetic setting');
+    storage.dispose();
   }
+});
+
+test('a corrected oversized legacy record can migrate on the next load', async () => {
+  const f = fixture(), failed = f.client('x'.repeat(262145));
+  await assert.rejects(failed.open());
+  assert.deepEqual(f.publicWrites, []);
+  assert.deepEqual(f.privateWrites, []);
+  const storage = await f.client('corrected record').open();
+  assert.equal(storage.getItem(settingsKey), 'corrected record');
+  assert.equal(f.privateWrites.length, 1);
+  storage.dispose();
 });
 
 test('missing locks and missing GM functions fail without touching the guard', async () => {

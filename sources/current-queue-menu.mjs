@@ -5,6 +5,8 @@ export function installCurrentQueueMenu({ document, window, preferences = {}, Mu
   const rows = 'ytd-playlist-panel-video-renderer, yt-playlist-panel-video-renderer';
   const marker = 'data-ytms-current-queue-menu', owned = 'data-ytms-current-queue-menu-owned';
   const records = new Map();
+  const popupSelector = 'ytd-menu-popup-renderer';
+  let opening = null, opened = null;
   let failed = new WeakMap();
   let frame = 0, generation = 0, disposed = false, navigating = false, pageHidden = false, style = null, waitingForDefinition = false;
   const topology = new MutationObserver(schedule), content = new MutationObserver(schedule), visibility = new MutationObserver(schedule);
@@ -191,6 +193,7 @@ export function installCurrentQueueMenu({ document, window, preferences = {}, Mu
     const record = records.get(row);
     if (!record) return;
     records.delete(row);
+    if (opened?.record === record) invalidatePopup();
     if (record.guard) {
       record.menu.removeEventListener('click', record.guard, true);
       record.menu.removeEventListener('keydown', record.guard, true);
@@ -214,6 +217,61 @@ export function installCurrentQueueMenu({ document, window, preferences = {}, Mu
   function bound(record) {
     try { return record.menu.closest(rows) === record.row && menuStampOf(record.menu) === record.stamp; }
     catch { return false; }
+  }
+  function ownsPopup(binding) {
+    try { return binding.popup.isConnected && modelsOf(binding.popup).includes(binding.model); }
+    catch { return false; }
+  }
+  function forgetPopup() {
+    if (!opened) return;
+    opened.popup.removeEventListener('click', opened.guard, true);
+    opened.popup.removeEventListener('keydown', opened.guard, true);
+    opened = null;
+  }
+  function invalidatePopup() {
+    const binding = opened;
+    if (!binding || binding.invalid) return;
+    binding.invalid = true;
+    if (!ownsPopup(binding)) { forgetPopup(); return; }
+    const overlay = binding.popup.closest('tp-yt-iron-dropdown');
+    try {
+      if (overlay && overlay.querySelector(popupSelector) === binding.popup) {
+        const owner = typeof overlay.close === 'function' ? overlay : controller(overlay);
+        owner?.close?.();
+      }
+    } catch { /* The popup's capture guard still blocks stale activation. */ }
+  }
+  function popupOpened(event) {
+    const popup = event.target?.closest?.(popupSelector);
+    if (!popup) return;
+    if (opened?.popup === popup && !ownsPopup(opened)) forgetPopup();
+    const record = opening;
+    if (!record) return;
+    let model;
+    try { model = modelsOf(popup).find(value => value === record.model || value.items === record.model.items); }
+    catch { return; }
+    if (!model) return;
+    opening = null;
+    forgetPopup();
+    const binding = { popup, model, record, invalid: false, guard: null };
+    binding.guard = event => {
+      if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+      if (!ownsPopup(binding)) { forgetPopup(); return; }
+      if (binding.invalid || records.get(record.row) !== record || !bound(record) || !same(record, proof(record.panel))) {
+        event.preventDefault(); event.stopImmediatePropagation(); invalidatePopup();
+      }
+    };
+    opened = binding;
+    popup.addEventListener('click', binding.guard, true);
+    popup.addEventListener('keydown', binding.guard, true);
+    if (records.get(record.row) !== record) invalidatePopup();
+  }
+  function popupClosed(event) {
+    const popup = opened?.popup;
+    if (popup && (event.target === popup || event.target === popup.closest('tp-yt-iron-dropdown'))) forgetPopup();
+  }
+  function unrelatedActivation(event) {
+    if (opening && !opening.menu.contains(event.target)) opening = null;
   }
   function install(current) {
     const request = generation;
@@ -286,7 +344,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
       // Opening remains native; revalidate identity for every activation path.
       if (!active() || !same(record, proof(record.panel)) || !bound(record) || !active()) {
         event.preventDefault(); event.stopImmediatePropagation(); release(record.row); schedule();
-      }
+      } else opening = record;
     };
     // Preserve native target handlers while stopping row-level navigation.
     record.stop = event => event.stopPropagation();
@@ -328,6 +386,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0; topology.disconnect(); content.disconnect(); visibility.disconnect();
     for (const row of [...records.keys()]) release(row);
+    opening = null;
     failed = new WeakMap();
   }
   const start = () => { navigating = true; clear(); };
@@ -335,7 +394,9 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
   const hide = () => { pageHidden = true; clear(); };
   const show = () => { if (pageHidden) navigating = false; pageHidden = false; schedule(); };
   const listeners = [['yt-navigate-start', start], ['yt-navigate-finish', finish], ['yt-page-data-updated', schedule],
-    ['yt-playlist-data-updated', schedule], ['pagehide', hide], ['pageshow', show], ['DOMContentLoaded', schedule]];
+    ['yt-playlist-data-updated', schedule], ['pagehide', hide], ['pageshow', show], ['DOMContentLoaded', schedule],
+    ['yt-popup-opened', popupOpened], ['iron-overlay-opened', popupOpened], ['yt-popup-closed', popupClosed],
+    ['iron-overlay-closed', popupClosed], ['click', unrelatedActivation]];
   for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
   schedule();
   return () => { disposed = true; clear(); style?.remove(); for (const [type, listener] of listeners) window.removeEventListener(type, listener, true); };

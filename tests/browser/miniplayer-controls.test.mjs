@@ -195,6 +195,89 @@ test('unrelated comment and hover churn performs no miniplayer rediscovery',asyn
  await page.evaluate(async()=>{for(let i=0;i<4;i++)await new Promise(requestAnimationFrame);});
  assert.equal(await page.evaluate(()=>miniQueries),0);
 });
+
+test('moving the pointer through an open miniplayer queue does no player rediscovery',async t=>{
+ const page=await open(t);await page.mouse.move(600,500);
+ await page.evaluate(()=>{
+  const queue=document.createElement('ytd-playlist-panel-renderer');
+  queue.style.display='block';
+  for(let i=0;i<8;i++){
+   const row=document.createElement('ytd-playlist-panel-video-renderer');
+   row.style.cssText='display:block;width:400px;height:24px';row.textContent='Queue row '+i;queue.append(row);
+  }
+  document.querySelector('ytd-miniplayer').append(queue);
+ });
+ const rows=page.locator('ytd-playlist-panel-video-renderer');
+ await rows.first().hover();
+ await page.evaluate(async()=>{
+  for(let i=0;i<3;i++)await new Promise(requestAnimationFrame);
+  const query=document.querySelectorAll.bind(document);window.queueHoverQueries=0;
+  document.querySelectorAll=selector=>{if(selector==='ytd-miniplayer #movie_player')queueHoverQueries++;return query(selector);};
+ });
+ async function crossRows(){
+  await rows.first().hover();
+  await page.evaluate(()=>{window.queueHoverQueries=0;});
+  for(let i=1;i<8;i++){
+   await rows.nth(i).hover();
+   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  }
+  return page.evaluate(()=>queueHoverQueries);
+ }
+ const enabledScans=await crossRows();
+ await page.evaluate(()=>disposeMini());
+ assert.deepEqual({enabled:enabledScans,disabled:await crossRows()},{enabled:0,disabled:0});
+ assert.deepEqual(await page.evaluate(()=>mini.calls),[]);
+});
+
+test('moving between children of the same native Play icon keeps the existing tooltip anchor',async t=>{
+ const page=await open(t,{enabled:false});
+ await page.mouse.move(600,500);
+ await page.locator('.ytp-play-button').evaluate(button=>{
+  button.style.cssText='display:flex;width:64px;height:32px';button.replaceChildren();
+  for(let i=0;i<4;i++){
+   const part=document.createElement('span');part.style.cssText='width:16px;height:32px';button.append(part);
+  }
+ });
+ const parts=page.locator('.ytp-play-button > span');
+ await parts.first().hover();
+ await page.evaluate(async()=>{
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const query=document.querySelectorAll.bind(document);window.playHoverQueries=0;
+  document.querySelectorAll=selector=>{if(selector.includes('.ytp-play-button:is(:hover,:focus-visible)'))playHoverQueries++;return query(selector);};
+ });
+ for(let i=1;i<4;i++)await parts.nth(i).hover();
+ assert.equal(await page.evaluate(()=>playHoverQueries),0);
+ assert.notEqual(await page.evaluate(()=>mini.p.style.getPropertyValue('--ytms-mini-play-tip-x')),'');
+});
+
+test('host discovery skips feed-card subtree searches and adopts a late nested host',async t=>{
+ const page=await open(t);
+ const scans=await page.evaluate(async()=>{
+  const host=document.querySelector('ytd-miniplayer');
+  host.remove();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const query=Element.prototype.querySelector;
+  let scans=0;
+  Element.prototype.querySelector=function(selector){
+   if(selector.includes('ytd-miniplayer') && this.tagName==='ARTICLE') scans++;
+   return query.call(this,selector);
+  };
+  try {
+   const batch=document.createDocumentFragment();
+   for(let i=0;i<120;i++) batch.append(document.createElement('article'));
+   document.querySelector('ytd-app').append(batch);
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+  } finally { Element.prototype.querySelector=query; }
+  const wrapper=document.createElement('section');
+  document.querySelector('ytd-app').append(wrapper);
+  wrapper.append(host);
+  return scans;
+ });
+ assert.equal(scans,0);
+ const next=page.locator('[data-ytms-mini-nav-button="next"]');
+ await next.waitFor();
+ assert.equal(await next.isEnabled(),true);
+});
 for(const compiled of [false,true])test(`Escape dismisses the owned tooltip without consuming keyboard focus (${compiled?'Suite':'source'})`,async t=>{
  const page=await open(t,{compiled});const button=page.locator('[data-ytms-mini-nav-button="next"]');
  await button.focus();assert.equal(await page.locator('#ytms-mini-navigation-tooltip').count(),1);
@@ -440,6 +523,28 @@ for(const compiled of [false,true])test(`a transform-hidden retained player cann
  await page.locator('#retained-mini').evaluate(n=>n.remove());
  await page.waitForFunction(()=>!document.querySelector('[data-ytms-mini-nav-button="next"]').disabled);
 });
+test('a retained host finishing a CSS fade restores the visible queue without pointer or playlist events',async t=>{
+ const page=await open(t);await page.mouse.move(600,500);
+ await page.evaluate(()=>{
+  const retained=document.createElement('ytd-miniplayer');
+  retained.id='retained-mini';
+  retained.style.cssText='opacity:1;transition:opacity 250ms linear';
+  retained.innerHTML='<div id="movie_player" style="width:400px;height:225px"></div>';
+  document.body.append(retained);
+ });
+ const next=page.locator('[data-ytms-mini-nav-button="next"]');
+ await page.waitForFunction(()=>document.querySelector('[data-ytms-mini-nav-button="next"]').disabled);
+ const transitions=await page.locator('#retained-mini').evaluate(async host=>{
+  host.style.opacity='0';
+  const animations=host.getAnimations();
+  await Promise.all(animations.map(animation=>animation.finished));
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  return animations.length;
+ });
+ assert.equal(transitions,1,'the retained host completed a real opacity transition');
+ assert.equal(await next.isEnabled(),true);
+ assert.deepEqual(await page.evaluate(()=>mini.calls),[]);
+});
 for(const compiled of [false,true])test(`focused navigation tooltip follows a native controls layout change (${compiled?'Suite':'source'})`,async t=>{
  const page=await open(t,{compiled});const next=page.locator('[data-ytms-mini-nav-button="next"]');
  await page.mouse.move(600,500);await next.focus();
@@ -532,4 +637,34 @@ for(const compiled of [false,true])for(const enabled of [false,true])test(`remov
  await page.locator('.ytp-play-button').focus();
  assert.notEqual(await page.evaluate(()=>mini.p.style.getPropertyValue('--ytms-mini-play-tip-x')),'','the replacement control can own a fresh anchor');
  assert.deepEqual(await page.evaluate(()=>mini.calls),[]);
+});
+
+for(const compiled of [false,true])for(const change of ['hidden','ad','reparented','duplicate','index changed'])for(const read of [1,2])test(`native next getter cannot act after ${change} on read ${read} (${compiled?'Suite':'source'})`,async t=>{
+ const page=await open(t,{compiled});const next=page.locator('[data-ytms-mini-nav-button="next"]');
+ await page.locator('ytd-miniplayer').hover();
+ await next.evaluate((button,options)=>button.addEventListener('click',()=>{
+  const player=mini.p,method=player.nextVideo;let reads=0;
+  Object.defineProperty(player,'nextVideo',{configurable:true,get(){
+   if(++reads===options.read){
+    if(options.change==='hidden')player.closest('ytd-miniplayer').style.display='none';
+    if(options.change==='ad')player.classList.add('ad-showing');
+    if(options.change==='reparented')document.body.append(player);
+    if(options.change==='duplicate'){const miniHost=document.createElement('ytd-miniplayer'),other=document.createElement('div');other.id='movie_player';other.style.cssText='display:block;width:400px;height:225px';miniHost.append(other);document.body.append(miniHost);}
+    if(options.change==='index changed'){
+     const ids=player.getPlaylist();player.getPlaylistIndex=()=>ids.length-1;player.getVideoData=()=>({video_id:ids.at(-1)});
+    }
+   }
+   return method;
+  }});
+ },{once:true,capture:true}),{change,read});
+ await next.click();assert.deepEqual(await page.evaluate(()=>mini.calls),[]);
+});
+for(const compiled of [false,true])test(`native previous getter cannot act after the player becomes hidden (${compiled?'Suite':'source'})`,async t=>{
+ const page=await open(t,{compiled});const previous=page.locator('[data-ytms-mini-nav-button="previous"]');
+ await page.locator('ytd-miniplayer').hover();
+ await previous.evaluate(button=>button.addEventListener('click',()=>{
+  const player=mini.p,method=player.previousVideo;
+  Object.defineProperty(player,'previousVideo',{configurable:true,get(){player.closest('ytd-miniplayer').style.display='none';return method;}});
+ },{once:true,capture:true}));
+ await previous.click();assert.deepEqual(await page.evaluate(()=>mini.calls),[]);
 });

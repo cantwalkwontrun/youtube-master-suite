@@ -222,7 +222,7 @@ async function open(t, options = {}) {
     listId: options.listId || "TLPQfixture", sheet: Boolean(options.sheet), homeMiniplayer: Boolean(options.homeMiniplayer),
     homePath: options.homePath || '/', collapsed: Boolean(options.collapsed), stampDelay: options.stampDelay || 0,
     iconSlots: Boolean(options.iconSlots), iconLoaded: Boolean(options.iconLoaded) });
-  if (!options.suite) await page.addScriptTag({ content: `(() => { ${SELECTION_INSTALLER}\n ${INSTALLER}\n installQueuePlayingMarkerReconciliation(); window.disposeQueueNext = installQueuePlayNext(); })();` });
+  if (!options.suite) await page.addScriptTag({ content: `(() => { ${SELECTION_INSTALLER}\n ${INSTALLER}\n installQueuePlayingMarkerReconciliation(); window.fixtureQueueMenuService = {}; window.disposeQueueNext = installQueuePlayNext({ suite: window.fixtureQueueMenuService }); })();` });
   return page;
 }
 
@@ -236,6 +236,191 @@ async function choose(page, id, { keyboard = false } = {}) {
 const snapshot = page => page.evaluate(() => ({ ids: queueFixture.ids, adds: queueFixture.adds, moves: queueFixture.moves,
   playing: fixture.playerId, title: document.querySelector("h1").textContent,
   url: location.href, comments: document.querySelector("ytd-comments").textContent }));
+
+for (const fault of ['none', 'scroll player', 'two spacers', 'wrong spacer', 'hidden spacer', 'wrong index', 'wrong order', 'foreign watch', 'different URL playlist', 'missing panel']) {
+  test('watch queue with missing player playlist ID requires matching ownership and order: ' + fault, async t => {
+    const page = await open(t, { sheet: true });
+    await page.evaluate(fault => {
+      const player = document.getElementById('movie_player');
+      const panel = document.querySelector('ytd-playlist-panel-renderer');
+      player.getPlaylistId = () => null;
+      player.getPlaylistIndex = () => fault === 'wrong index' ? 1 : queueFixture.ids.indexOf(queueFixture.current);
+      if (fault === 'scroll player' || fault.includes('spacer')) {
+        const spacer = document.createElement('div');
+        spacer.id = 'ytsmp-player-placeholder'; spacer.setAttribute('aria-hidden', 'true');
+        spacer.style.cssText = 'width:320px;height:180px;visibility:hidden';
+        player.before(spacer);
+        document.body.append(player);
+        document.body.classList.add('ytsmp-scroll-miniplayer-active');
+        if (fault === 'two spacers') spacer.after(spacer.cloneNode());
+        if (fault === 'wrong spacer') document.body.append(spacer);
+        if (fault === 'hidden spacer') spacer.parentElement.hidden = true;
+      }
+      if (fault === 'wrong order') player.getPlaylist = () => [...queueFixture.ids].reverse();
+      if (fault === 'foreign watch') {
+        const foreign = document.createElement('ytd-watch-flexy');
+        document.querySelector('ytd-app').append(foreign);
+        foreign.append(panel);
+      }
+      if (fault === 'different URL playlist') history.replaceState(null, '', location.href + '&list=PLdifferent');
+      if (fault === 'missing panel') panel.remove();
+    }, fault);
+    await choose(page, D);
+    if (fault === 'none' || fault === 'scroll player') {
+      await page.waitForFunction(() => queueFixture.ids[1] === 'ddddddddddd', null, { timeout: 3000 });
+      const state = await snapshot(page);
+      assert.deepEqual(state.ids, [A, D, B, C]);
+      assert.deepEqual(state.adds.map(command => command.videoId), [D]);
+      assert.deepEqual(state.moves, [D]);
+      assert.equal(state.playing, A);
+    } else {
+      assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /still updating/);
+      assert.equal((await snapshot(page)).adds.length, 0);
+    }
+  });
+}
+
+test('native tail keyboard companion is cancelled when navigation completes between keydown and click', async t => {
+  const page = await open(t, { sheet: true, suite: true });
+  await page.evaluate(id => queueFixture.open(id), D);
+  const button = page.getByRole('menuitem', { name: 'Add to queue', exact: true });
+  await button.evaluate(node => node.addEventListener('keydown', () => {
+    dispatchEvent(new Event('yt-navigate-start'));
+    dispatchEvent(new Event('yt-navigate-finish'));
+  }, { once: true }));
+  await button.press('Enter');
+  assert.deepEqual((await snapshot(page)).adds, []);
+});
+
+for (const change of ['minimise', 'restore', 'replace spacer']) {
+  test('pending id-less Watch append checks scrolling-player transition: ' + change, async t => {
+    const page = await open(t, { sheet: true, delay: 350 });
+    await page.evaluate(change => {
+      const player = document.getElementById('movie_player');
+      player.getPlaylistId = () => null;
+      player.getPlaylistIndex = () => queueFixture.ids.indexOf(queueFixture.current);
+      const spacer = document.createElement('div');
+      spacer.id = 'ytsmp-player-placeholder'; spacer.setAttribute('aria-hidden', 'true');
+      spacer.style.cssText = 'width:320px;height:180px;visibility:hidden';
+      queueFixture.float = () => {
+        player.before(spacer); document.body.append(player); document.body.classList.add('ytsmp-scroll-miniplayer-active');
+      };
+      queueFixture.restore = () => {
+        spacer.replaceWith(player); document.body.classList.remove('ytsmp-scroll-miniplayer-active');
+      };
+      if (change !== 'minimise') queueFixture.float();
+    }, change);
+    await choose(page, D);
+    await page.evaluate(change => {
+      if (change === 'minimise') queueFixture.float();
+      else if (change === 'restore') queueFixture.restore();
+      else {
+        const spacer = document.querySelector('#ytsmp-player-placeholder');
+        spacer.replaceWith(spacer.cloneNode());
+      }
+    }, change);
+    const message = change === 'replace spacer' ? 'The queue changed; no item was moved.' : 'Playing next in queue';
+    await page.waitForFunction(text => document.querySelector('[data-yt-master-queue-status]')?.textContent === text, message);
+    await page.waitForFunction(() => queueFixture.ids.length === 4);
+    const state = await snapshot(page);
+    assert.deepEqual(state.adds.map(command => command.videoId), [D]);
+    assert.deepEqual(state.moves, change === 'replace spacer' ? [] : [D]);
+    assert.equal(state.playing, A);
+  });
+}
+
+for (const sheet of [false, true]) test(`eventless fallback cannot repeat an uncommitted native Play next write (${sheet ? 'sheet' : 'legacy'})`, async t => {
+  const page = await open(t, { sheet });
+  const result = await page.evaluate(sheet => {
+    const f = queueFixture, popup = f.popup;
+    let deferred;
+    if (sheet) {
+      const read = popup.componentProps.data;
+      popup.componentProps.data = () => deferred ? f.nativeSheetData : read();
+      deferred = true;
+    } else {
+      const owner = popup.polymerController, set = owner.set.bind(owner);
+      owner.set = (path, data) => {
+        if (data.items.some(item => item.menuServiceItemRenderer.ytMasterPlayNext)) {
+          deferred = () => set(path, data);
+          f.deferredWrites = (f.deferredWrites || 0) + 1;
+        } else set(path, data);
+      };
+    }
+    f.open('ddddddddddd');
+    const writes = () => sheet ? f.menuWrites : f.deferredWrites;
+    const initial = writes();
+    const waitForStamp = fixtureQueueMenuService.prepareVideoQueueMenu(popup, 'ddddddddddd');
+    popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+    const repeats = writes() - initial;
+    if (sheet) deferred = false; else deferred();
+    return { repeats, waitForStamp, rows: popup.querySelectorAll(sheet ? 'yt-list-item-view-model' : 'ytd-menu-service-item-renderer').length };
+  }, sheet);
+  assert.deepEqual(result, { repeats: 0, waitForStamp: true, rows: 2 });
+  await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).click();
+  await page.waitForFunction(() => queueFixture.ids[1] === 'ddddddddddd');
+});
+
+test('a replacement popup model can prepare Play next while the previous native write is unpublished', async t => {
+  const page = await open(t);
+  await page.evaluate(() => {
+    const f = queueFixture, owner = f.popup.polymerController, set = owner.set.bind(owner);
+    const writes = [];
+    owner.set = (path, data) => {
+      if (data.items.some(item => item.menuServiceItemRenderer.ytMasterPlayNext)) writes.push(data);
+      else set(path, data);
+    };
+    f.open('ddddddddddd');
+    f.open('eeeeeeeeeee');
+    if (writes.length !== 2) throw new Error('Each distinct native menu must get its own Play next write');
+    set('data', writes[1]);
+  });
+  await page.getByRole('menuitem', { name: 'Play next in queue', exact: true }).click();
+  await page.waitForFunction(() => queueFixture.ids[1] === 'eeeeeeeeeee');
+  assert.equal((await snapshot(page)).adds.length, 1);
+});
+
+test('native open during a synchronous Play next setter does not re-enter that setter', async t => {
+  const page = await open(t);
+  const writes = await page.evaluate(() => {
+    const popup = queueFixture.popup, owner = popup.polymerController, set = owner.set.bind(owner);
+    let calls = 0;
+    owner.set = (path, data) => {
+      if (data.items.some(item => item.menuServiceItemRenderer.ytMasterPlayNext) && ++calls <= 3) {
+        popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+      }
+      set(path, data);
+    };
+    queueFixture.open('ddddddddddd');
+    return calls;
+  });
+  assert.equal(writes, 1);
+});
+
+for (const sheet of [false, true]) for (const late of [false, true]) {
+  test(`conflicting Add to queue targets ${late ? 'invalidate an open' : 'prevent a new'} Play next action (${sheet ? 'sheet' : 'legacy'})`, async t => {
+    const page = await open(t, { sheet });
+    const before = await snapshot(page);
+    await page.evaluate(({ sheet, late }) => {
+      const f = queueFixture;
+      f.open('ddddddddddd');
+      const current = sheet ? f.popup.componentProps.data() : f.popup.polymerController.data;
+      const items = sheet ? current.content.listViewModel.listItems : current.items;
+      const extra = structuredClone(f.nativeItems[0]);
+      const endpoint = sheet ? extra.listItemViewModel.rendererContext.commandContext.onTap.innertubeCommand : extra.menuServiceItemRenderer.serviceEndpoint;
+      const command = endpoint.signalServiceEndpoint.actions[0].addToPlaylistCommand;
+      command.videoId = command.videoIds[0] = command.onCreateListCommand.createPlaylistServiceEndpoint.videoIds[0] = 'eeeeeeeeeee';
+      if (late) { items.push(extra); return; }
+      const native = [f.nativeItems[0], extra];
+      if (sheet) f.setSheetData({ content: { listViewModel: { listItems: native } } });
+      else f.popup.polymerController.set('data', { items: native });
+      f.popup.dispatchEvent(new CustomEvent('yt-popup-opened', { bubbles: true }));
+    }, { sheet, late });
+    const action = page.getByRole('menuitem', { name: 'Play next in queue', exact: true });
+    if (late) { await action.click(); assert.deepEqual(await snapshot(page), before); }
+    else assert.equal(await action.count(), 0);
+  });
+}
 
 for(const suite of [false,true])test(`opening another menu cancels collapsed queue preparation (${suite?'Suite':'source'})`,async t=>{
   const page=await open(t,{suite,sheet:true,homeMiniplayer:true,collapsed:true,stampDelay:700});
@@ -1296,19 +1481,39 @@ for (const sheet of [false, true]) test(`the generated Suite provides the ${shee
   assert.equal(after.playing, before.playing); assert.equal(after.url, before.url);
 });
 
-test("a collapsed native miniplayer queue is moved only when its ID matches the active player", async t => {
-  const page = await open(t);
-  await page.evaluate(() => {
-    const panel = document.querySelector('ytd-playlist-panel-renderer');
-    const mini = document.createElement('ytd-miniplayer'); document.querySelector('ytd-app').append(mini); mini.append(panel);
-    panel.style.display = 'none';
-    document.getElementById('movie_player').getPlaylistId = () => 'TLPQfixture';
-  });
-  await choose(page, C);
-  await page.waitForFunction(() => queueFixture.moves.length === 1);
-  assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
-  assert.equal((await snapshot(page)).adds.length, 0);
-});
+for (const suite of [false, true]) {
+  for (const state of ['shared', 'co-located', 'different ID', 'different order', 'hidden host', 'two candidates']) {
+    test(`a collapsed native miniplayer queue requires a matching player and order (${suite ? 'Suite' : 'source'}, ${state})`, async t => {
+      const page = await open(t, { suite, homeMiniplayer: state === 'co-located' });
+      await page.evaluate(state => {
+        const panel = document.querySelector('ytd-playlist-panel-renderer');
+        const mini = panel.closest('ytd-miniplayer') || document.createElement('ytd-miniplayer');
+        if (!mini.isConnected) { document.querySelector('ytd-app').append(mini); mini.append(panel); }
+        panel.style.display = 'none';
+        const player = document.getElementById('movie_player');
+        player.getPlaylistId = () => state === 'different ID' ? 'TLPQother' : 'TLPQfixture';
+        if (state === 'different order') player.getPlaylist = () => [...queueFixture.ids].reverse();
+        if (state === 'hidden host') mini.style.opacity = '0';
+        if (state === 'two candidates') {
+          const twin = panel.cloneNode(true);
+          twin.polymerController = queueFixture.owner;
+          mini.append(twin);
+        }
+      }, state);
+      await choose(page, C);
+      if (state === 'shared' || state === 'co-located') {
+        await page.waitForFunction(() => queueFixture.moves.length === 1);
+        assert.deepEqual((await snapshot(page)).ids, [A, C, B]);
+      } else {
+        await page.waitForFunction(() =>
+          document.querySelector('[data-yt-master-queue-status]')?.textContent.includes('Nothing was added'));
+        assert.deepEqual((await snapshot(page)).ids, [A, B, C]);
+        assert.deepEqual((await snapshot(page)).moves, []);
+      }
+      assert.equal((await snapshot(page)).adds.length, 0);
+    });
+  }
+}
 
 test("ambiguous visible players do not enqueue or change playback", async t => {
   const page = await open(t);
@@ -1974,8 +2179,8 @@ test('an unconfirmed newly appended item is retained once and can be moved on th
   assert.equal((await snapshot(page)).adds.length, 1, 'retrying the retained entry must not append a duplicate');
 });
 
-test('the confirmation deadline recognises a native model-only commit with no later signal', { timeout: 20000 }, async t => {
-  const page = await open(t);
+for (const suite of [false, true]) test(`the confirmation deadline recognises a native model-only commit with no later signal (${suite ? 'Suite' : 'source'})`, { timeout: 24000 }, async t => {
+  const page = await open(t, { suite });
   await page.evaluate(() => {
     const f = queueFixture;
     f.owner.handleDrop = ({ currDragItem }) => {
@@ -2403,6 +2608,20 @@ for (const suite of [false,true]) for (const replacement of ['queue-id','queue-i
   assert.deepEqual((await snapshot(page)).moves,[D]);
 });
 
+for (const suite of [false,true]) test(`Play next expands the queue while an adjacent action menu is closed (${suite?'Suite':'source'})`,async t=>{
+  const page=await open(t,{suite,sheet:true,homeMiniplayer:true,collapsed:true,stampDelay:100});
+  await page.evaluate(()=>{
+    const actions=document.createElement('button');
+    actions.textContent='Queue actions'; actions.setAttribute('aria-haspopup','menu'); actions.setAttribute('aria-expanded','false');
+    actions.onclick=()=>{queueFixture.openedActions=true;};
+    queueFixture.queueToggle.before(actions);
+  });
+  await choose(page,D);
+  await page.waitForFunction(()=>document.querySelector('[data-yt-master-queue-status]')?.textContent==='Playing next in queue');
+  assert.deepEqual((await snapshot(page)).ids,[A,D,B,C]);
+  assert.equal(await page.evaluate(()=>Boolean(queueFixture.openedActions)),false);
+});
+
 for (const suite of [false,true]) for (const knownId of [false,true,'disappears']) test(`collapsed queue preparation preserves an intact native queue (${suite?'Suite':'source'}, known ID ${knownId})`,async t=>{
   const page=await open(t,{suite,sheet:true,homeMiniplayer:true,collapsed:true,stampDelay:100});
   if(knownId)await page.evaluate(()=>{document.getElementById('movie_player').getPlaylistId=()=> 'TLPQfixture';});
@@ -2797,3 +3016,55 @@ for(const suite of [false,true])for(const cancellation of ['yt-navigate-start','
   assert.deepEqual((await snapshot(page)).ids,[A,B,C,D]);assert.equal((await snapshot(page)).adds.length,1);
   assert.deepEqual((await snapshot(page)).moves,[],'The original native append must never be retried or committed after cancellation');
 });
+
+for (const suite of [false, true]) {
+  for (const state of ['discarded binding', 'previous queue model']) {
+    test(`Play next after maximising ignores a hidden floating panel with a ${state} (${suite ? 'Suite' : 'source'})`, async t => {
+      const page = await open(t, { suite, sheet: true });
+      await page.evaluate(state => {
+        const mini = document.createElement('ytd-miniplayer');
+        mini.hidden = true;
+        const stale = document.createElement('ytd-playlist-panel-renderer');
+        const oldModel = structuredClone(queueFixture.owner.data);
+        stale.polymerController = {
+          get data() {
+            if (state === 'discarded binding') throw new Error('Disposed floating panel');
+            return oldModel;
+          },
+          canReorder: false,
+        };
+        mini.append(stale);
+        document.querySelector('ytd-app').prepend(mini);
+      }, state);
+      await choose(page, D);
+      await page.waitForFunction(() => queueFixture.moves.length === 1, null, { timeout: 1600 });
+      const result = await snapshot(page);
+      assert.deepEqual(result.ids, [A, D, B, C]);
+      assert.equal(result.adds.length, 1);
+      assert.equal(result.playing, A);
+    });
+  }
+
+  test(`Play next waits for a visible queue panel to join its watch player (${suite ? 'Suite' : 'source'})`, async t => {
+    const page = await open(t, { suite, sheet: true });
+    await page.evaluate(() => {
+      const mini = document.createElement('ytd-miniplayer');
+      mini.style.display = 'block';
+      const panel = document.querySelector('ytd-playlist-panel-renderer');
+      mini.append(panel);
+      document.querySelector('ytd-app').append(mini);
+    });
+    await choose(page, D);
+    assert.equal((await snapshot(page)).adds.length, 0, 'The detached floating queue must not receive the command');
+    await page.evaluate(() => {
+      const panel = document.querySelector('ytd-miniplayer ytd-playlist-panel-renderer');
+      document.querySelector('#secondary').append(panel);
+      queueFixture.render();
+    });
+    await page.waitForFunction(() => queueFixture.moves.length === 1);
+    const result = await snapshot(page);
+    assert.deepEqual(result.ids, [A, D, B, C]);
+    assert.equal(result.adds.length, 1);
+    assert.equal(result.playing, A);
+  });
+}

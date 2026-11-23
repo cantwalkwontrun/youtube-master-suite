@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { createCustomJavascript } from '../sources/custom-javascript.mjs';
 
-function fixture(record = null, { loading = false, skip = false, query = '' } = {}) {
+function fixture(record = null, { loading = false, skip = false, query = '', coordinated = false } = {}) {
   let raw = record === null ? null : JSON.stringify(record), writes = 0, compiles = 0;
   const document = new EventTarget(); document.readyState = loading ? 'loading' : 'complete';
   const context = vm.createContext({});
@@ -17,9 +17,13 @@ function fixture(record = null, { loading = false, skip = false, query = '' } = 
     clearTimeout(id) { timers.delete(id); },
   });
   context.window = window;
+  const key = 'yt-master-suite.custom-javascript-write.v1';
+  let revision = null, receipt = null;
   const service = createCustomJavascript({ document, window,
-    getValue: () => raw, setValue: (key, value) => { writes++; raw = value; } });
+    getValue: name => name === key ? receipt : raw, setValue: (key, value) => { writes++; raw = value; },
+    coordination: coordinated ? { key, getRevision: () => revision } : undefined });
   return { service, document, window, get raw() { return raw; }, get writes() { return writes; }, get compiles() { return compiles; },
+    setCoordination(next, savedReceipt) { revision = next; receipt = savedReceipt; },
     set raw(value) { raw = value; }, flush() { for (const [id, callback] of timers) { timers.delete(id); callback(); } }, get timers() { return timers.size; } };
 }
 
@@ -27,6 +31,30 @@ test('default and disabled configurations create no compile or timer work', () =
   for (const record of [null, { version: 1, enabled: false, code: 'invalid (' }]) {
     const f = fixture(record); f.service.start(); f.service.start(); f.flush();
     assert.equal(f.service.status, 'disabled'); assert.equal(f.compiles, 0); assert.equal(f.timers, 0); assert.equal(f.writes, 0);
+  }
+});
+
+test('an opaque revision advanced in another tab prevents stale code from running', () => {
+  const record = { version: 1, enabled: true, code: 'window.runs = 1;' };
+  const f = fixture(record, { loading: true, coordinated: true });
+  const oldReceipt = JSON.stringify({ revision: 'old', value: f.raw });
+  f.setCoordination('old', oldReceipt);
+  f.service.start();
+  f.setCoordination('new', oldReceipt); // The protected cache has not caught up yet.
+  f.document.readyState = 'interactive';
+  f.document.dispatchEvent(new Event('DOMContentLoaded')); f.flush();
+  assert.equal(f.window.runs, undefined);
+  assert.equal(f.service.status, 'skipped');
+  assert.equal(f.writes, 0);
+});
+
+test('current and pre-coordination saved code still runs as configured', () => {
+  for (const legacy of [false, true]) {
+    const f = fixture({ version: 1, enabled: true, code: 'window.runs = 1;' }, { coordinated: true });
+    if (!legacy) f.setCoordination('current', JSON.stringify({ revision: 'current', value: f.raw }));
+    f.service.start(); f.flush();
+    assert.equal(f.window.runs, 1);
+    assert.equal(f.writes, 0);
   }
 });
 

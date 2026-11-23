@@ -86,6 +86,20 @@ test('hiding native fullscreen chat preserves the Suite-owned floating chat pane
   await remainsIntact(page);
 });
 
+test('a retained fullscreen player cannot hide chat on the normal watch page', async t => {
+  const page=await open(t,{hideChatFullscreen:true});
+  await page.evaluate(()=>{
+    const retained=document.createElement('ytd-watch-flexy');
+    retained.hidden=true;
+    retained.innerHTML='<div class="html5-video-player ytp-fullscreen"></div>';
+    document.querySelector('ytd-app').append(retained);
+    const chat=document.createElement('ytd-live-chat-frame');chat.id='chat';chat.className='surface';
+    document.querySelector('#secondary-inner').append(chat);
+  });
+  assert.equal(await page.locator('#chat').isVisible(),true);
+  await remainsIntact(page);
+});
+
 test('related placement yields to native queues, chat, engagement and extension surfaces', async t => {
   const page = await open(t, { relatedBelowPlayer: true, hideRelated: false });
   const marker = () => page.locator('ytd-watch-flexy').getAttribute('data-ytms-related-below');

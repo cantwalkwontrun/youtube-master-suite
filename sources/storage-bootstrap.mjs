@@ -1,10 +1,11 @@
 // Language: en-GB. Serialise first migration without publishing saved values.
 export async function initialiseIsolatedStorage({ createAdapter, adapterOptions = {}, locks,
-  getLegacyStorage = adapterOptions.getLegacyStorage, timeoutMs = 10000,
+  getLegacyStorage = adapterOptions.getLegacyStorage, timeoutMs = 10000, recoverEmpty = false,
   setTimeout: scheduleTimeout = globalThis.setTimeout,
   clearTimeout: cancelTimeout = globalThis.clearTimeout }) {
   const migrationKey = 'yt-master-suite.storage-migration.v1';
   const guardKey = 'yt-master-suite.storage-migration-started.v1';
+  const emptyBaselineKey = 'yt-master-suite.storage-empty-baseline.v1';
   const fail = () => { throw new Error('Tampermonkey storage migration could not complete. Existing site settings were left unchanged.'); };
   const { getValue, setValue, addValueChangeListener, removeValueChangeListener } = adapterOptions;
   if ([createAdapter, getValue, setValue, addValueChangeListener, removeValueChangeListener,
@@ -17,9 +18,12 @@ export async function initialiseIsolatedStorage({ createAdapter, adapterOptions 
     return value;
   }
   const readSnapshot = () => synchronous(getValue(migrationKey, undefined));
-  const openAdapter = () => synchronous(createAdapter({ ...adapterOptions, getLegacyStorage }));
+  const baselineAvailable = () => readSnapshot() !== undefined || synchronous(getValue(emptyBaselineKey, undefined)) === '1';
+  const openAdapter = (beforeMigrationWrite = fail) => synchronous(createAdapter({
+    ...adapterOptions, getLegacyStorage, beforeMigrationWrite,
+  }));
   // A committed private baseline needs neither page storage nor a new lock.
-  if (readSnapshot() !== undefined) return openAdapter();
+  if (baselineAvailable()) return openAdapter();
   if (!locks || typeof locks.request !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) fail();
 
   const controller = new AbortController();
@@ -40,7 +44,12 @@ export async function initialiseIsolatedStorage({ createAdapter, adapterOptions 
         if (error) reject(error); else resolve();
       };
       const abort = () => {
-        try { fail(); } catch (error) { finish(error); }
+        try {
+          if (baselineAvailable()) { finish(); return; }
+          const error = new Error('Tampermonkey storage migration could not complete. The protected storage snapshot did not arrive.');
+          error.code = 'storage-snapshot-missing';
+          finish(error);
+        } catch (error) { finish(error); }
       };
       const check = () => {
         if (settled) return;
@@ -61,15 +70,33 @@ export async function initialiseIsolatedStorage({ createAdapter, adapterOptions 
     const outcome = await locks.request(migrationKey, { mode: 'exclusive', signal: controller.signal }, async () => {
       try {
         if (controller.signal.aborted) fail();
-        if (readSnapshot() !== undefined) return { ok: true, value: openAdapter() };
+        if (baselineAvailable()) return { ok: true, value: openAdapter() };
         const legacy = getLegacyStorage();
         if (!legacy || typeof legacy.getItem !== 'function' || typeof legacy.setItem !== 'function') fail();
-        if (legacy.getItem(guardKey) === null) {
-          // The fixed flag contains no saved data. Never clear it after an ambiguous
-          // write: GM readback sees this instance's cache, not a durable write ACK.
-          legacy.setItem(guardKey, '1');
-          if (legacy.getItem(guardKey) !== '1') fail();
+        if (recoverEmpty) {
+          if (legacy.getItem(guardKey) !== '1' || controller.signal.aborted) fail();
+          // Commit a separate, protected default baseline. Do not clear the
+          // guard, re-import site data, or overwrite an unread original.
+          synchronous(setValue(emptyBaselineKey, '1'));
+          if (!baselineAvailable()) fail();
           return { ok: true, value: openAdapter() };
+        }
+        if (legacy.getItem(guardKey) === null) {
+          // Legacy validation can fail before a private write is attempted. Set
+          // the cross-tab guard only once the adapter has a complete snapshot.
+          const value = openAdapter(() => {
+            if (legacy.getItem(guardKey) !== null) fail();
+            try {
+              legacy.setItem(guardKey, '1');
+              if (legacy.getItem(guardKey) !== '1') fail();
+            } catch (error) {
+              // Still under the exclusive lock, and the private write has not
+              // started. A public write that threw after taking effect is ours.
+              if (legacy.getItem(guardKey) === '1') legacy.removeItem(guardKey);
+              throw error;
+            }
+          });
+          return { ok: true, value };
         }
         // A previous writer may have committed while our GM cache was still stale.
         // The lock alone cannot make that cache fresh; wait without migrating again.

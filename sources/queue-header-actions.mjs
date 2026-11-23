@@ -4,6 +4,7 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
   const panels = 'ytd-playlist-panel-renderer', slots = ':is(#playlist-action-menu,#overflow-menu,#overflow-menu-top-row).ytd-playlist-panel-renderer';
   const marker = 'data-ytms-queue-header-menu', sourceMarker = 'data-ytms-queue-header-source';
   const groups = new Map(), waiting = new Set(), failed = new WeakMap();
+  let anchoredMenu = null;
   let frame = 0, generation = 0, serial = 0, pendingKey = null, disposed = false, navigating = false, pageHidden = false;
   const owner = node => node?.polymerController || node?.getPolymerController?.() || node;
   const paused = () => disposed || navigating || pageHidden || document.hidden;
@@ -59,7 +60,27 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
     }
     return selected.save.header === selected.clear.header && selected.save.playlistId === selected.clear.playlistId ? { ...selected, sources:[...choices.save,...choices.clear] } : null;
   }
+  function placement(panel, clear) {
+    const native = { parent: clear.menu.parentElement, before: null, toggle: null };
+    const content = panel.parentElement;
+    if (!panel.matches('[within-miniplayer]') || !content?.matches('ytd-miniplayer > .ytdMiniplayerComponentContent') ||
+        content.querySelectorAll(':scope > ytd-playlist-panel-renderer').length !== 1) return native;
+    const bars = content.querySelectorAll(':scope > yt-draggable > ytd-miniplayer-info-bar, :scope > ytd-miniplayer-info-bar');
+    if (bars.length !== 1) return native;
+    const bar = bars[0], buttons = bar.querySelectorAll(':scope > .ytdMiniplayerInfoBarExpand button[aria-expanded]');
+    if (buttons.length !== 1 || !bar.querySelector(':scope > .ytdMiniplayerInfoBarContent')) return native;
+    return { parent: bar, before: buttons[0].closest('.ytdMiniplayerInfoBarExpand'), toggle: buttons[0] };
+  }
+  function samePlacement(a, b) { return a.parent === b.parent && a.before === b.before && a.toggle === b.toggle; }
+  function expanded(group) {
+    return !group.place.toggle || (group.place.toggle.getAttribute('aria-expanded') === 'true' &&
+      !group.panel.matches('[hidden],[collapsed],[inert],[aria-hidden="true"]'));
+  }
   function close(group, restore = false) {
+    if (anchoredMenu === group) {
+      window.removeEventListener('scroll', anchorScrolled, true);
+      anchoredMenu = null;
+    }
     group.open = false; group.button.setAttribute('aria-expanded','false');
     try { if (group.popup.matches(':popover-open')) group.popup.hidePopover(); } catch { /* Older browser fallback. */ }
     group.popup.hidden = true;
@@ -69,6 +90,7 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
     const group = groups.get(panel); if (!group) return;
     groups.delete(panel); close(group); restoreLayout(group); group.popup.remove(); group.wrap.remove();
     for (const source of group.sources) source.menu.removeAttribute(sourceMarker);
+    panel.removeAttribute('data-ytms-queue-menu-in-info-bar');
     panel.removeAttribute(marker);
   }
   function painted(node) {
@@ -81,7 +103,9 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
     return true;
   }
   function valid(group, visible = false) {
-    if (paused() || groups.get(group.panel) !== group || !group.wrap.isConnected || group.wrap.parentElement !== group.clear.menu.parentElement || group.panel.closest('ytd-app') !== group.app || visible && !painted(group.button)) return false;
+    if (paused() || groups.get(group.panel) !== group || !group.wrap.isConnected || group.wrap.parentElement !== group.place.parent ||
+        group.panel.closest('ytd-app') !== group.app || visible && (!expanded(group) || !painted(group.button) ||
+        !samePlacement(group.place, placement(group.panel, group.clear)) || group.place.toggle && !painted(group.panel))) return false;
     return group.actions.length === 2 && group.actions.every(action => model(action.row) === action.item && group.popup.contains(action.row) && same(action,proof(action.menu))) && !paused() && groups.get(group.panel) === group;
   }
   function canActivate(group) {
@@ -90,15 +114,26 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
   }
   function position(group) {
     const box = group.button.getBoundingClientRect(), width = group.popup.offsetWidth, height = group.popup.offsetHeight;
+    group.anchorTop = box.top;
+    group.anchorRight = box.right;
     group.popup.style.left = `${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
     group.popup.style.top = `${box.bottom+height+4 <= window.innerHeight-8 ? box.bottom+4 : Math.max(8,box.top-height-4)}px`;
+  }
+  function anchorScrolled(event) {
+    const group = anchoredMenu;
+    if (!group || (event.target !== window && !event.target.contains?.(group.button))) return;
+    const box = group.button.getBoundingClientRect();
+    if (box.top !== group.anchorTop || box.right !== group.anchorRight) close(group);
   }
   function open(group, last = false) {
     if (!valid(group,true)) { release(group.panel); schedule(); return; }
     for (const other of groups.values()) if (other !== group) close(other);
     group.popup.hidden = false;
     try { group.popup.showPopover?.(); } catch { group.popup.removeAttribute('popover'); (group.panel.closest('ytd-app') || document.body).append(group.popup); }
-    group.open = true; group.button.setAttribute('aria-expanded','true'); position(group); group.actions[last ? 1 : 0].row.focus({preventScroll:true});
+    group.open = true; group.button.setAttribute('aria-expanded','true'); position(group);
+    anchoredMenu = group;
+    window.addEventListener('scroll', anchorScrolled, { capture: true, passive: true });
+    group.actions[last ? 1 : 0].row.focus({preventScroll:true});
   }
   function icon(path) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true'); svg.setAttribute('focusable','false');
@@ -115,6 +150,7 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
     group.layout = new Map();
   }
   function layout(group) {
+    if (group.place.toggle) return;
     const header = group.clear.header;
     if (group.layoutDirty) restoreLayout(group);
     // Read native text rather than inheriting the browser's default button colour.
@@ -158,7 +194,8 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
   }
   function install(panel, current) {
     const request = generation, active = () => request === generation && !paused(); let group = groups.get(panel);
-    if (group && group.actions.every(action => same(action,current[action.action])) && current.sources.length === group.sources.length && current.sources.every((source,index) => same(source,group.sources[index])) && valid(group)) {
+    const place = placement(panel, current.clear);
+    if (group && samePlacement(group.place, place) && group.actions.every(action => same(action,current[action.action])) && current.sources.length === group.sources.length && current.sources.every((source,index) => same(source,group.sources[index])) && valid(group)) {
     } else {
       release(panel); if (!active()) return;
       const rejected = failed.get(panel);
@@ -169,13 +206,21 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
       }
       const wrap = document.createElement('span'); wrap.setAttribute('data-ytms-queue-menu-wrap','');
       const button = document.createElement('button'); button.type = 'button'; button.className = 'ytms-queue-more'; button.hidden = true;
+      button.title = 'Queue actions';
       button.setAttribute('aria-label','Queue actions'); button.setAttribute('aria-haspopup','menu'); button.setAttribute('aria-expanded','false');
       button.append(icon('M12 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z'));
       const popup = document.createElement('div'); popup.setAttribute('data-ytms-queue-menu-popup',''); popup.setAttribute('role','menu'); popup.setAttribute('aria-label','Queue actions'); popup.hidden = true;
       popup.id = `ytms-queue-header-popup-${++serial}`; button.setAttribute('aria-controls',popup.id);
       if (typeof popup.showPopover === 'function') popup.setAttribute('popover','auto');
-      wrap.append(button,popup); group = { panel,...current,app:panel.closest('ytd-app'),wrap,button,popup,actions:[],open:false,layoutDirty:true,layout:new Map() }; groups.set(panel,group);
-      current.clear.menu.parentElement.append(wrap);
+      wrap.append(button,popup); group = { panel,...current,place,app:panel.closest('ytd-app'),wrap,button,popup,actions:[],open:false,layoutDirty:true,layout:new Map() }; groups.set(panel,group);
+      if (place.toggle) {
+        // The info bar toggles the queue and its draggable parent handles presses.
+        // Keep the menu's own native activation and keyboard focus intact.
+        for (const type of ['pointerdown','mousedown','touchstart','click']) {
+          wrap.addEventListener(type, event => event.stopPropagation());
+        }
+      }
+      place.parent.insertBefore(wrap, place.before);
       if (!popup.hasAttribute('popover')) (panel.closest('ytd-app') || document.body).append(popup);
       if (!active() || groups.get(panel) !== group) { release(panel); return; }
       for (const action of ['save','clear']) {
@@ -189,20 +234,29 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
         if (!active() || model(row) !== record.item || !same(record,proof(record.menu))) { if(active())failed.set(panel,current); release(panel); return; }
       }
       button.addEventListener('click',event => { event.stopPropagation(); group.open ? close(group) : open(group); });
-      popup.addEventListener('toggle',()=>{try{if(popup.hasAttribute('popover')&&!popup.matches(':popover-open')){group.open=false;button.setAttribute('aria-expanded','false');}}catch{/* No popover API. */}});
+      popup.addEventListener('toggle',()=>{try{if(group.open&&popup.hasAttribute('popover')&&!popup.matches(':popover-open'))close(group);}catch{/* No popover API. */}});
     }
     const ready = group.actions.map(prepare).every(Boolean);
     if (!active() || !valid(group)) { release(panel); return; }
-    group.button.hidden = !ready;
+    const show = ready && expanded(group);
+    if (!show && group.open) close(group);
+    group.button.hidden = !show;
+    if (place.toggle) {
+      group.wrap.hidden = !show;
+      panel.toggleAttribute('data-ytms-queue-menu-in-info-bar', ready);
+    }
     if (ready) { for (const source of group.sources) if (!source.menu.hasAttribute(sourceMarker)) source.menu.setAttribute(sourceMarker,''); if(!panel.hasAttribute(marker))panel.setAttribute(marker,''); layout(group); }
     else { if(group.open)close(group); for (const source of group.sources) source.menu.removeAttribute(sourceMarker); panel.removeAttribute(marker); }
   }
   function refresh() {
     frame=0; if(paused())return; const request=generation; observer.disconnect();
-    for(const root of [document.documentElement,document.body,...document.querySelectorAll('ytd-app,ytd-page-manager,#page-manager,ytd-watch-flexy,ytd-miniplayer,#secondary,#secondary-inner,#panels,.ytdMiniplayerComponentContent')])if(root)observer.observe(root,{childList:true});
+    for(const root of [document.documentElement,document.body,...document.querySelectorAll('ytd-app,ytd-page-manager,#page-manager,ytd-watch-flexy,ytd-miniplayer,#secondary,#secondary-inner,#panels,.ytdMiniplayerComponentContent,.ytdMiniplayerComponentContent > yt-draggable')])if(root)observer.observe(root,{childList:true});
+    for(const bar of document.querySelectorAll('ytd-miniplayer ytd-miniplayer-info-bar')) {
+      observer.observe(bar,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-expanded']});
+    }
     const seen=new Set();
     for(const panel of document.querySelectorAll(panels)){
-      if(paused()||request!==generation)return; observer.observe(panel,{childList:true});
+      if(paused()||request!==generation)return; observer.observe(panel,{childList:true,attributes:true,attributeFilter:['within-miniplayer','hidden','collapsed','inert','aria-hidden']});
       for(const root of panel.querySelectorAll(':scope > #container'))observer.observe(root,{childList:true});
       for(const header of panel.querySelectorAll('.header.ytd-playlist-panel-renderer'))if(header.closest(panels)===panel)observer.observe(header,{childList:true,subtree:true,characterData:true});
       const current=findActions(panel); if(paused()||request!==generation)return; if(current){seen.add(panel);install(panel,current);const group=groups.get(panel);if(group)observer.observe(group.popup,{childList:true,subtree:true,characterData:true});}
@@ -226,6 +280,7 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
       event.stopImmediatePropagation();pendingKey=event.key;
       if(event.key==='Tab'){close(group);return;}
       event.preventDefault();
+      if (event.repeat && (event.key === 'Enter' || event.key === ' ')) return;
       if(trigger){if(['ArrowDown','ArrowUp'].includes(event.key))open(group,event.key==='ArrowUp');else group.open?close(group):open(group);return;}
       if(event.key==='Escape'){close(group,true);return;}
       if(['Enter',' '].includes(event.key)){
@@ -244,21 +299,25 @@ export function installQueueHeaderActions({ document, window, preferences = {}, 
   }), style=document.createElement('style');
   style.textContent=`
     ytd-menu-renderer[${sourceMarker}] { display:none !important; }
-    [data-ytms-queue-menu-wrap] { display:inline-flex;align-items:center;vertical-align:middle;color:var(--yt-spec-text-primary,inherit); }
-    .ytms-queue-more { display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:4px;border:0;border-radius:50%;background:transparent;color:inherit;cursor:pointer; }
+    [data-ytms-queue-menu-wrap] { display:inline-flex;align-items:center;vertical-align:middle;flex:none;--ytms-queue-trigger-ink:#0f0f0f; }
+    html[dark] [data-ytms-queue-menu-wrap] { --ytms-queue-trigger-ink:#f1f1f1; }
+    [data-ytms-queue-menu-wrap][hidden] { display:none !important; }
+    .ytms-queue-more { display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:4px;border:0;border-radius:50%;background:transparent;color:var(--yt-spec-text-primary,var(--ytms-queue-trigger-ink)) !important;cursor:pointer; }
+    ytd-playlist-panel-renderer[data-ytms-queue-menu-in-info-bar]:not([loading]) > #container > .header.ytd-playlist-panel-renderer { height:auto !important;min-height:0 !important;padding-block:0 !important; }
+    ytd-playlist-panel-renderer[data-ytms-queue-menu-in-info-bar] > #container > .header :is(#header-contents,#header-top-row).ytd-playlist-panel-renderer { margin-block:0 !important; }
     .ytms-queue-more[hidden] { display:none !important; }
     .ytms-queue-more svg { width:24px;height:24px;pointer-events:none; }
-    .ytms-queue-more svg, .ytms-queue-more svg path { fill:currentColor !important; }
+    .ytms-queue-more svg, .ytms-queue-more svg path { color:inherit !important;fill:currentColor !important; }
     .ytms-queue-more:hover { background:var(--yt-spec-badge-chip-background,rgba(127,127,127,.2)); }
     .ytms-queue-more:focus-visible { outline:2px solid currentColor;outline-offset:2px; }
-    [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#fff);--ytms-queue-menu-text:var(--yt-spec-text-primary,#0f0f0f);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(0,0,0,.1));color-scheme:light;position:fixed;inset:auto;margin:0;padding:8px 0;border:0;border-radius:12px;width:min(212px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;z-index:2202;background:var(--ytms-queue-menu-background) !important;color:var(--ytms-queue-menu-text) !important;box-shadow:0 4px 24px #0005;font-family:inherit;font-size:14px;line-height:20px;font-weight:400; }
+    [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#fff);--ytms-queue-menu-text:var(--yt-spec-text-primary,#0f0f0f);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(0,0,0,.1));color-scheme:light;position:fixed;inset:auto;margin:0;padding:8px 0;border:0;border-radius:12px;width:min(168px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;z-index:2202;background:var(--ytms-queue-menu-background) !important;color:var(--ytms-queue-menu-text) !important;box-shadow:0 4px 24px #0005;font-family:inherit;font-size:14px;line-height:20px;font-weight:400; }
     html[dark] [data-ytms-queue-menu-popup] { --ytms-queue-menu-background:var(--yt-spec-menu-background,#282828);--ytms-queue-menu-text:var(--yt-spec-text-primary,#f1f1f1);--ytms-queue-menu-hover:var(--yt-spec-10-percent-layer,rgba(255,255,255,.1));color-scheme:dark; }
     [data-ytms-queue-menu-popup][hidden] { display:none !important; }
     [data-ytms-queue-menu-action], [data-ytms-queue-menu-action] [data-ytms-queue-menu-path] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;box-sizing:border-box !important;width:100% !important;height:36px !important;min-height:0 !important;min-width:0 !important;margin:0 !important;padding:0 !important;gap:0 !important;background:transparent !important;font-size:0 !important;line-height:0 !important;cursor:pointer; }
     [data-ytms-queue-menu-action], [data-ytms-queue-menu-action] [data-ytms-queue-menu-path], [data-ytms-queue-menu-content] { color:var(--ytms-queue-menu-text) !important;border:0 !important;box-shadow:none !important;outline:0 !important; }
     [data-ytms-queue-menu-action] > :not([data-ytms-queue-menu-path]):not([data-ytms-queue-menu-content]), [data-ytms-queue-menu-path] > :not([data-ytms-queue-menu-path]):not([data-ytms-queue-menu-content]) { display:none !important; }
     [data-ytms-queue-menu-action]::before, [data-ytms-queue-menu-action]::after { content:none !important;display:none !important; }
-    [data-ytms-queue-menu-content] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;gap:16px !important;box-sizing:border-box !important;width:100% !important;height:36px !important;padding:0 16px !important;margin:0 !important;white-space:nowrap !important;font-family:inherit !important;font-size:14px !important;line-height:20px !important;font-weight:400 !important; }
+    [data-ytms-queue-menu-content] { display:flex !important;flex-flow:row nowrap !important;align-items:center !important;gap:12px !important;box-sizing:border-box !important;width:100% !important;height:36px !important;padding:0 12px !important;margin:0 !important;white-space:nowrap !important;font-family:inherit !important;font-size:14px !important;line-height:20px !important;font-weight:400 !important; }
     [data-ytms-queue-menu-content] svg { display:block !important;flex:0 0 24px !important;width:24px !important;height:24px !important;margin:0 !important;fill:currentColor !important;pointer-events:none; }
     [data-ytms-queue-menu-content] svg path { fill:currentColor !important; }
     [data-ytms-queue-menu-content] span { color:inherit !important;font:inherit !important;margin:0 !important;padding:0 !important; }

@@ -17,6 +17,7 @@ import { installMembershipOffers } from "./sources/membership-offers.mjs";
 import { installCurrentQueueMenu } from "./sources/current-queue-menu.mjs";
 import { installQueueHeaderActions } from "./sources/queue-header-actions.mjs";
 import { installNativeMenuVisibility } from "./sources/native-menu-visibility.mjs";
+import { installWatchLaterControls } from "./sources/watch-later-controls.mjs";
 import { createSettingsDialog } from "./sources/settings-panel-dom.mjs";
 import { createChannelAgeService } from "./sources/channel-age.mjs";
 import { createChannelAgeDialog } from "./sources/channel-age-dialog.mjs";
@@ -37,7 +38,7 @@ import { createCustomJavascript } from "./sources/custom-javascript.mjs";
 import { createCustomJavascriptPanel } from "./sources/custom-javascript-panel.mjs";
 import { scopeStorageApis } from "./sources/storage-context.mjs";
 
-const MASTER_VERSION = "1.2.143";
+const MASTER_VERSION = "1.2.165";
 const suiteDirectory = dirname(fileURLToPath(import.meta.url));
 const outputPath = join(suiteDirectory, "youtube-master-suite.user.js");
 const releaseManifestPath = join(suiteDirectory, "release-manifest.json");
@@ -775,7 +776,7 @@ function transformModuleBody(moduleDefinition, body) {
     transformed = replaceExactly(
       transformed,
       "  installQueuePlayNext();",
-      "  installQueuePlayNext({ uniqueVideos: suite.settings.initial.uniqueQueueVideos, menuBindings: suite.queueMenuBindings });",
+      "  installQueuePlayNext({ suite, uniqueVideos: suite.settings.initial.uniqueQueueVideos, menuBindings: suite.queueMenuBindings });",
       "Native queue uniqueness preferences and verified menu bindings",
     );
     transformed = replaceExactly(
@@ -2351,6 +2352,11 @@ ${runtimeMutationCoverageHelpers}
   const createSettingsWriteGuard = ${createSettingsWriteGuard.toString()};
   let storage;
   let storageApis;
+  const openSuiteStorage = recoverEmpty => (${initialiseIsolatedStorage.toString()})({
+    createAdapter: ${createIsolatedStorage.toString()},
+    adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
+    locks: navigator.locks, recoverEmpty,
+  });
   try {
     storageApis = (${scopeStorageApis.toString()})({
       info: typeof GM_info === 'object' ? GM_info : null,
@@ -2359,12 +2365,8 @@ ${runtimeMutationCoverageHelpers}
       addValueChangeListener: typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null,
       removeValueChangeListener: typeof GM_removeValueChangeListener === 'function' ? GM_removeValueChangeListener : null,
     });
-    storage = await (${initialiseIsolatedStorage.toString()})({
-      createAdapter: ${createIsolatedStorage.toString()},
-      adapterOptions: { ...storageApis, getLegacyStorage: () => window.localStorage },
-      locks: navigator.locks,
-    });
-  } catch {
+    storage = await openSuiteStorage(false);
+  } catch (error) {
     // Never initialise with defaults or silently revert to page persistence.
     // A generic notice contains no saved values, keys, URLs or account details.
     const showStorageFailure = () => {
@@ -2373,6 +2375,26 @@ ${runtimeMutationCoverageHelpers}
       notice.id = 'ytms-storage-error'; notice.setAttribute('role', 'alert');
       notice.textContent = 'YouTube Master Suite could not access Tampermonkey storage. Existing site settings were left unchanged. Check the script permissions or reinstall the saved rollback version.';
       notice.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;padding:12px;background:#321b1b;color:#fff;font:14px sans-serif;border:1px solid #b55;border-radius:6px';
+      if (error?.code === 'storage-snapshot-missing') {
+        const message = document.createElement('p');
+        message.textContent = 'If you cleared this script’s Tampermonkey storage, you can start from defaults. Any protected settings that still exist take precedence.';
+        const recover = document.createElement('button');
+        recover.type = 'button'; recover.textContent = 'Prepare Suite defaults';
+        recover.addEventListener('click', async event => {
+          if (!event.isTrusted || recover.disabled) return;
+          recover.disabled = true;
+          try {
+            const recovered = await openSuiteStorage(true);
+            recovered.dispose();
+            message.textContent = 'Storage is ready. The Suite will start the next time you load YouTube.';
+            recover.remove();
+          } catch {
+            message.textContent = 'Storage recovery could not be confirmed. Check Tampermonkey storage and try again.';
+            recover.disabled = false;
+          }
+        });
+        notice.append(message, recover);
+      }
       document.body.append(notice);
     };
     if (document.body) showStorageFailure();
@@ -2406,22 +2428,27 @@ ${runtimeMutationCoverageHelpers}
   if (suite.settings.initial.uniqueQueueVideos) {
     suite.queueMenuBindings = (${createQueueMenuBindings.toString()})({ document, window });
   }
+  const coordinationKey = storage.namespaceKey;
+  const customJavascriptWriteKey = coordinationKey('yt-master-suite.custom-javascript-write.v1');
+  const customJavascriptKey = 'yt-master-suite.custom-javascript.v1';
   suite.customJavascript = (${createCustomJavascript.toString()})({ document, window,
-    getValue: storageApis.getValue, setValue: storageApis.setValue,
+    getValue: (key, fallback) => storageApis.getValue(key === customJavascriptKey ? coordinationKey(key) : key, fallback),
+    setValue: (key, value) => storageApis.setValue(coordinationKey(key), value),
+    coordination: { key: customJavascriptWriteKey, getRevision: () => window.localStorage.getItem(customJavascriptWriteKey) },
     write: createSettingsWriteGuard({
-      key: 'yt-master-suite.custom-javascript-write.v1', locks: navigator.locks,
+      key: customJavascriptWriteKey, locks: navigator.locks,
       getCoordinationStorage: () => window.localStorage, getValue: storageApis.getValue, setValue: storageApis.setValue,
-      getMainRecord: () => storageApis.getValue('yt-master-suite.custom-javascript.v1', null),
+      getMainRecord: () => storageApis.getValue(coordinationKey(customJavascriptKey), null),
       newRevision: () => window.crypto.randomUUID(),
     }),
   });
   const writeMainSettings = createSettingsWriteGuard({
-    locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
+    key: coordinationKey('yt-master-suite.settings-write.v1'), locks: navigator.locks, getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.settings.key), newRevision: () => window.crypto.randomUUID(),
   });
   suite.writeCorner = createSettingsWriteGuard({
-    key: 'yt-master-suite.corner-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.corner-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.settings.cornerKey), newRevision: () => window.crypto.randomUUID(),
@@ -2431,7 +2458,7 @@ ${runtimeMutationCoverageHelpers}
   suite.writeSettings = (write, coordinate) => writeMainSettings(write,
     callback => suite.writeCorner(callback, coordinate));
   suite.writeChannelFilters = createSettingsWriteGuard({
-    key: 'yt-master-suite.channel-filters-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.channel-filters-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.channelAge.key), newRevision: () => window.crypto.randomUUID(),
@@ -2446,13 +2473,13 @@ ${runtimeMutationCoverageHelpers}
     fetch: (...args) => window.fetch(...args),
   });
   suite.writeMarker = createSettingsWriteGuard({
-    key: 'yt-master-suite.marker-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.marker-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.playheadMarker.key), newRevision: () => window.crypto.randomUUID(),
   });
   suite.writeUpdateSource = createSettingsWriteGuard({
-    key: 'yt-master-suite.update-source-write.v1', locks: navigator.locks,
+    key: coordinationKey('yt-master-suite.update-source-write.v1'), locks: navigator.locks,
     getCoordinationStorage: () => window.localStorage,
     getValue: storageApis.getValue, setValue: storageApis.setValue,
     getMainRecord: () => storage.getItem(suite.updates.key), newRevision: () => window.crypto.randomUUID(),
@@ -2476,7 +2503,7 @@ ${runtimeMutationCoverageHelpers}
     const options = { document, window, preferences: suite.settings.initial, menuLayout: suite.menuLayout, classifyFilm: suite.classifyFilm,
       MutationObserver: SharedMutationObserver,
       reportError: () => reportModuleError('suiteSettings', 'optional controls', new Error('An optional control could not initialise.')) };
-    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installMiniplayerControls.toString()}, ${installMembershipOffers.toString()}, ${installCurrentQueueMenu.toString()}, ${installQueueHeaderActions.toString()}, ${installNativeMenuVisibility.toString()}]) {
+    for (const install of [${installPlayerControls.toString()}, ${installDiscoveryControls.toString()}, ${installLayoutControls.toString()}, ${installMiniplayerControls.toString()}, ${installMembershipOffers.toString()}, ${installCurrentQueueMenu.toString()}, ${installQueueHeaderActions.toString()}, ${installNativeMenuVisibility.toString()}, ${installWatchLaterControls.toString()}]) {
       try { install(options); } catch { options.reportError(); }
     }
   };

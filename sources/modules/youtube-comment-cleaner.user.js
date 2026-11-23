@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Comment Cleaner
 // @namespace    Citizen.youtube.comment-cleaner
-// @version      1.31
+// @version      1.33
 // @description  Cleans YouTube comments, prevents stale comments across SPA navigation, preserves replies, compacts spacing, and colours commenter/uploader names.
 // @author       Citizen
 // @license      GNU GPLv3
@@ -816,25 +816,51 @@
     return cachedUploaderPaths;
   };
 
+  const colourChildSelector = "span, yt-formatted-string, yt-attributed-string, .yt-core-attributed-string";
+  const ownedLinkStyles = new WeakMap();
   const setLinkColour = (link, colour) => {
-    if (link.dataset.iowColour !== colour) {
-      link.style.setProperty("color", colour, "important");
-      link.style.setProperty("-webkit-text-fill-color", colour, "important");
-      link.style.setProperty("font-weight", "700", "important");
-      link.style.setProperty("opacity", "1", "important");
-      link.dataset.iowColour = colour;
+    const desired = { color: colour, "-webkit-text-fill-color": colour, "font-weight": "700", opacity: "1" };
+    for (const node of [link, ...link.querySelectorAll(colourChildSelector)]) {
+      let state = ownedLinkStyles.get(node);
+      if (state?.link === link && state.colour === colour) continue;
+      if (!state) {
+        state = { properties: new Map() };
+        ownedLinkStyles.set(node, state);
+      }
+      state.link = link;
+      state.colour = colour;
+      for (const [name, next] of Object.entries(desired)) {
+        const value = node.style.getPropertyValue(name);
+        const priority = node.style.getPropertyPriority(name);
+        let saved = state.properties.get(name);
+        if (!saved || saved.applied !== value || priority !== "important") {
+          saved = { value, priority };
+          state.properties.set(name, saved);
+        }
+        node.style.setProperty(name, next, "important");
+        saved.applied = node.style.getPropertyValue(name);
+      }
     }
+    if (link.dataset.iowColour !== colour) link.dataset.iowColour = colour;
+  };
 
-    link
-      .querySelectorAll(
-        "span, yt-formatted-string, yt-attributed-string, .yt-core-attributed-string",
-      )
-      .forEach((child) => {
-        child.style.setProperty("color", colour, "important");
-        child.style.setProperty("-webkit-text-fill-color", colour, "important");
-        child.style.setProperty("font-weight", "700", "important");
-        child.style.setProperty("opacity", "1", "important");
-      });
+  const restoreLinkNode = (node, state) => {
+    for (const [name, saved] of state.properties) {
+      if (node.style.getPropertyValue(name) !== saved.applied || node.style.getPropertyPriority(name) !== "important") continue;
+      if (saved.value) node.style.setProperty(name, saved.value, saved.priority);
+      else node.style.removeProperty(name);
+    }
+    ownedLinkStyles.delete(node);
+  };
+  const releaseLinkColour = (link) => {
+    const owner = ownedLinkStyles.get(link);
+    if (!owner || owner.link !== link) return;
+    for (const node of [link, ...link.querySelectorAll(colourChildSelector)]) {
+      const state = ownedLinkStyles.get(node);
+      if (state?.link !== link) continue;
+      restoreLinkNode(node, state);
+    }
+    if (link.dataset.iowColour === owner.colour) delete link.dataset.iowColour;
   };
 
   const colourCommentAuthorLinks = (root = document, queryScopes) => {
@@ -1168,6 +1194,8 @@ yt-comment-view-model #header-author-badges {
         continue;
       }
       if (mutation.type === "attributes") {
+        if (mutation.attributeName === "href" && ownedLinkStyles.has(mutation.target) &&
+            !mutation.target.matches(COMMENT_AUTHOR_SELECTOR)) releaseLinkColour(mutation.target);
         if (
           mutation.attributeName === "video-id" &&
           mutation.target === getActiveWatchFlexy()
@@ -1196,6 +1224,16 @@ yt-comment-view-model #header-author-badges {
       }
 
       collectCommentsVideoGuardRoots(commentsVideoGuardRoots, mutation.target);
+      if (CONFIG.colourCommenters && mutation.removedNodes.length) {
+        const link = mutation.target.closest?.('a');
+        if (link && ownedLinkStyles.has(link)) for (const removed of mutation.removedNodes) {
+          if (removed.nodeType !== 1) continue;
+          for (const node of [removed, ...removed.querySelectorAll(colourChildSelector)]) {
+            const state = ownedLinkStyles.get(node);
+            if (state?.link === link && !link.contains(node)) restoreLinkNode(node, state);
+          }
+        }
+      }
       if (containsUploaderSource(mutation.target) ||
           Array.from(mutation.removedNodes).some(containsUploaderSource)) {
         invalidateCachedUploaderPaths();

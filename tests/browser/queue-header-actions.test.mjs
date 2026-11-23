@@ -65,6 +65,53 @@ async function open(t,{compiled=false,mode='',list='TLPQfixture',enabled=true,th
       });
     };if(mode!=='unregistered')defineNative();
     f.closeBefore=document.getElementById('close-button').getBoundingClientRect().toJSON();
+    if(mode==='floating-header') {
+      // The floating title and chevron are outside the playlist panel. The
+      // panel header contains only the native queue-action slots in this layout.
+      const mini=document.querySelector('ytd-miniplayer');
+      mini.className='ytdMiniplayerComponentHost ytdMiniplayerComponentVisible';
+      const content=document.createElement('div');content.className='ytdMiniplayerComponentContent';
+      const draggable=document.createElement('yt-draggable');draggable.className='ytdMiniplayerComponentDraggable';
+      const bar=document.createElement('ytd-miniplayer-info-bar');
+      bar.className='ytdMiniplayerInfoBarHost ytdMiniplayerInfoBarHasPlaylistData';
+      bar.innerHTML='<div class="ytdMiniplayerInfoBarContent"><h1 class="ytdMiniplayerInfoBarTitle">Fixture video</h1><div class="ytdMiniplayerInfoBarSubtitle"><h1>Queue</h1><div class="ytdMiniplayerInfoBarPlaylistIndex"><span>·</span><span>1 / 2</span></div></div></div><div class="ytdMiniplayerInfoBarExpand"><button aria-label="Toggle queue" aria-expanded="true">⌄</button></div>';
+      draggable.append(bar);content.append(draggable,f.panel);mini.append(content);
+      f.panel.setAttribute('within-miniplayer','');f.panel.className='ytdMiniplayerComponentPlaylistPanel';
+      const header=f.panel.querySelector('.header'),slots=header.querySelector('.toolbar');
+      function lane(parent,id){
+        const node=document.createElement('div');node.id=id;node.className='ytd-playlist-panel-renderer';parent.append(node);return node;
+      }
+      const headerContent=lane(header,'header-contents');
+      const topRow=lane(headerContent,'header-top-row');
+      lane(topRow,'header-description').hidden=true;
+      lane(topRow,'end-actions-in-header').append(slots.querySelector('#overflow-menu-top-row'));
+      const actions=lane(headerContent,'playlist-actions');
+      lane(actions,'start-actions').append(slots.querySelector('#playlist-action-menu'));
+      lane(actions,'end-actions').append(slots.querySelector('#overflow-menu'));
+      header.replaceChildren(headerContent);
+      const style=document.createElement('style');
+      style.textContent=`
+        body{--yt-spec-text-primary:initial;--yt-spec-menu-background:initial;color:#0f0f0f}
+        html[dark] body{color:#f1f1f1}
+        .ytdMiniplayerComponentHost{width:400px;max-width:100%}
+        .ytdMiniplayerComponentDraggable{display:block}
+        .ytdMiniplayerInfoBarHost{display:flex;align-items:center;height:76px}
+        .ytdMiniplayerInfoBarContent{flex:1;min-width:0;overflow:hidden}
+        .ytdMiniplayerInfoBarContent h1{margin:0;font-size:14px}
+        .ytdMiniplayerInfoBarSubtitle,.ytdMiniplayerInfoBarExpand{display:flex;align-items:center}
+        .ytdMiniplayerInfoBarExpand{padding-right:16px}
+        .ytdMiniplayerInfoBarExpand button{width:32px;height:32px}
+        .ytdMiniplayerComponentPlaylistPanel .header{width:auto;min-height:32px;padding:0;color:black}
+        #playlist-actions{display:flex;justify-content:space-between}
+        .ytdMiniplayerComponentHost [hidden]{display:none!important}
+      `;document.head.append(style);
+      const toggle=bar.querySelector('button');
+      f.toggles=0;f.dragPresses=0;
+      const toggleQueue=()=>{f.toggles++;f.panel.hidden=!f.panel.hidden;toggle.setAttribute('aria-expanded',String(!f.panel.hidden));};
+      bar.addEventListener('click',toggleQueue);
+      toggle.addEventListener('click',event=>{event.stopPropagation();toggleQueue();});
+      draggable.addEventListener('mousedown',()=>f.dragPresses++);
+    }
   },{mode,list});
   if(compiled){await page.evaluate(enabled=>localStorage.setItem('yt-master-suite.settings.v1',JSON.stringify({version:1,values:{queueHeaderActions:enabled,hideMiniplayerQueueMenu:false,theatreMode:false,miniplayerEnabled:false}})),enabled);await page.addScriptTag({content:suite});await waitForSuiteHealth(page,manifest.registeredModules,{requireReady:true});}
   else await page.evaluate(({factory,enabled})=>{window.disposeQueue=(0,eval)('('+factory+')')({document,window,preferences:{queueHeaderActions:enabled}});},{factory:installQueueHeaderActions.toString(),enabled});
@@ -72,6 +119,64 @@ async function open(t,{compiled=false,mode='',list='TLPQfixture',enabled=true,th
 }
 const more=page=>page.getByRole('button',{name:'Queue actions',exact:true});
 const action=(page,name)=>page.getByRole('menuitem',{name:name+' queue',exact:true});
+for(const [theme,compiled] of [['dark',false],['light',false],['dark',true]])test(`floating queue actions share the native info bar and release its toolbar row (${theme}, ${compiled?'Suite':'source'})`,async t=>{
+  const page=await open(t,{mode:'floating-header',theme,compiled});
+  const readLayout=()=>more(page).evaluate(button=>{
+    const bar=document.querySelector('ytd-miniplayer-info-bar'),toggle=bar.querySelector('.ytdMiniplayerInfoBarExpand button');
+    const bounds=button.getBoundingClientRect(),chevron=toggle.getBoundingClientRect();
+    const row=f.panel.querySelector('ytd-playlist-panel-video-renderer').getBoundingClientRect();
+    return {
+      aligned:Math.abs((bounds.top+bounds.bottom-chevron.top-chevron.bottom)/2)<2 && bounds.right<=chevron.left+1,
+      touchesBar:Math.abs(row.top-bar.getBoundingClientRect().bottom)<2,
+      fill:getComputedStyle(button.querySelector('path')).fill,
+      nested:Boolean(button.parentElement.closest('button,[role="button"]')),
+    };
+  });
+  assert.deepEqual(await readLayout(),{aligned:true,touchesBar:true,fill:theme==='dark'?'rgb(241, 241, 241)':'rgb(15, 15, 15)',nested:false});
+  await page.evaluate(()=>document.documentElement.toggleAttribute('dark'));await settle(page);
+  assert.equal((await readLayout()).fill,theme==='dark'?'rgb(15, 15, 15)':'rgb(241, 241, 241)');
+  for(const name of ['Save','Clear']){
+    await more(page).click();await action(page,name).click();await settle(page);
+  }
+  assert.deepEqual(await page.evaluate(()=>[f.calls.map(call=>call.action),f.toggles,f.dragPresses]),[['save','clear'],0,0]);
+  await more(page).click();
+  const toggle=page.getByRole('button',{name:'Toggle queue'});
+  await toggle.click();await settle(page);
+  assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+  assert.equal(await more(page).isVisible(),false);
+  assert.equal(await action(page,'Clear').isVisible(),false);
+  await toggle.click();await settle(page);assert.equal(await more(page).isVisible(),true);
+  // The native state can change independently of a pointer-down outside the open menu.
+  await more(page).click();
+  await toggle.evaluate(node=>node.setAttribute('aria-expanded','false'));await settle(page);
+  assert.equal(await action(page,'Clear').isVisible(),false);
+  await toggle.evaluate(node=>node.setAttribute('aria-expanded','true'));await settle(page);
+  assert.equal(await more(page).getAttribute('aria-expanded'),'false');
+  await page.evaluate(()=>{f.panel.removeAttribute('within-miniplayer');document.querySelector('ytd-watch-flexy').append(f.panel);});
+  await settle(page);
+  assert.equal(await more(page).count(),1);
+  assert.equal(await more(page).evaluate(node=>f.panel.contains(node)),true);
+  assert.equal(await page.locator('ytd-miniplayer [aria-label="Queue actions"]').count(),0);
+  await more(page).click();await action(page,'Save').click();
+  assert.deepEqual(await page.evaluate(()=>f.calls.map(call=>call.action)),['save','clear','save']);
+});
+test('a late independent header action remains reachable beside the floating queue',async t=>{
+  const page=await open(t,{mode:'floating-header'});
+  await page.evaluate(()=>{
+    const button=document.createElement('button');button.textContent='Extra playlist option';
+    button.onclick=()=>f.extraCalls=(f.extraCalls||0)+1;
+    document.getElementById('end-actions').append(button);
+  });
+  await settle(page);
+  const extra=page.getByRole('button',{name:'Extra playlist option'});
+  await extra.click();assert.equal(await page.evaluate(()=>f.extraCalls),1);
+  await extra.evaluate(node=>node.remove());await settle(page);
+  assert.equal(await page.locator('.header').evaluate(node=>node.getBoundingClientRect().height),0);
+  await page.evaluate(()=>disposeQueue());
+  assert.equal(await page.locator('#clear-source').isVisible(),true);
+  assert.equal(await page.locator('#save-source').isVisible(),true);
+  assert.equal(await more(page).count(),0);
+});
 test('native queue controls return while a replacement row is restamping',async t=>{
   const page=await open(t);await more(page).click();await page.evaluate(()=>document.querySelector('[data-ytms-queue-menu-action="save"] yt-formatted-string').textContent='');await settle(page);
   assert.equal(await more(page).isVisible(),false);assert.equal(await page.locator('#save-source').isVisible(),true);assert.equal(await page.locator('#clear-source').isVisible(),true);
@@ -116,6 +221,53 @@ for(const mode of ['unknown','mixed','conflict','no-service','ambiguous','unregi
 });
 for(const list of ['PLsaved','',null])test(`saved/unknown lists are unchanged: ${list}`,async t=>{const page=await open(t,{list});assert.equal(await more(page).count(),0);});
 test('disabled preference preserves both native overflow menus',async t=>{const page=await open(t,{enabled:false});assert.equal(await more(page).count(),0);assert.equal(await page.locator('#save-source').isVisible(),true);});
+for (const compiled of [false, true]) test(`holding the menu activation key does not choose its first action (${compiled ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { compiled });
+  for (const key of ['Enter', 'Space']) {
+    await more(page).focus();
+    await page.keyboard.down(key);
+    await page.keyboard.down(key);
+    await page.keyboard.up(key);
+    assert.deepEqual(await page.evaluate(() => f.calls), []);
+    assert.equal(await action(page, 'Save').evaluate(node => node === document.activeElement), true);
+    await page.keyboard.press('Escape');
+  }
+});
+
+for (const [mode,compiled] of [['',false],['',true],['fallback',false]]) test(`scrolling a watch queue away dismisses its open menu (${mode || 'popover'}, ${compiled ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { mode, compiled });
+  await page.evaluate(() => {
+    const watch = document.querySelector('ytd-watch-flexy');
+    watch.append(f.panel);
+    watch.style.cssText = 'display:block;height:320px;overflow:auto';
+    f.panel.style.cssText = 'margin-top:40px;margin-bottom:900px';
+  });
+  await settle(page);
+  await more(page).click();
+  await page.evaluate(() => { document.querySelector('ytd-watch-flexy').scrollTop = 240; });
+  await settle(page);
+  assert.equal(await more(page).getAttribute('aria-expanded'), 'false');
+  assert.equal(await action(page, 'Clear').count(), 0);
+  assert.deepEqual(await page.evaluate(() => f.calls), []);
+});
+
+test('scrolling behind a fixed floating queue leaves its actions at the trigger', async t => {
+  const page = await open(t, { mode: 'floating-header' });
+  await page.evaluate(() => {
+    document.body.style.height = '300vh';
+    document.querySelector('ytd-miniplayer').style.cssText =
+      'position:fixed;bottom:16px;right:16px;width:400px';
+  });
+  await more(page).click();
+  const before = await more(page).boundingBox();
+  await page.evaluate(() => scrollTo(0, 240));
+  await settle(page);
+  assert.equal(await page.evaluate(() => scrollY), 240);
+  assert.deepEqual(await more(page).boundingBox(), before);
+  assert.equal(await more(page).getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(await page.evaluate(() => f.calls), []);
+});
+
 test('Arrow navigation, Escape and outside dismissal never execute commands',async t=>{
   const page=await open(t);await more(page).focus();await more(page).press('ArrowDown');assert.equal(await action(page,'Save').evaluate(node=>node===document.activeElement),true);
   await action(page,'Save').press('ArrowDown');assert.equal(await action(page,'Clear').evaluate(node=>node===document.activeElement),true);
@@ -190,6 +342,20 @@ for(const theme of ['dark','light'])test(`theme, icon order, popup bounds and cl
   await more(page).click();const box=await page.getByRole('menu',{name:'Queue actions',exact:true}).boundingBox();assert.ok(box.x>=0&&box.x+box.width<=400&&box.y>=0&&box.y+box.height<=350);
   const paint=await action(page,'Clear').evaluate(node=>{const svg=node.querySelector('svg'),label=node.querySelector('[data-ytms-queue-menu-content] span');return{icon:svg.getBoundingClientRect().right,text:label.getBoundingClientRect().left,fill:getComputedStyle(svg).fill,font:getComputedStyle(label).fontFamily};});
   assert.ok(paint.icon<paint.text);assert.equal(paint.fill,theme==='dark'?'rgb(241, 241, 241)':'rgb(15, 15, 15)');assert.match(paint.font,/Arial/);
+});
+for(const compiled of [false,true])test(`two queue actions use a compact menu without shrinking targets (${compiled?'Suite':'source'})`,async t=>{
+  const page=await open(t,{compiled,viewport:{width:400,height:350}});await more(page).click();
+  const geometry=await page.getByRole('menu',{name:'Queue actions',exact:true}).evaluate(menu=>{
+    const box=menu.getBoundingClientRect(),rows=[...menu.querySelectorAll('[data-ytms-queue-menu-action]')];
+    const clear=rows.find(row=>row.getAttribute('data-ytms-queue-menu-action')==='clear');
+    const icon=clear.querySelector('svg').getBoundingClientRect(),label=clear.querySelector('[data-ytms-queue-menu-content] span').getBoundingClientRect();
+    return {width:box.width,rightWhitespace:box.right-label.right,rowHeights:rows.map(row=>row.getBoundingClientRect().height),iconWidths:rows.map(row=>row.querySelector('svg').getBoundingClientRect().width),gap:label.left-icon.right};
+  });
+  assert.ok(geometry.width>=152&&geometry.width<=176,JSON.stringify(geometry));
+  assert.ok(geometry.rightWhitespace>=12&&geometry.rightWhitespace<=48,JSON.stringify(geometry));
+  assert.deepEqual(geometry.rowHeights,[36,36]);assert.deepEqual(geometry.iconWidths,[24,24]);assert.equal(geometry.gap,12);
+  await action(page,'Save').click();await more(page).click();await action(page,'Clear').click();
+  assert.deepEqual(await page.evaluate(()=>f.calls.map(call=>call.action)),['save','clear']);
 });
 for(const compiled of [false,true])for(const theme of ['dark','light'])test(`menu remains readable without native theme variables (${compiled?'Suite':'source'}, ${theme})`,async t=>{
   const page=await open(t,{compiled,theme,mode:'missing-theme'});

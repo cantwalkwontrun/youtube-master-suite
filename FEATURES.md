@@ -9,7 +9,7 @@ The Suite provides settings for its playback, layout, filtering and interface fe
 
 ## Queue header buttons
 
-**Miniplayer → Native queue → Combine queue header actions** puts recognised Save queue and Clear queue actions in one three-dot dropdown, replacing the separate Save pill and overflow controls. Bookmark and outlined bin icons use YouTube's theme colours. Native action handlers and confirmations are retained, with binding checks before every activation. Saved playlists and unsupported menus remain unchanged. Turn this setting off to restore the original presentation; **Hide queue header menu** separately controls native miniplayer overflow visibility. The native queue close control is raised 4 px without shrinking its click target. Save and reload to apply. Recognition currently requires native English Save/Clear labels; other languages retain their existing presentation.
+**Miniplayer → Native queue → Combine queue header actions** puts recognised Save queue and Clear queue actions in one three-dot dropdown, replacing the separate Save pill and overflow controls. In the floating miniplayer, the button sits beside the queue chevron while the queue is expanded. Bookmark and outlined bin icons use YouTube's theme colours. Native action handlers and confirmations are retained, with binding checks before every activation. Saved playlists and unsupported menus remain unchanged. Turn this setting off to restore the original presentation; **Hide queue header menu** separately controls native miniplayer overflow visibility. The native queue close control is raised 4 px without shrinking its click target. Save and reload to apply. Recognition currently requires native English Save/Clear labels; other languages retain their existing presentation.
 
 ## Membership offers
 
@@ -38,6 +38,10 @@ For handle-only cards, **Look up channel ID** makes an explicit public-channel r
 ## Home featured banners
 
 **Feed → Additional filters → Hide YouTube featured banners** starts on. It hides recognised Home-page campaign and promotional banner containers, including their reserved space. Regular video cards, the header logo, channel banners and queue content are preserved. Save and reload to apply a change to this setting.
+
+## Playlist search and History labels
+
+On supported Watch Later and Liked videos layouts, a local search sits in the sidebar when available and above the loaded list otherwise. It matches titles and channel names already rendered on the page, including updates to existing rows. Switching tabs preserves the query. Clearing the search or leaving the playlist restores every row. The native Watch Later download button has a **Download Watch Later** label and tooltip on supported layouts. Watch History retains YouTube's native Clear, Pause or Resume, and Manage actions, with aligned icons and visible labels.
 
 ## AI disclosure filter
 
