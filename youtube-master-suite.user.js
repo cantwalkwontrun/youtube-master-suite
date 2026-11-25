@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Master Suite
 // @namespace    youtube.master-suite
-// @version      1.2.166
+// @version      1.2.167
 // @description  Video mirroring, volume and quality controls, scrolling miniplayer, fullscreen comments, play next in queue, queue layout, feed and comment cleanup, colour settings, clean video links and optional-cookie rejection.
 // @author       cantwalkwontrun
 // @license      GNU GPLv3
@@ -92,7 +92,7 @@
   // Consent pages need only the rejection action, not player/feed modules.
   if (window.location.hostname !== "www.youtube.com") return;
 
-  const MASTER_VERSION = "1.2.166";
+  const MASTER_VERSION = "1.2.167";
   const EXPECTED_MODULE_COUNT = 8;
   const HEALTH_ATTRIBUTE = "data-yt-master-suite";
   const ENABLED_MODULES = Object.freeze({
@@ -23341,7 +23341,7 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
 
   suite.registerModule(
     "watchLayoutCleaner",
-    "Watch Layout Cleaner v1.115",
+    "Watch Layout Cleaner v1.117",
     "document-start",
     () => {
       const MutationObserver = suite.SharedMutationObserver;
@@ -24439,6 +24439,14 @@ ${rows.split(', ').map(row => `${row}[${marker}] #meta`).join(',')} { padding-in
             if (!mini) return null;
             const ids = player.getPlaylist?.();
             if (Array.isArray(ids) && !ids.length) return null; // A standalone video has no existing queue.
+            // Some miniplayers report null for a standalone video after leaving a
+            // playlist. Only accept that state when all other queue indicators agree.
+            const listId = player.getPlaylistId?.();
+            if (ids === null && typeof player.getPlaylist === 'function' &&
+                (listId == null || listId === '') && player.getPlaylistIndex?.() === -1 &&
+                !mini.querySelector(panelSelector) &&
+                !mini.querySelector('ytd-miniplayer-info-bar button[aria-expanded]:not([aria-haspopup="menu"])') &&
+                !confirmedMiniOrders.has(player)) return null;
             if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id))) return { unavailable: true };
             const requiresConfirmed = ids.filter(id => id === anchor).length !== 1;
             const proof = confirmedMiniOrders.get(player);
