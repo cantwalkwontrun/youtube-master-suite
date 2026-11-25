@@ -1195,6 +1195,45 @@ test('a standalone Home miniplayer can still create a queue', async t => {
   assert.deepEqual((await snapshot(page)).moves, []);
 });
 
+for (const suite of [false, true]) for (const missingId of [null, '']) test(`a miniplayer with a null playlist and ${missingId === null ? 'null' : 'empty'} list ID creates a queue (${suite ? 'Suite' : 'source'})`, async t => {
+  const page = await open(t, { suite, sheet: true, homeMiniplayer: true, ids: null });
+  await page.evaluate(missingId => {
+    const player = document.getElementById('movie_player');
+    player.getPlaylistId = () => missingId;
+    player.getPlaylist = () => queueFixture.seed ? [...queueFixture.ids] : null;
+    player.getPlaylistIndex = () => queueFixture.seed ? queueFixture.ids.indexOf(queueFixture.current) : -1;
+    queueFixture.queueToggle.remove();
+    const panel = queueFixture.mini.querySelector('ytd-playlist-panel-renderer');
+    panel.remove();
+    const app = document.querySelector('ytd-app');
+    const resolve = app.resolveCommand;
+    app.resolveCommand = function(command) {
+      const result = resolve.call(this, command);
+      queueFixture.mini.append(panel);
+      return result;
+    };
+  }, missingId);
+  await choose(page, D);
+  await page.waitForFunction(() => document.querySelector('[data-yt-master-queue-status]')?.textContent === 'Playing next in queue');
+  assert.deepEqual((await snapshot(page)).ids, [A, D]);
+  assert.equal((await snapshot(page)).adds.length, 1);
+});
+
+for (const indicator of ['toggle', 'panel', 'index', 'list-id']) test(`a null miniplayer playlist with a ${indicator} queue indicator cannot create a queue`, async t => {
+  const page = await open(t, { sheet: true, homeMiniplayer: true, ids: null });
+  await page.evaluate(indicator => {
+    const player = document.getElementById('movie_player');
+    player.getPlaylist = () => null;
+    player.getPlaylistIndex = () => indicator === 'index' ? 0 : -1;
+    player.getPlaylistId = () => indicator === 'list-id' ? 'TLPQfixture' : null;
+    if (indicator !== 'toggle') queueFixture.queueToggle.remove();
+    if (indicator !== 'panel') queueFixture.mini.querySelector('ytd-playlist-panel-renderer')?.remove();
+  }, indicator);
+  await choose(page, D);
+  assert.match(await page.locator('[data-yt-master-queue-status]').textContent(), /still updating/);
+  assert.equal((await snapshot(page)).adds.length, 0);
+});
+
 test('Home queue identification ignores a retained hidden watch-page panel', async t => {
   const page = await open(t, { sheet: true, homeMiniplayer: true });
   await page.evaluate(() => {

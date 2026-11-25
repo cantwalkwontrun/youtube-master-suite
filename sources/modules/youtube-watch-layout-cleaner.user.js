@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Watch Layout Cleaner
 // @namespace    Citizen.youtube.watch-layout-cleaner
-// @version      1.115
+// @version      1.117
 // @description  Expands YouTube watch pages, keeps the right rail fixed at SponsorBlock-friendly width, preserves its visible popup, and widens metadata/comments.
 // @author       Citizen
 // @updateURL    none
@@ -1097,6 +1097,14 @@ ${buildQueueCompatibilityCss()}
       if (!mini) return null;
       const ids = player.getPlaylist?.();
       if (Array.isArray(ids) && !ids.length) return null; // A standalone video has no existing queue.
+      // Some miniplayers report null for a standalone video after leaving a
+      // playlist. Only accept that state when all other queue indicators agree.
+      const listId = player.getPlaylistId?.();
+      if (ids === null && typeof player.getPlaylist === 'function' &&
+          (listId == null || listId === '') && player.getPlaylistIndex?.() === -1 &&
+          !mini.querySelector(panelSelector) &&
+          !mini.querySelector('ytd-miniplayer-info-bar button[aria-expanded]:not([aria-haspopup="menu"])') &&
+          !confirmedMiniOrders.has(player)) return null;
       if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => !validId(id))) return { unavailable: true };
       const requiresConfirmed = ids.filter(id => id === anchor).length !== 1;
       const proof = confirmedMiniOrders.get(player);
